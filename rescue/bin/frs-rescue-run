@@ -22,8 +22,9 @@ LOG="$CASE/rescue.log"
 
 say() { printf '\n\033[1;33m%s\033[0m\n' "$*" | tee -a "$LOG"; }
 setv() {
-	# Schlüssel in case.env setzen/ersetzen
+	# Schlüssel in case.env und in der laufenden Shell setzen/ersetzen
 	if grep -q "^$1=" "$ENV"; then sed -i "s|^$1=.*|$1=\"$2\"|" "$ENV"; else echo "$1=\"$2\"" >>"$ENV"; fi
+	printf -v "$1" "%s" "$2"
 }
 finish() {
 	if ((PAUSE)); then
