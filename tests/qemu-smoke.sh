@@ -20,8 +20,14 @@ QEMU=(qemu-system-x86_64 "${ACCEL[@]}" -m 4096 -smp 2 -nographic -no-reboot
 
 case $MODE in
 uefi)
-	OVMF=$(ls /usr/share/OVMF/OVMF_CODE_4M.fd /usr/share/OVMF/OVMF_CODE.fd 2>/dev/null | head -n1)
-	QEMU+=(-machine q35 -drive "if=pflash,format=raw,readonly=on,file=$OVMF")
+	OVMF=""
+	for f in /usr/share/OVMF/OVMF_CODE_4M.fd /usr/share/OVMF/OVMF_CODE.fd; do [[ -f $f ]] && { OVMF=$f; break; }; done
+	[[ -n $OVMF ]] || { echo "OVMF nicht gefunden" >&2; exit 2; }
+	# Beschreibbare Kopie der UEFI-Variablen, passend zur Code-Datei
+	vars=$(mktemp)
+	cp "${OVMF/CODE/VARS}" "$vars"
+	QEMU+=(-machine q35 -drive "if=pflash,format=raw,readonly=on,file=$OVMF"
+		-drive "if=pflash,format=raw,file=$vars")
 	EXPECT="frs ready"
 	;;
 bios)

@@ -1,6 +1,7 @@
 [Unit]
 Description=Firestrike-Rescue-Selbsttest (nur mit Kernelparameter frs.selftest)
-After=frs-ready.service
+# multi-user.target ausdrücklich, sonst ordnet systemd den Dienst davor ein (Zyklus mit frs-ready)
+After=multi-user.target frs-ready.service
 ConditionKernelCommandLine=frs.selftest
 
 [Service]
