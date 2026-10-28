@@ -1,0 +1,52 @@
+# Firestrike Rescue – GRUB-Theme
+# Farben von firestrike.de: Grund #141715, Text #E8EBE7, Stahl hell #B4C6D1, Funke #E8A33D, Glut #AB5019
+
+desktop-color: "#141715"
+title-text: "Firestrike Rescue"
+title-font: "@TITLE_FONT@"
+title-color: "#E8A33D"
+message-font: "@MENU_FONT@"
+message-color: "#E8EBE7"
+terminal-font: "@MENU_FONT@"
+
++ boot_menu {
+	left = 15%
+	top = 25%
+	width = 70%
+	height = 50%
+	item_font = "@MENU_FONT@"
+	item_color = "#E8EBE7"
+	selected_item_font = "@MENU_FONT@"
+	selected_item_color = "#141715"
+	selected_item_pixmap_style = "select_*.png"
+	item_height = 34
+	item_padding = 12
+	item_spacing = 6
+	icon_width = 0
+	icon_height = 0
+	scrollbar = false
+}
+
++ label {
+	left = 15%
+	top = 18%
+	width = 70%
+	height = 20
+	text = "Ubuntu 26.04 LTS · @VERSION@ · Datenrettung · Klonen · Disk anpassen"
+	font = "@SMALL_FONT@"
+	color = "#B4C6D1"
+}
+
++ progress_bar {
+	id = "__timeout__"
+	left = 15%
+	top = 80%
+	width = 70%
+	height = 20
+	font = "@SMALL_FONT@"
+	text_color = "#5A605B"
+	fg_color = "#AB5019"
+	bg_color = "#212B33"
+	border_color = "#33414B"
+	text = "@TIMEOUT_NOTIFICATION_LONG@"
+}

@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="220" viewBox="0 0 960 220" role="img" aria-label="Firestrike Rescue">
+  <rect width="960" height="220" fill="#141715"/>
+  <text x="48" y="104" font-family="'Iowan Old Style','Palatino Linotype',Palatino,'Book Antiqua',Georgia,serif" font-size="58" font-weight="600" fill="#E8A33D">Firestrike Rescue</text>
+  <line x1="48" y1="124" x2="560" y2="124" stroke="#AB5019" stroke-width="2" stroke-dasharray="6 5"/>
+  <text x="48" y="164" font-family="ui-sans-serif,system-ui,'Segoe UI',Roboto,Arial,sans-serif" font-size="20" fill="#B4C6D1">Rettungssystem auf Ubuntu 26.04 LTS · Datenrettung · Klonen · Disk anpassen · Claude</text>
+  <circle cx="880" cy="70" r="6" fill="#E8A33D"/>
+  <circle cx="900" cy="92" r="4" fill="#D9713C"/>
+  <circle cx="872" cy="104" r="3" fill="#AB5019"/>
+</svg>

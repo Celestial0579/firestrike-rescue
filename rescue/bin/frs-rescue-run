@@ -1,0 +1,114 @@
+#!/usr/bin/env bash
+# Führt die ddrescue-Phasen für einen Rettungsfall aus. Läuft als root, meist in tmux.
+# Wird ein Lauf unterbrochen, setzt ein erneuter Aufruf anhand von image.map fort.
+#
+#   frs-rescue-run CASE_DIR [--no-pause]
+#
+# CASE_DIR enthält case.env mit SRC_ID (Seriennummer/WWN/Pfad) und SRC_SIZE.
+
+set -uo pipefail
+
+CASE=${1:?Aufruf: frs-rescue-run CASE_DIR}
+PAUSE=1
+[[ ${2:-} == --no-pause ]] && PAUSE=0
+
+ENV="$CASE/case.env"
+IMG="$CASE/image.img"
+MAP="$CASE/image.map"
+LOG="$CASE/rescue.log"
+
+# shellcheck disable=SC1090
+. "$ENV"
+
+say() { printf '\n\033[1;33m%s\033[0m\n' "$*" | tee -a "$LOG"; }
+setv() {
+	# Schlüssel in case.env setzen/ersetzen
+	if grep -q "^$1=" "$ENV"; then sed -i "s|^$1=.*|$1=\"$2\"|" "$ENV"; else echo "$1=\"$2\"" >>"$ENV"; fi
+}
+finish() {
+	if ((PAUSE)); then
+		echo
+		read -r -p "Enter drücken, um zum Assistenten zurückzukehren … " _
+	fi
+	exit "${1:-0}"
+}
+
+# Quelle über die Kennung auflösen; der Gerätepfad kann sich nach USB-Resets ändern.
+SRC=$(lsblk -J -b -d -o PATH,SERIAL,WWN | jq -r --arg id "$SRC_ID" \
+	'.blockdevices[] | select(((.serial // "") | gsub("^\\s+|\\s+$"; "")) == $id or .wwn == $id or .path == $id) | .path' | head -n1)
+[[ -z $SRC && -b $SRC_ID ]] && SRC=$SRC_ID
+if [[ -z $SRC ]]; then
+	say "Quell-Disk $SRC_ID ist nicht (mehr) angeschlossen. Der Stand ist gespeichert; nach dem Anschließen 'Unterbrochene Rettung fortsetzen' wählen."
+	setv STATE interrupted
+	finish 1
+fi
+blockdev --setro "$SRC" 2>/dev/null || true
+
+# Sparse schreiben, wo das Ziel-Dateisystem es kann
+SPARSE=()
+case $(findmnt -no FSTYPE -T "$CASE") in
+ext4 | ext3 | xfs | btrfs) SPARSE=(-S) ;;
+esac
+
+setv STATE running
+setv SRC_PATH "$SRC"
+[[ -z ${STARTED:-} ]] && setv STARTED "$(date -Is)"
+[[ -f $CASE/smart-before.txt ]] || smartctl -x "$SRC" >"$CASE/smart-before.txt" 2>&1
+
+say "Firestrike Rescue · Datenrettung von $SRC ($SRC_ID) nach $IMG"
+echo "Mit Strg+B, D verlässt du die Ansicht; die Rettung läuft weiter." | tee -a "$LOG"
+
+PHASES=(
+	"1|Schneller Durchlauf: gut lesbare Bereiche zuerst, schwache überspringen|-n"
+	"2|Rückwärts-Durchlauf über die übersprungenen Bereiche|-n -R"
+	"3|Fehlerbereiche einzeln mit Direktzugriff und 3 Wiederholungen|-d -r3"
+)
+DONE=${PHASE_DONE:-0}
+for ph in "${PHASES[@]}"; do
+	IFS='|' read -r n title opts <<<"$ph"
+	((n <= DONE)) && continue
+	say "Phase $n/3: $title"
+	setv PHASE "$n"
+	# shellcheck disable=SC2086
+	ddrescue "${SPARSE[@]}" $opts "$SRC" "$IMG" "$MAP" 2>&1 | tee -a "$LOG"
+	rc=${PIPESTATUS[0]}
+	if ((rc != 0)); then
+		if [[ ! -b $SRC ]]; then
+			say "Die Quell-Disk ist verschwunden (USB-Reset oder Ausfall). Stand gespeichert, später fortsetzen."
+		else
+			say "ddrescue meldet Fehler (rc=$rc). Stand gespeichert, Fortsetzen ist möglich."
+		fi
+		setv STATE interrupted
+		finish "$rc"
+	fi
+	setv PHASE_DONE "$n"
+	DONE=$n
+done
+
+say "Abschluss"
+smartctl -x "$SRC" >"$CASE/smart-after.txt" 2>&1
+setv FINISHED "$(date -Is)"
+setv STATE done
+{
+	echo "Firestrike Rescue · Rettungsbericht"
+	echo "==================================="
+	echo
+	echo "Quelle:      $SRC_LABEL"
+	echo "Kennung:     $SRC_ID"
+	echo "Größe:       $SRC_SIZE Bytes"
+	echo "Image:       $IMG"
+	echo "Begonnen:    $STARTED"
+	echo "Beendet:     $(date -Is)"
+	echo "System:      Firestrike Rescue $(. /etc/frs-release 2>/dev/null; echo "${FRS_VERSION:-dev}")"
+	echo
+	echo "Ergebnis (ddrescuelog -t):"
+	ddrescuelog -t "$MAP"
+	echo
+	echo "Fehlende Bereiche (Position, Größe in Bytes):"
+	ddrescuelog -l- -b1 "$MAP" 2>/dev/null | head -n 50 || true
+	echo
+	echo "SMART vorher/nachher: smart-before.txt, smart-after.txt"
+} >"$CASE/report.txt" 2>&1
+cat "$CASE/report.txt"
+say "Fertig. Bericht: $CASE/report.txt"
+finish 0

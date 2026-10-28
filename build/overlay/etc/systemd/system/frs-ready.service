@@ -1,0 +1,11 @@
+[Unit]
+Description=Meldet Bootbereitschaft auf der seriellen Konsole (für CI-Tests)
+After=multi-user.target getty@tty1.service
+ConditionPathExists=/dev/ttyS0
+
+[Service]
+Type=oneshot
+ExecStart=/bin/sh -c 'echo "frs ready $(. /etc/frs-release; echo $FRS_VERSION)" > /dev/ttyS0'
+
+[Install]
+WantedBy=multi-user.target

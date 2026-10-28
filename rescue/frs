@@ -1,0 +1,162 @@
+#!/usr/bin/env bash
+# Firestrike Rescue – Assistent für Datenrettung, Klonen und Disk-Anpassung.
+#
+#   frs              Assistent starten (startet nach dem Boot automatisch auf tty1)
+#   frs --selftest   Selbsttest mit simulierter defekter Disk (root, ohne Oberfläche)
+#   frs --version
+
+set -u
+
+FRS_LIB="${FRS_LIB:-/usr/local/lib/frs}"
+[[ -d $FRS_LIB ]] || FRS_LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib"
+for f in common disks safety target recover clone resize persist claude tools; do
+	# shellcheck disable=SC1090
+	. "$FRS_LIB/$f.sh"
+done
+
+# ---------------------------------------------------------------------------
+# Selbsttest: defekte Disk per device-mapper simulieren, ddrescue-Phasen laufen lassen,
+# Ergebnis prüfen. Wird in der CI im QEMU-Boot ausgeführt.
+# ---------------------------------------------------------------------------
+selftest() {
+	set -e
+	local dir=/run/frs/selftest src loop map ok=1
+	echo "FRS-SELFTEST: start ($FRS_VERSION)"
+	rm -rf "$dir"
+	mkdir -p "$dir/case"
+	head -c $((64 * 1024 * 1024)) /dev/urandom >"$dir/disk.raw"
+	loop=$(losetup --find --show -r "$dir/disk.raw")
+	# 64 MiB = 131072 Sektoren; Sektoren 40960–41983 (512 KiB) liefern Lesefehler
+	dmsetup create frs-bad --readonly <<-EOF
+		0 40960 linear $loop 0
+		40960 1024 error
+		41984 89088 linear $loop 41984
+	EOF
+	src=/dev/mapper/frs-bad
+	cat >"$dir/case/case.env" <<-EOF
+		SRC_ID="$src"
+		SRC_SIZE="$((64 * 1024 * 1024))"
+		SRC_LABEL="Selbsttest (dm-error)"
+		STATE="new"
+	EOF
+	set +e
+	frs-rescue-run "$dir/case" --no-pause
+	local rc=$?
+	map="$dir/case/image.map"
+	local bad
+	bad=$(ddrescuelog -l- -b512 "$map" 2>/dev/null | wc -l)
+	echo "FRS-SELFTEST: ddrescue rc=$rc, fehlerhafte Sektoren=$bad (erwartet 1024)"
+	[[ $rc == 0 ]] || ok=0
+	[[ $bad == 1024 ]] || ok=0
+	if cmp -n $((40960 * 512)) "$dir/disk.raw" "$dir/case/image.img" >/dev/null &&
+		cmp -i $((41984 * 512)) "$dir/disk.raw" "$dir/case/image.img" >/dev/null; then
+		echo "FRS-SELFTEST: gerettete Daten stimmen mit dem Original überein"
+	else
+		echo "FRS-SELFTEST: gerettete Daten weichen ab"
+		ok=0
+	fi
+	grep -q '^STATE="done"' "$dir/case/case.env" || ok=0
+	# Werkzeuge vorhanden?
+	local t
+	for t in ddrescue partclone.ntfs partclone.extfs ntfsresize smartctl nvme sgdisk sfdisk cryptsetup dislocker \
+		photorec qemu-img qemu-nbd whiptail tmux jq claude claude-desktop cage gnome-keyring-daemon; do
+		command -v "$t" >/dev/null || { echo "FRS-SELFTEST: Werkzeug fehlt: $t"; ok=0; }
+	done
+	claude --version 2>/dev/null | sed 's/^/FRS-SELFTEST: claude /'
+	dmsetup remove frs-bad
+	losetup -d "$loop"
+	if ((ok)); then echo "FRS-SELFTEST: PASS"; else echo "FRS-SELFTEST: FAIL"; fi
+	((ok))
+}
+
+# ---------------------------------------------------------------------------
+# Hauptmenü
+# ---------------------------------------------------------------------------
+main_menu() {
+	local overview default choice extra=()
+	while true; do
+		ui_info "Firestrike Rescue" "Prüfe angeschlossene Disks (SMART) …"
+		overview=$(disks_overview)
+		default=clone
+		((DISKS_ANY_BAD)) && default=rescue
+		extra=()
+		tmux has-session -t frs-rettung 2>/dev/null && extra=(running "» Laufende Rettung anzeigen")
+		choice=$(ui_menu "Firestrike Rescue" "$overview\n\nEmpfehlung: $([[ $default == rescue ]] && echo "Datenrettung (auffällige Disk gefunden)" || echo "alle Disks unauffällig")" \
+			--default-item "$default" -- \
+			"${extra[@]}" \
+			rescue "Datenrettung von defekter Disk (Image auf Ziel-Disk)" \
+			clone "Disk klonen (z. B. HDD -> SSD, passt Größe an)" \
+			resize "Disk anpassen (Partitionen, GPT, sicher löschen)" \
+			resume "Unterbrochene Rettung fortsetzen / Image weiterverwenden" \
+			claude "Claude fragen (CLI)" \
+			desktop "Claude Desktop (grafisch)" \
+			tools "Werkzeuge (SMART, Netzwerk, SSH, Persistenz, Shell)" \
+			refresh "Disk-Liste aktualisieren" \
+			power "Neustart / Ausschalten")
+		[[ $? -ne 0 ]] && choice=power
+		log "Menü: $choice"
+		case $choice in
+		running) tmux attach -t frs-rettung ;;
+		rescue) recover_wizard ;;
+		clone) clone_wizard ;;
+		resize) resize_wizard ;;
+		resume) recover_resume ;;
+		claude) claude_start ;;
+		desktop) claude_desktop ;;
+		tools) tools_menu ;;
+		refresh) rm -f "$FRS_RUN"/smart-* ;;
+		power) power_menu && return 0 ;;
+		esac
+	done
+}
+
+power_menu() {
+	local c
+	c=$(ui_menu "Beenden" "" -- \
+		shell "Zur Shell (Assistent mit 'frs' wieder starten)" \
+		reboot "Neustart" \
+		poweroff "Ausschalten") || return 1
+	case $c in
+	shell) return 0 ;;
+	reboot | poweroff)
+		if tmux has-session -t frs-rettung 2>/dev/null; then
+			ui_yesno "Rettung läuft" "Eine Rettung läuft noch. Sie kann später fortgesetzt werden.\nTrotzdem $c?" --defaultno || return 1
+		fi
+		persist_close
+		sync
+		sudo systemctl "$c"
+		;;
+	esac
+}
+
+banner() {
+	clear
+	printf '\033[33m'
+	cat "$FRS_SHARE/theme/logo.txt" 2>/dev/null
+	printf '\033[0m\n  \033[36m%s\033[0m\n\n' "Ubuntu 26.04 LTS · $FRS_VERSION · Datenrettung · Klonen · Disk anpassen"
+	sleep 1
+}
+
+case ${1:-} in
+--selftest)
+	FRS_RUN=/run/frs
+	mkdir -p "$FRS_RUN"
+	FRS_LOG="$FRS_RUN/selftest.log"
+	selftest
+	exit $?
+	;;
+--version)
+	echo "Firestrike Rescue $FRS_VERSION"
+	exit 0
+	;;
+esac
+
+sudo install -d -o "$(id -u)" -g "$(id -g)" "$FRS_RUN"
+log_init
+ui_init
+banner
+log "Firestrike Rescue $FRS_VERSION gestartet"
+persist_startup
+ui_init
+claude_update_bg
+main_menu

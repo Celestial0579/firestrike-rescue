@@ -1,0 +1,26 @@
+# whiptail/newt-Farben. Die Namen beziehen sich auf die per setvtrgb umdefinierte Palette:
+#   black=Grund #141715  lightgray=Text #E8EBE7  brown=Funke #E8A33D  red=Glut #AB5019
+#   blue=Stahl #33414B   cyan=Stahl hell #B4C6D1  gray=Text leise #5A605B
+root=lightgray,black
+border=cyan,black
+window=lightgray,black
+shadow=black,black
+title=brown,black
+button=lightgray,red
+actbutton=black,brown
+compactbutton=lightgray,black
+checkbox=lightgray,black
+actcheckbox=lightgray,blue
+entry=lightgray,blue
+disentry=gray,black
+label=lightgray,black
+listbox=lightgray,black
+actlistbox=lightgray,blue
+sellistbox=brown,black
+actsellistbox=black,brown
+textbox=lightgray,black
+acttextbox=lightgray,blue
+emptyscale=,blue
+fullscale=,red
+helpline=gray,black
+roottext=cyan,black

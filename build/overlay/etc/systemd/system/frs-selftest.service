@@ -1,0 +1,15 @@
+[Unit]
+Description=Firestrike-Rescue-Selbsttest (nur mit Kernelparameter frs.selftest)
+After=frs-ready.service
+ConditionKernelCommandLine=frs.selftest
+
+[Service]
+Type=oneshot
+StandardOutput=tty
+StandardError=tty
+TTYPath=/dev/ttyS0
+ExecStart=/usr/local/bin/frs --selftest
+ExecStopPost=/bin/systemctl --no-block poweroff
+
+[Install]
+WantedBy=multi-user.target

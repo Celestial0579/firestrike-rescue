@@ -1,0 +1,124 @@
+# Paketliste für das Rettungssystem. Eine Zeile pro Paket, # leitet Kommentare ein.
+# Pakete mit "?" am Ende sind optional: fehlen sie im Archiv, läuft der Build weiter.
+
+# --- Basis / Live-Boot ---
+ubuntu-minimal
+casper
+linux-generic
+linux-firmware
+intel-microcode
+amd64-microcode
+systemd-resolved
+sudo
+locales
+console-setup
+kbd
+keyboard-configuration
+less
+bash-completion
+ca-certificates
+gnupg
+python3
+
+# --- Boot (für ISO-Erzeugung im chroot benötigt) ---
+shim-signed
+grub-efi-amd64-signed
+grub-efi-amd64-bin
+grub-pc-bin
+grub-common
+memtest86+
+efibootmgr
+os-prober
+
+# --- Rettung / Forensik ---
+gddrescue
+ddrescueview?
+safecopy
+testdisk
+foremost
+sleuthkit
+ewf-tools
+
+# --- Diagnose ---
+smartmontools
+nvme-cli
+hdparm
+sdparm
+lshw
+dmidecode
+pciutils
+usbutils
+memtester
+stress-ng
+
+# --- Klonen / Images ---
+partclone
+fsarchiver
+clonezilla?
+pv
+zstd
+pigz
+qemu-utils
+wimtools
+kpartx
+
+# --- Partitionen / Dateisysteme ---
+parted
+gdisk
+fdisk
+ntfs-3g
+e2fsprogs
+xfsprogs
+btrfs-progs
+dosfstools
+exfatprogs
+f2fs-tools
+lvm2
+mdadm
+cryptsetup
+cryptsetup-bin
+dislocker
+hfsprogs?
+dmsetup
+
+# --- Windows-Helfer ---
+chntpw
+ms-sys?
+
+# --- Netz / Transfer ---
+network-manager
+wpasupplicant
+wireless-regdb
+openssh-server
+rsync
+rclone
+cifs-utils
+smbclient
+nfs-common
+curl
+wget
+
+# --- Shell / Komfort ---
+tmux
+mc
+htop
+btop
+ncdu
+jq
+vim
+nano
+git
+whiptail
+dialog
+
+# --- Grafiksitzung nur für Claude Desktop ---
+cage
+xwayland
+gnome-keyring
+libsecret-1-0
+libsecret-tools
+dbus-user-session
+fonts-noto-core
+fonts-noto-color-emoji
+mesa-vulkan-drivers
+libgl1-mesa-dri

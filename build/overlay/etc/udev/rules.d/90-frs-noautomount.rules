@@ -1,0 +1,2 @@
+# Fremde Datenträger niemals automatisch einhängen.
+SUBSYSTEM=="block", ENV{UDISKS_AUTO}="0", ENV{UDISKS_IGNORE}="1"

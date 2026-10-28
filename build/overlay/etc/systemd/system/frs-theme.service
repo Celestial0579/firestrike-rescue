@@ -1,0 +1,13 @@
+[Unit]
+Description=Firestrike-Farbpalette für die Konsole
+DefaultDependencies=no
+After=systemd-vconsole-setup.service
+Before=getty@tty1.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/setvtrgb /usr/local/share/frs/theme/vtrgb
+RemainAfterExit=yes
+
+[Install]
+WantedBy=sysinit.target
