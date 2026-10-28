@@ -122,8 +122,9 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ needs.build.outputs.version }}
         run: |
-          tag="v$VERSION"
+          # Solange das Projekt in der Beta ist: Tag mit -beta, Release als Vorabversion
+          if [[ $GITHUB_REF == refs/tags/v* ]]; then tag="$GITHUB_REF_NAME"; else tag="v$VERSION-beta"; fi
           gh release create "$tag" out/*.iso out/SHA256SUMS out/*.manifest \
-            --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
-            --title "Firestrike Rescue $VERSION" \
+            --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --prerelease \
+            --title "Firestrike Rescue $VERSION (Beta)" \
             --notes "Ubuntu 26.04 LTS mit allen Updates bis $(date -u +%F). Mit Rufus (DD-Modus), balenaEtcher oder dd auf einen USB-Stick schreiben. Prüfsummen: SHA256SUMS. Herkunft prüfen: gh attestation verify <iso> --repo $GITHUB_REPOSITORY"
