@@ -3,7 +3,7 @@
 # Simuliert eine Windows-Disk (EFI, MSR, C:, Wiederherstellung) und prüft
 # größeres Ziel, kleineres Ziel und zu kleines Ziel.
 set -u
-cd "$(dirname "$0")/.."
+cd "$(dirname "$0")/.." || exit 1
 
 FRS_RUN=$(mktemp -d)
 # shellcheck disable=SC1091

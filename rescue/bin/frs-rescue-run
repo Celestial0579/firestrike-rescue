@@ -88,7 +88,7 @@ done
 say "Abschluss"
 smartctl -x "$SRC" >"$CASE/smart-after.txt" 2>&1
 setv FINISHED "$(date -Is)"
-setv STATE done
+setv STATE "done"
 {
 	echo "Firestrike Rescue · Rettungsbericht"
 	echo "==================================="

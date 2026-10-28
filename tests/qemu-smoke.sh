@@ -16,7 +16,7 @@ ACCEL=(-accel tcg)
 [[ -w /dev/kvm ]] && ACCEL=(-accel kvm -cpu host)
 QEMU=(qemu-system-x86_64 "${ACCEL[@]}" -m 4096 -smp 2 -nographic -no-reboot
 	-serial "file:$LOG" -monitor none -display none
-	-drive "file=$ISO,media=cdrom,readonly=on,if=none,id=cd" -device ide-cd,drive=cd)
+	-drive "file=$ISO,media=cdrom,readonly=on,if=none,id=cd" -device "ide-cd,drive=cd")
 
 case $MODE in
 uefi)

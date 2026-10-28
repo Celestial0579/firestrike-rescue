@@ -346,8 +346,10 @@ clone_cmd_shrink() {
 
 clone_boot_hint() {
 	if [[ $1 == replace ]]; then
-		echo "Die neue Disk hat dieselben Kennungen wie die alte. Alte Disk ausbauen, neue einbauen, starten.\nWindows prüft beim ersten Start evtl. das Dateisystem (normal)."
+		printf '%s\n' "Die neue Disk hat dieselben Kennungen wie die alte. Alte Disk ausbauen, neue einbauen, starten." \
+			"Windows prüft beim ersten Start evtl. das Dateisystem (normal)."
 	else
-		echo "Die neue Disk hat neue Kennungen. Booten von ihr kann eine Reparatur des Bootloaders erfordern\n(Windows: bcdboot C:\\Windows aus der WinRE; Linux: Werkzeuge > Shell > grub-install)."
+		printf '%s\n' "Die neue Disk hat neue Kennungen. Booten von ihr kann eine Reparatur des Bootloaders erfordern" \
+			'(Windows: bcdboot C:\Windows aus der WinRE; Linux: Werkzeuge > Shell > grub-install).'
 	fi
 }

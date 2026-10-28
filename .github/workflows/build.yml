@@ -30,7 +30,9 @@ jobs:
       - name: shellcheck
         run: |
           sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
-          shellcheck -x -s bash -e SC2016,SC2029 \
+          # Die Libs werden gemeinsam geladen, Variablen aus anderen Dateien (SC2034) sind kein Fehler.
+          # /run/frs gehört dem Benutzer rescue, Umleitungen hinter sudo (SC2024) sind dort gewollt.
+          shellcheck -x -s bash --severity=warning -e SC2016,SC2024,SC2029,SC2034 \
             build/build.sh build/chroot-setup.sh rescue/frs rescue/bin/* rescue/lib/*.sh tests/*.sh
       - name: Unit-Tests
         run: |

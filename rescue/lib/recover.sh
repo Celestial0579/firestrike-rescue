@@ -46,7 +46,7 @@ recover_run() {
 	# shellcheck disable=SC1091
 	local STATE=""
 	. "$case/case.env"
-	if [[ $STATE == done ]]; then
+	if [[ $STATE == "done" ]]; then
 		recover_after "$case"
 	else
 		ui_msg "Rettung unterbrochen" "Die Rettung wurde unterbrochen (Status: $STATE).\n\nFortsetzen: Hauptmenü > Unterbrochene Rettung fortsetzen.\nDer bisherige Stand bleibt erhalten."
@@ -71,7 +71,7 @@ recover_resume() {
 	pick=$(ui_menu "Fortsetzen" "Welcher Rettungsfall?" -- "${items[@]}") || return 0
 	c="$FRS_TARGET_MNT/FRS/$pick"
 	st=$(grep '^STATE=' "$c/case.env" | cut -d'"' -f2)
-	if [[ $st == done ]]; then
+	if [[ $st == "done" ]]; then
 		recover_after "$c"
 	else
 		local sid sdev
@@ -96,7 +96,7 @@ recover_after() {
 			vhdx "In VHDX umwandeln (Hyper-V, Windows einbinden)" \
 			report "Bericht anzeigen" \
 			claude "Claude um Rat fragen" \
-			done "Fertig") || return 0
+			"done" "Fertig") || return 0
 		case $choice in
 		copy) image_copy_files "$case" "$img" ;;
 		disk) image_to_disk "$case" "$img" ;;
