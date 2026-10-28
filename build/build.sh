@@ -63,6 +63,8 @@ host_deps() {
 	apt-get install -y -qq --no-install-recommends \
 		debootstrap squashfs-tools xorriso mtools dosfstools \
 		grub-common fonts-dejavu-core tex-gyre python3 ca-certificates curl gnupg >/dev/null
+	# DejaVu Sans Mono liegt in neueren Releases im eigenen Paket
+	apt-get install -y -qq --no-install-recommends fonts-dejavu-mono >/dev/null 2>&1 || true
 }
 
 # ---------------------------------------------------------------------------
@@ -126,6 +128,15 @@ configure() {
 # ---------------------------------------------------------------------------
 # 4. Boot-Dateien und GRUB-Theme
 # ---------------------------------------------------------------------------
+# Sucht die erste vorhandene Schriftdatei aus der Liste unter /usr/share.
+find_font() {
+	local name f
+	for name in "$@"; do
+		f="$(find /usr/share -iname "$name" -print -quit 2>/dev/null)"
+		[[ -n $f ]] && { echo "$f"; return 0; }
+	done
+}
+
 # Liest den internen Fontnamen aus einer .pf2-Datei (Chunk "NAME").
 pf2_name() {
 	python3 - "$1" <<-'PY'
@@ -181,9 +192,14 @@ boot_files() {
 	solid_png "$theme/select_e.png" "#AB5019"
 
 	local pagella dejavu title_font menu_font
-	pagella="$(find /usr/share -iname 'texgyrepagella-regular.otf' | head -n1)"
-	dejavu="$(find /usr/share/fonts -iname 'DejaVuSansMono.ttf' | head -n1)"
-	[[ -n $pagella && -n $dejavu ]] || die "Schriften für das GRUB-Theme fehlen."
+	# Erste gefundene Schrift gewinnt, die weiteren sind Ersatz
+	pagella="$(find_font texgyrepagella-regular.otf DejaVuSerif.ttf DejaVuSans.ttf)"
+	dejavu="$(find_font DejaVuSansMono.ttf DejaVuSans.ttf)"
+	[[ -n $pagella && -n $dejavu ]] || {
+		find /usr/share -iname '*.otf' -o -iname '*.ttf' | head -n 20 >&2
+		die "Schriften für das GRUB-Theme fehlen (Titel: ${pagella:-keine}, Menü: ${dejavu:-keine})."
+	}
+	log "Schriften: $pagella, $dejavu"
 	grub-mkfont -s 36 -o "$theme/title.pf2" "$pagella"
 	grub-mkfont -s 18 -o "$theme/menu.pf2" "$dejavu"
 	grub-mkfont -s 14 -o "$theme/small.pf2" "$dejavu"
