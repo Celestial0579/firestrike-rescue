@@ -44,36 +44,45 @@ echo "Anlegen, lesen, fortschreiben:"
 mkdir -p "$T/neu"
 casefile_create "$T/neu/case.env" "SRC_ID=S5Y1NJ0R123456" "SRC_SIZE=500107862016" \
 	"SRC_LABEL=Testdisk (500 GB)" "TARGET_ID=/dev/sdc" "STATE=new"
-check "Falldatei angelegt" '[[ $? == 0 && -f $T/neu/case.env ]]'
+rc=$?
+check "Falldatei angelegt" '[[ $rc == 0 && -f $T/neu/case.env ]]'
 check "Form SCHLÜSSEL=\"Wert\", feste Reihenfolge" '[[ $(head -n1 "$T/neu/case.env") == "SRC_ID=\"S5Y1NJ0R123456\"" && $(tail -n1 "$T/neu/case.env") == "STATE=\"new\"" ]]'
 check "für den Assistenten lesbar (644)" '[[ $(stat -c %a "$T/neu/case.env") == 644 ]]'
 casefile_load "$T/neu/case.env"
-check "gelesen" '[[ $? == 0 && $(casefile_get STATE) == new && $(casefile_get SRC_SIZE) == 500107862016 ]]'
+rc=$?
+check "gelesen" '[[ $rc == 0 && $(casefile_get STATE) == new && $(casefile_get SRC_SIZE) == 500107862016 ]]'
 check "fehlender Schlüssel liefert die Vorgabe" '[[ $(casefile_get PHASE_DONE 0) == 0 && -z $(casefile_get STARTED) ]]'
 casefile_set "$T/neu/case.env" STATE running &&
 	casefile_set "$T/neu/case.env" SRC_PATH /dev/mapper/frs-bad &&
 	casefile_set "$T/neu/case.env" STARTED "2026-11-12T09:33:59+01:00" &&
 	casefile_set "$T/neu/case.env" PHASE_DONE 2
-check "fortgeschrieben" '[[ $? == 0 ]]'
+rc=$?
+check "fortgeschrieben" '[[ $rc == 0 ]]'
 check "aus der Datei gelesen, nicht aus dem Speicher" '[[ $(casefile_peek "$T/neu/case.env" PHASE_DONE) == 2 && $(casefile_peek "$T/neu/case.env" STATE) == running ]]'
 check "keine Reste im Fallordner" '[[ $(ls "$T/neu") == case.env ]]'
 before=$(cat "$T/neu/case.env")
 casefile_set "$T/neu/case.env" STATE "done\"; touch $T/MARKE-set; \""
-check "Schreiben: Anführungszeichen im Wert abgelehnt" '[[ $? != 0 && $CASEFILE_ERROR == *"unzulässiges Zeichen"* ]]'
+rc=$?
+check "Schreiben: Anführungszeichen im Wert abgelehnt" '[[ $rc != 0 && $CASEFILE_ERROR == *"unzulässiges Zeichen"* ]]'
 casefile_set "$T/neu/case.env" IMG /dev/sda
-check "Schreiben: unbekannter Schlüssel abgelehnt" '[[ $? != 0 && $CASEFILE_ERROR == *"unbekannter Schlüssel IMG"* ]]'
+rc=$?
+check "Schreiben: unbekannter Schlüssel abgelehnt" '[[ $rc != 0 && $CASEFILE_ERROR == *"unbekannter Schlüssel IMG"* ]]'
 casefile_set "$T/neu/case.env" SRC_LABEL "eins"$'\n'"zwei"
-check "Schreiben: Zeilenumbruch im Wert abgelehnt" '[[ $? != 0 ]]'
+rc=$?
+check "Schreiben: Zeilenumbruch im Wert abgelehnt" '[[ $rc != 0 ]]'
 casefile_set "$T/neu/case.env" SRC_PATH /dev/a/../../mnt/x
-check "Schreiben: Pfad mit .. abgelehnt" '[[ $? != 0 ]]'
+rc=$?
+check "Schreiben: Pfad mit .. abgelehnt" '[[ $rc != 0 ]]'
 casefile_set "$T/neu/case.env" PHASE 7
-check "Schreiben: Phase außerhalb 0–3 abgelehnt" '[[ $? != 0 ]]'
+rc=$?
+check "Schreiben: Phase außerhalb 0–3 abgelehnt" '[[ $rc != 0 ]]'
 check "abgelehnte Werte ändern die Datei nicht" '[[ $(cat "$T/neu/case.env") == "$before" ]]'
 dirty='A"B$(c)`d`\e'$'\t''f'
 clean=$(casefile_clean_text "$dirty")
 check "Text für den Bericht wird entschärft" '[[ $clean == "A_B_(c)_d__e_f" ]]'
 casefile_value_ok SRC_LABEL "$(casefile_clean_text "$(printf "%0300d" 0)")"
-check "überlanger Text wird gekürzt und passt" '[[ $? == 0 ]]'
+rc=$?
+check "überlanger Text wird gekürzt und passt" '[[ $rc == 0 ]]'
 
 # ---------------------------------------------------------------------------
 echo "Falldateien, wie der bisherige Stand sie geschrieben hat:"
@@ -85,17 +94,20 @@ cat >>"$T/alt/case.env" <<-EOF
 	PHASE_DONE="1"
 EOF
 casefile_load "$T/alt/case.env"
-check "alte Datei mit angehängten Schlüsseln" '[[ $? == 0 && $(casefile_get PHASE_DONE) == 1 && $(casefile_get STARTED) == 2026-11-01T10:00:00+01:00 ]]'
+rc=$?
+check "alte Datei mit angehängten Schlüsseln" '[[ $rc == 0 && $(casefile_get PHASE_DONE) == 1 && $(casefile_get STARTED) == 2026-11-01T10:00:00+01:00 ]]'
 check "Beschriftung mit Sonderzeichen bleibt erhalten" '[[ $(casefile_get SRC_LABEL) == *"· 465,8GiB · SN S5Y1NJ0R123456 · usb" ]]'
 good crlf
 sed -i 's/$/\r/' "$T/crlf/case.env"
 printf '\n' >>"$T/crlf/case.env"
 casefile_load "$T/crlf/case.env"
-check "Zeilenenden von Windows und Leerzeile am Ende" '[[ $? == 0 && $(casefile_get STATE) == new ]]'
+rc=$?
+check "Zeilenenden von Windows und Leerzeile am Ende" '[[ $rc == 0 && $(casefile_get STATE) == new ]]'
 mkdir -p "$T/pfad"
 printf '%s\n' 'SRC_ID="/dev/mapper/frs-bad"' 'SRC_SIZE="67108864"' 'SRC_LABEL="Selbsttest (dm-error)"' 'STATE="done"' >"$T/pfad/case.env"
 casefile_load "$T/pfad/case.env"
-check "Kennung als Gerätepfad (Selbsttest)" '[[ $? == 0 && $(casefile_get SRC_ID) == /dev/mapper/frs-bad ]]'
+rc=$?
+check "Kennung als Gerätepfad (Selbsttest)" '[[ $rc == 0 && $(casefile_get SRC_ID) == /dev/mapper/frs-bad ]]'
 
 # ---------------------------------------------------------------------------
 # Präparierte Dateien. Jede würde, als Shell-Code gelesen, $T/MARKE-… anlegen oder das Skript
@@ -245,10 +257,29 @@ echo "Präparierte Falldateien mit dem echten frs-rescue-run:"
 for name in "${BAD[@]}"; do
 	sum=$(md5sum <"$T/$name/case.env")
 	run "$name"
-	check "$name: Abbruch mit Rückgabe 2" '[[ $RC == 2 && $OUT == *"Falldatei ist ungültig"* ]]'
+	check "$name: Abbruch mit Rückgabe 2" '[[ $RC == 2 && $OUT == *"Rettungsfall wird nicht verwendet"* ]]'
 	check "$name: Datei unverändert, kein Protokoll angelegt" '[[ $(md5sum <"$T/$name/case.env") == "$sum" && ! -e $T/$name/rescue.log ]]'
 done
 check "nichts wurde ausgeführt: keine Markerdatei" '! markers'
+
+# Der Fallordner selbst kann präpariert sein: Das Skript schreibt als root in feste Dateinamen.
+echo "Fallordner mit Verknüpfungen statt Dateien:"
+for file in rescue.log image.img image.map report.txt smart-before.txt; do
+	good "link-$file"
+	ln -s "$T/MARKE-link-$file" "$T/link-$file/$file"
+	run "link-$file"
+	check "$file als Verknüpfung: Abbruch mit Rückgabe 2" '[[ $RC == 2 && $OUT == *"keine gewöhnliche Datei"* ]]'
+done
+good ordner-als-datei
+mkdir "$T/ordner-als-datei/image.img"
+run ordner-als-datei
+check "Ordner an der Stelle des Images: Abbruch" '[[ $RC == 2 ]]'
+good echt
+ln -s "$T/echt" "$T/ordnerlink"
+run ordnerlink
+check "Fallordner selbst als Verknüpfung: Abbruch" '[[ $RC == 2 && $OUT == *"kein gewöhnlicher Ordner"* ]]'
+check "Zustand des echten Ordners unberührt" '[[ $(casefile_peek "$T/echt/case.env" STATE) == new ]]'
+check "durch keine Verknüpfung wurde geschrieben" '! markers'
 
 echo "Gültige Falldatei mit dem echten frs-rescue-run (Quelle nicht angeschlossen):"
 good lauf

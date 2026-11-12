@@ -12,6 +12,7 @@
 set -uo pipefail
 
 CASE=${1:?Aufruf: frs-rescue-run CASE_DIR}
+CASE=${CASE%/}
 PAUSE=1
 [[ ${2:-} == --no-pause ]] && PAUSE=0
 
@@ -26,7 +27,7 @@ HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 LIB=$HERE/../lib/frs
 [[ -r $LIB/casefile.sh ]] || LIB=$HERE/../lib
 [[ -r $LIB/casefile.sh ]] || { echo "frs-rescue-run: $LIB/casefile.sh fehlt." >&2; exit 2; }
-# shellcheck disable=SC1091
+# shellcheck disable=SC1090
 . "$LIB/casefile.sh"
 
 say() { printf '\n\033[1;33m%s\033[0m\n' "$*" | tee -a "$LOG"; }
@@ -43,6 +44,21 @@ setv() {
 	say "Die Falldatei lässt sich nicht fortschreiben: $CASEFILE_ERROR"
 	finish 2
 }
+
+# Dieses Skript schreibt als root in den Fallordner. Läge dort statt einer Datei eine
+# Verknüpfung oder ein Gerät, schriebe es durch sie hindurch an eine ganz andere Stelle,
+# zum Beispiel mit ddrescue auf eine interne Disk. Deshalb vor dem ersten Schreiben prüfen.
+if [[ -L $CASE || ! -d $CASE ]]; then
+	echo "Dieser Rettungsfall wird nicht verwendet: $CASE ist kein gewöhnlicher Ordner." >&2
+	finish 2
+fi
+for f in "$ENV" "$IMG" "$MAP" "$LOG" "$CASE/smart-before.txt" "$CASE/smart-after.txt" "$CASE/report.txt"; do
+	if [[ -L $f || (-e $f && ! -f $f) ]]; then
+		echo "Dieser Rettungsfall wird nicht verwendet: $f ist keine gewöhnliche Datei." >&2
+		echo "Im Fallordner liegen nur gewöhnliche Dateien. Es wurde nichts geschrieben." >&2
+		finish 2
+	fi
+done
 
 if ! casefile_load "$ENV"; then
 	echo "Dieser Rettungsfall wird nicht verwendet. Seine Falldatei ist ungültig:" >&2
