@@ -31,16 +31,28 @@ boot_disk() {
 }
 
 # Alle physischen Disks als JSON-Zeilen (ohne Loop, RAM, CD, ohne den Boot-Stick).
+#
+# Was eine Disk über sich meldet, steht danach in Dialogen, in Menüs und in der Falldatei:
+#   - Das Modell wird gefiltert (TEXT_UNSAFE_RE in common.sh): nur sichtbare Zeichen, höchstens
+#     40 (so lang sind die Modellangaben von ATA- und NVMe-Disks).
+#   - Seriennummer und WWN sind Kennungen. Der Techniker tippt sie zur Bestätigung ab, und über
+#     sie wird die Disk wiedergefunden. Sie gelten deshalb nur, wenn sie aus einem engen
+#     Zeichenvorrat bestehen, demselben wie in der Falldatei. Sonst gilt die Disk als eine ohne
+#     Seriennummer bzw. ohne WWN und wird über das nächste Merkmal erkannt (disk_id).
 disks_json() {
 	local bd
 	bd=$(boot_disk 2>/dev/null || true)
 	lsblk -J -b -d -o NAME,PATH,SIZE,MODEL,SERIAL,WWN,TRAN,ROTA,TYPE,RM,LOG-SEC,PHY-SEC 2>/dev/null |
-		jq -c --arg bd "$bd" '.blockdevices[]
+		jq -c --arg bd "$bd" --arg re "$TEXT_UNSAFE_RE" '
+			def trim: gsub("^\\s+|\\s+$"; "");
+			def id_or_empty: if test("^[A-Za-z0-9][A-Za-z0-9 #+.:=@_/%?,-]{0,199}$") then . else "" end;
+			.blockdevices[]
 			| select(.type == "disk")
 			| select(.name | test("^(loop|ram|zram|sr|dm-|md)") | not)
 			| select(.path != $bd)
-			| .model = ((.model // "") | gsub("^\\s+|\\s+$"; ""))
-			| .serial = ((.serial // "") | gsub("^\\s+|\\s+$"; ""))'
+			| .model = ((.model // "") | trim | gsub($re; "?") | .[0:40])
+			| .serial = ((.serial // "") | trim | id_or_empty)
+			| .wwn = ((.wwn // "") | trim | id_or_empty | if . == "" then null else . end)'
 }
 
 # Eindeutige, stabile Kennung einer Disk: Seriennummer, sonst WWN, sonst Pfad.
@@ -160,9 +172,12 @@ disk_pick() {
 }
 
 # Partitionen einer Disk als JSON-Zeilen (mit Dateisystem und Größe).
+# Label und Partitionsname stehen danach in Menüs und werden deshalb gefiltert (TEXT_UNSAFE_RE).
 disk_parts() {
 	lsblk -J -b -o NAME,PATH,SIZE,FSTYPE,LABEL,PARTTYPE,PARTLABEL,MOUNTPOINT,FSAVAIL "$1" 2>/dev/null |
-		jq -c '.blockdevices[0].children[]?'
+		jq -c --arg re "$TEXT_UNSAFE_RE" '.blockdevices[0].children[]?
+			| if .label != null then .label |= gsub($re; "?") else . end
+			| if .partlabel != null then .partlabel |= gsub($re; "?") else . end'
 }
 
 # Wird irgendeine Partition der Disk gerade benutzt?

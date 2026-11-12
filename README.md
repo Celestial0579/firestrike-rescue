@@ -43,6 +43,7 @@ Diese Schutzregeln gelten immer:
 - Ein Ziel wird ohne Geräte-, Setuid- und Programmrechte eingehängt (`nodev,nosuid,noexec`). Verknüpfungen darauf werden nicht verfolgt (`nosymfollow`). Für Partitionen aus einem Image gilt dasselbe, und sie sind nur lesend eingehängt.
 - Namen von Datenträgern bleiben Namen. Fallordner werden nur mit Namen aus Buchstaben, Ziffern, Punkt, Unterstrich und Bindestrich angeboten, und kein Menüeintrag wird als Option gelesen. Label und Partitionsnamen der Quelle kommen nur geprüft in den Klon-Job.
 - Texte von Datenträgern sind auch für Claude Daten, keine Anweisungen. Was die Geräte melden, steht in einer Datendatei (`zustand.txt`), nicht in einer `CLAUDE.md`.
+- Was ein Datenträger über sich meldet (Modell, Label, Partitionsname), steht in Dialogen nur gefiltert: sichtbare Zeichen, alles andere als `?`. Eine Seriennummer mit anderen Zeichen gilt nicht als Kennung.
 - Die Suche nach Rettungsfällen schreibt nicht. Die gewählte Disk ist dabei schreibgeschützt und nur lesend eingehängt, bis du einen Rettungsfall gewählt hast.
 - Der persistente Speicher ist nur die Partition `FRS-DATA` auf dem Stick, von dem gestartet wurde. Unverschlüsselt wird er erst nach einer Rückfrage eingebunden, und `frs.conf` wird gelesen, nicht ausgeführt.
 

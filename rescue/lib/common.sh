@@ -162,15 +162,27 @@ ui_password() {
 		--passwordbox "$2" 12 "$UI_W" 3>&1 1>/dev/tty 2>&3
 }
 
+# ui_textfile TITEL DATEI   Zeigt eine Datei. Ihr Inhalt kann von einem Datenträger stammen
+# (Bericht im Fallordner, SMART-Ausgabe, Protokoll). Gezeigt wird deshalb eine gefilterte Kopie
+# (text_clean), die Datei selbst bleibt, wie sie ist.
 ui_textfile() {
 	_ui_size
-	whiptail --backtitle "$UI_BACKTITLE" --title "$1" --scrolltext --textbox "$2" "$UI_H" "$UI_W" >/dev/tty
+	local f
+	if [[ ! -r $2 ]]; then
+		ui_msg "$1" "Die Datei gibt es nicht, oder sie ist nicht lesbar."
+		return 0
+	fi
+	f=$(mktemp)
+	expand "$2" 2>/dev/null | text_clean >"$f"
+	whiptail --backtitle "$UI_BACKTITLE" --title "$1" --scrolltext --textbox "$f" "$UI_H" "$UI_W" >/dev/tty
+	rm -f "$f"
 }
 
+# ui_text TITEL TEXT   Zeigt einen längeren Text zum Blättern. "\n" im Text ist ein Zeilenwechsel.
 ui_text() {
 	local f
 	f=$(mktemp)
-	printf '%s\n' "$2" >"$f"
+	printf '%s\n' "${2//\\n/$'\n'}" >"$f"
 	ui_textfile "$1" "$f"
 	rm -f "$f"
 }
@@ -183,6 +195,27 @@ ui_info() {
 pause() {
 	echo
 	read -r -p "Weiter mit Enter … " _
+}
+
+# ---------------------------------------------------------------------------
+# Texte von Datenträgern
+# ---------------------------------------------------------------------------
+# Was ein Datenträger über sich meldet (Modell, Label, Partitionsname) oder was auf ihm steht
+# (Bericht, Protokoll), kommt nur gefiltert in einen Dialog und in den Zustand für Claude. Es
+# bleiben sichtbare Zeichen: ASCII, lateinische Buchstaben mit Akzent, übliche Satzzeichen und
+# die Linien von lsblk. Alles andere wird zu "?": Steuerzeichen und Escape-Folgen, unsichtbare
+# Zeichen, Wechsel der Schreibrichtung, der Backtick und der Backslash.
+# Der Backslash gehört dazu, weil whiptail die Zeichenfolge "\n" in jedem Text als Zeilenwechsel
+# liest. Ein Label könnte sonst eigene Zeilen in einen Dialog setzen, etwa eine zweite
+# Aufforderung zur Bestätigung.
+TEXT_UNSAFE_RE='[^\x{20}-\x{5B}\x{5D}-\x{5F}\x{61}-\x{7E}\x{A1}-\x{AC}\x{AE}-\x{24F}\x{2010}-\x{2027}\x{2030}-\x{203A}\x{2500}-\x{257F}]'
+
+# text_clean [BREITE]   Filtert die Standardeingabe Zeile für Zeile. Mit BREITE wird jede Zeile
+# auf so viele Zeichen gekürzt und endet dann auf "…". Eine gekürzte Zeile wird im Dialog nicht
+# umbrochen: Auch der Rest eines langen Labels kann so keine eigene Zeile bilden.
+text_clean() {
+	jq -Rr --arg re "$TEXT_UNSAFE_RE" --argjson w "${1:-0}" \
+		'gsub($re; "?") | if $w > 1 and length > $w then .[0:$w - 1] + "…" else . end'
 }
 
 # ---------------------------------------------------------------------------

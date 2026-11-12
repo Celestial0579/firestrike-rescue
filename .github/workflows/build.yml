@@ -44,6 +44,7 @@ jobs:
       # Klon-Job: Label und Namen der Quelle werden nie zum Befehl.
       # Image-Partitionen: nur lesend und mit Schutzoptionen, am Einhängepunkt nachgeprüft.
       # Fortsetzen: Die Suche nach Rettungsfällen schreibt nicht.
+      # Dialoge: Texte von Datenträgern nur gefiltert (auch mit echtem whiptail geprüft).
       - name: Schutz-Tests
         run: |
           sudo apt-get install -y -qq jq whiptail
@@ -58,6 +59,8 @@ jobs:
           bash tests/unit-clone-job.sh
           bash tests/unit-image-mount.sh
           bash tests/unit-target-search.sh
+          bash tests/unit-dialog-text.sh
+          bash tests/dialog-disk-text.sh
       - name: Unit-Tests
         run: |
           sudo apt-get install -y -qq jq whiptail

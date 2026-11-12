@@ -23,13 +23,12 @@ CLAUDE_STATE_FILE="zustand.txt"
 # claude_data_filter   Gibt Text von der Standardeingabe als Datenzeilen aus.
 #   - Jede Zeile beginnt mit "| ". Ein Text von einem Datenträger kann so nie wie eine
 #     Überschrift oder ein Hinweis von frs aussehen.
-#   - Es bleiben nur sichtbare Zeichen: ASCII, lateinische Buchstaben mit Akzent, übliche
-#     Satzzeichen und die Linien von lsblk. Alles andere wird zu "?": Steuerzeichen und
-#     Escape-Folgen, unsichtbare Zeichen und Schreibrichtungswechsel, auch der Backtick.
-#     Was Claude liest, kann der Techniker damit auch sehen.
+#   - Es bleiben nur sichtbare Zeichen, alles andere wird zu "?" (TEXT_UNSAFE_RE in common.sh,
+#     derselbe Zeichenvorrat wie in den Dialogen). Was Claude liest, kann der Techniker damit
+#     auch sehen.
 #   - Eine Zeile hat höchstens 400 Zeichen.
 claude_data_filter() {
-	jq -Rr '"| " + (.[0:400] | gsub("[^\\x{20}-\\x{5F}\\x{61}-\\x{7E}\\x{A1}-\\x{AC}\\x{AE}-\\x{24F}\\x{2010}-\\x{2027}\\x{2030}-\\x{203A}\\x{2500}-\\x{257F}\\t]"; "?"))'
+	jq -Rr --arg re "$TEXT_UNSAFE_RE" '"| " + (.[0:400] | gsub($re; "?"))'
 }
 
 # Schreibt den aktuellen Zustand in das Sitzungsverzeichnis (Datei $CLAUDE_STATE_FILE).

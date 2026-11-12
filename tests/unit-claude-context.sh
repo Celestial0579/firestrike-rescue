@@ -17,6 +17,8 @@ export LC_ALL=C.UTF-8
 
 T=$(mktemp -d)
 # shellcheck disable=SC1091
+. rescue/lib/common.sh
+# shellcheck disable=SC1091
 . rescue/lib/casefile.sh
 # shellcheck disable=SC1091
 . rescue/lib/claude.sh

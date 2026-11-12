@@ -177,7 +177,7 @@ recover_after() {
 		return 0
 	fi
 	while true; do
-		choice=$(ui_menu "Image weiterverwenden" "Rettung abgeschlossen: $(basename "$case")\n\n$(ddrescuelog -t "$case/image.map" 2>/dev/null | grep -E 'rescued|bad' | head -n 3)\n\nWas soll mit dem Image passieren?" -- \
+		choice=$(ui_menu "Image weiterverwenden" "Rettung abgeschlossen: $(basename "$case")\n\n$(ddrescuelog -t "$case/image.map" 2>/dev/null | grep -E 'rescued|bad' | head -n 3 | text_clean)\n\nWas soll mit dem Image passieren?" -- \
 			copy "Dateien aus dem Image kopieren" \
 			disk "Image auf eine neue Disk schreiben (Größe wird angepasst)" \
 			repair "Dateisystem auf einer Kopie des Images reparieren" \
