@@ -77,6 +77,17 @@ casefile_clean_text() {
 	printf '%s' "${s:-_}"
 }
 
+# casefile_dirname_ok NAME   Ist NAME ein Name, wie der Assistent ihn für Fallordner vergibt?
+# Der Name eines Fallordners kommt beim Fortsetzen von der Ziel-Disk und steht danach in Menüs
+# und in Befehlszeilen. Erlaubt sind deshalb nur Buchstaben, Ziffern, Punkt, Unterstrich und
+# Bindestrich, am Anfang ein Buchstabe oder eine Ziffer, höchstens 200 Zeichen. Damit kann ein
+# Name weder als Option gelesen werden (kein "-" am Anfang) noch als Befehl (keine Leerzeichen,
+# Anführungszeichen oder Steuerzeichen) noch aus FRS/ hinausführen (kein "/" und kein "..").
+casefile_dirname_ok() {
+	local LC_ALL=C
+	[[ $1 =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$ ]]
+}
+
 # casefile_load DATEI   Liest und prüft die Falldatei und füllt das Feld CASEFILE.
 # Rückgabe 1 bei jedem Verstoß; CASEFILE ist dann leer.
 casefile_load() {

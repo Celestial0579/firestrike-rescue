@@ -41,6 +41,7 @@ Diese Schutzregeln gelten immer:
 - Reparaturen laufen nur auf einer Kopie des Images.
 - Von welcher Disk gelesen wird, bestimmst du. Beim Fortsetzen wählst du die Quelle neu. Die Falldatei auf der Ziel-Disk kann deiner Wahl nur widersprechen.
 - Ein Ziel wird ohne Geräte-, Setuid- und Programmrechte eingehängt (`nodev,nosuid,noexec`). Verknüpfungen darauf werden nicht verfolgt (`nosymfollow`).
+- Namen von Datenträgern bleiben Namen. Fallordner werden nur mit Namen aus Buchstaben, Ziffern, Punkt, Unterstrich und Bindestrich angeboten, und kein Menüeintrag wird als Option gelesen.
 
 Was ist drin
 ------------

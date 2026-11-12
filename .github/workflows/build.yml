@@ -38,13 +38,16 @@ jobs:
       # Expertenwerkzeuge: kein Start ohne Ziel-Bestätigung.
       # Fortsetzen: Die Quelle wählt der Techniker, nie die Falldatei.
       # Ziel-Dateisysteme: Einhängen nur mit Schutzoptionen, am Einhängepunkt nachgeprüft.
+      # Namen von der Ziel-Disk: nie Option, nie Befehl (auch mit echtem whiptail geprüft).
       - name: Schutz-Tests
         run: |
-          sudo apt-get install -y -qq jq
+          sudo apt-get install -y -qq jq whiptail
           bash tests/unit-casefile.sh
           bash tests/unit-expert-confirm.sh
           bash tests/unit-resume-source.sh
           bash tests/unit-target-mount.sh
+          bash tests/unit-case-names.sh
+          bash tests/dialog-menu-entries.sh
       - name: Unit-Tests
         run: |
           sudo apt-get install -y -qq jq

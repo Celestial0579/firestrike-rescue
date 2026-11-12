@@ -103,9 +103,11 @@ ui_menu() {
 	local mh=$((UI_H - 8 - $(printf '%s' "$text" | wc -l)))
 	((mh > n)) && mh=$n
 	((mh < 3)) && mh=3
+	# "--" beendet die Optionen. Text und Einträge stammen oft von Datenträgern (Ordnernamen,
+	# Seriennummern) und können mit "-" beginnen. whiptail liest sie sonst als Option.
 	whiptail --backtitle "$UI_BACKTITLE" --title "$title" "${opts[@]}" \
 		--ok-button "Weiter" --cancel-button "Zurück" \
-		--menu "$text" "$UI_H" "$UI_W" "$mh" "$@" 3>&1 1>/dev/tty 2>&3
+		--menu -- "$text" "$UI_H" "$UI_W" "$mh" "$@" 3>&1 1>/dev/tty 2>&3
 }
 
 ui_input() {
