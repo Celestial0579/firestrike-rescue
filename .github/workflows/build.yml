@@ -41,6 +41,7 @@ jobs:
       # Namen von der Ziel-Disk: nie Option, nie Befehl (auch mit echtem whiptail geprüft).
       # Claude: Texte von Datenträgern stehen in einer Datendatei, nie in einer CLAUDE.md.
       # Persistenter Speicher: nur vom eigenen Stick, nie ungefragt, frs.conf als Daten.
+      # Klon-Job: Label und Namen der Quelle werden nie zum Befehl.
       - name: Schutz-Tests
         run: |
           sudo apt-get install -y -qq jq whiptail
@@ -52,6 +53,7 @@ jobs:
           bash tests/dialog-menu-entries.sh
           bash tests/unit-claude-context.sh
           bash tests/unit-persist.sh
+          bash tests/unit-clone-job.sh
       - name: Unit-Tests
         run: |
           sudo apt-get install -y -qq jq whiptail
