@@ -37,12 +37,14 @@ jobs:
       # Präparierte Falldateien: Nichts daraus darf ausgeführt werden.
       # Expertenwerkzeuge: kein Start ohne Ziel-Bestätigung.
       # Fortsetzen: Die Quelle wählt der Techniker, nie die Falldatei.
+      # Ziel-Dateisysteme: Einhängen nur mit Schutzoptionen, am Einhängepunkt nachgeprüft.
       - name: Schutz-Tests
         run: |
           sudo apt-get install -y -qq jq
           bash tests/unit-casefile.sh
           bash tests/unit-expert-confirm.sh
           bash tests/unit-resume-source.sh
+          bash tests/unit-target-mount.sh
       - name: Unit-Tests
         run: |
           sudo apt-get install -y -qq jq
