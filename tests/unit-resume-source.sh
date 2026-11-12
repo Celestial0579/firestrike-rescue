@@ -24,17 +24,19 @@ check() {
 	if eval "$2"; then echo "  ok   $1"; else echo "  FAIL $1 ($2)"; fails=$((fails + 1)); fi
 }
 
-# Drei gedachte Disks: die defekte Quelle (sdx), eine interne Disk (sdy) und eine Disk hinter
-# einem Adapter, der weder Seriennummer noch WWN meldet (sdw).
+# Vier gedachte Disks: die defekte Quelle (sdx), eine interne Disk (sdy), eine Disk hinter
+# einem Adapter, der weder Seriennummer noch WWN meldet (sdw), und eine baugleiche Disk mit
+# derselben Größe wie die Quelle (sdv).
 DEFEKT='{"path":"/dev/sdx","serial":"DEFEKT-0001","wwn":"0x5000c500aaaaaaaa","size":1000204886016,"model":"Defekte Disk","tran":"usb"}'
 INTERN='{"path":"/dev/sdy","serial":"INTERN-0002","wwn":"0x5002538fbbbbbbbb","size":2000398934016,"model":"Interne Disk","tran":"nvme"}'
 NAMENLOS='{"path":"/dev/sdw","serial":"","wwn":null,"size":500107862016,"model":"Adapter","tran":"usb"}'
+ZWILLING='{"path":"/dev/sdv","serial":"ZWILLING-0003","wwn":"0x5000c500cccccccc","size":1000204886016,"model":"Defekte Disk","tran":"usb"}'
 
 # ---------------------------------------------------------------------------
 # Teil 1: frs-rescue-run
 # ---------------------------------------------------------------------------
 mkdir -p "$T/attrappen"
-# "lsblk … GERÄT" nennt genau dieses Gerät, ohne Gerät alle drei.
+# "lsblk … GERÄT" nennt genau dieses Gerät, ohne Gerät alle.
 cat >"$T/attrappen/lsblk" <<EOF
 #!/bin/sh
 for last; do :; done
@@ -42,8 +44,9 @@ case \$last in
 /dev/sdx) echo '{"blockdevices":[$DEFEKT]}' ;;
 /dev/sdy) echo '{"blockdevices":[$INTERN]}' ;;
 /dev/sdw) echo '{"blockdevices":[$NAMENLOS]}' ;;
+/dev/sdv) echo '{"blockdevices":[$ZWILLING]}' ;;
 /dev/*) echo "lsblk: \$last: not a block device" >&2; exit 32 ;;
-*) echo '{"blockdevices":[$DEFEKT,$INTERN,$NAMENLOS]}' ;;
+*) echo '{"blockdevices":[$DEFEKT,$INTERN,$NAMENLOS,$ZWILLING]}' ;;
 esac
 EOF
 # ddrescue [-S] OPTIONEN QUELLE IMAGE MAP: Aufruf mitschreiben, Mapfile anlegen.
@@ -96,6 +99,12 @@ check "Zustand done, Pfad der Quelle vermerkt" '[[ $(field echt STATE) == "done"
 fall wwn 0x5000c500aaaaaaaa 1000204886016
 rescue wwn /dev/sdx
 check "Kennung ist der WWN: Rettung läuft" '[[ $RC == 0 && $READ == *" /dev/sdx "* ]]'
+
+echo "Größe passt, Kennung nicht (baugleiche Disk):"
+fall zwilling DEFEKT-0001 1000204886016
+rescue zwilling /dev/sdv
+check "Abbruch, nichts gelesen, Grund genannt" '[[ $RC == 2 && -z $READ && $OUT == *"Seriennummer und WWN der Disk stimmen nicht"* ]]'
+check "Falldatei unverändert" '[[ $(field zwilling STATE) == interrupted && -z $(field zwilling SRC_PATH) ]]'
 
 echo "Kennung passt, Größe nicht:"
 fall groesse DEFEKT-0001 500107862016
@@ -155,6 +164,7 @@ disk_info() {
 	DEFEKT-0001) echo "$DEFEKT" ;;
 	INTERN-0002) echo "$INTERN" ;;
 	/dev/sdw) echo "$NAMENLOS" ;;
+	ZWILLING-0003) echo "$ZWILLING" ;;
 	esac
 }
 disk_resolve() { disk_info "$1" | jq -r .path; }
@@ -204,6 +214,8 @@ check "Rettung mit der gewählten Disk gestartet" '[[ $RUN == "$FRS_TARGET_MNT/F
 check "keine Rückfrage, keine Meldung" '[[ -z $YESNO && -z $MSG ]]'
 resume echt ""
 check "Auswahl der Quelle abgebrochen: nichts gestartet, nichts angefasst" '[[ -z $RUN && -z $RO ]]'
+resume echt ZWILLING-0003
+check "baugleiche Disk mit gleicher Größe: abgelehnt, nichts angefasst" '[[ -z $RUN && -z $RO && $MSG == "Falsche Quelle|"*"Seriennummer und WWN"* ]]'
 
 echo "Assistent, Falldatei kennt nur einen Gerätepfad:"
 YESNO_RC=1

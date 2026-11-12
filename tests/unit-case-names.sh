@@ -164,9 +164,11 @@ check "die übrigen sind gezählt, mit Hinweis" '[[ $MSG == "Fortsetzen|Nicht an
 check "der Hinweis nennt keinen der Namen" '[[ $MSG != *title* && $MSG != *touch* && $MSG != *MARKE* && $LOG != *touch* ]]'
 check "es sind mehr als 20 präparierte Einträge" '((hostile > 20))'
 check "der ungültige Fall wird gewählt und abgelehnt, nicht ausgeführt" '[[ -z $AFTER && $MSG == *"Rettungsfall nicht verwendbar"* ]]'
-PICK="x'; touch MARKE-auswahl; echo '"
+# Der Ordner zu diesem Namen liegt auf der Disk, mit gültiger Falldatei im Zustand "done".
+PICK="x'; touch MARKE-quote; echo '"
 resume
-check "liefert das Menü einen nicht angebotenen Namen, passiert nichts" '[[ -z $AFTER ]]'
+check "den Ordner zum präparierten Namen gibt es, mit gültiger Falldatei" '[[ $(casefile_peek "$T/ziel/FRS/$PICK/case.env" STATE) == "done" ]]'
+check "liefert das Menü einen nicht angebotenen Namen, passiert nichts" '[[ -z $AFTER && $MSG != *"nicht verwendbar"* ]]'
 unset PICK
 
 rm -rf "$T/ziel/FRS"
