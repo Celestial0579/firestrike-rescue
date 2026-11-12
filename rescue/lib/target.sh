@@ -88,7 +88,7 @@ target_format() {
 	fs=$(ui_menu "Ziel formatieren" "Welches Dateisystem soll das Ziel bekommen?" -- \
 		ext4 "Empfohlen. Schnell, große Dateien, Images können sparse sein." \
 		exfat "Auch unter Windows und macOS lesbar.") || return 1
-	safety_confirm_target "$tid" "Die GESAMTE Disk wird gelöscht und als $fs formatiert." || return 1
+	safety_confirm_target "$tid" "Die GESAMTE Disk wird gelöscht und als $fs formatiert." "$dev" || return 1
 	safety_release "$dev" || { die "Partitionen auf $dev sind noch in Benutzung."; return 1; }
 	ui_info "Ziel formatieren" "Formatiere $dev als $fs …"
 	run sudo wipefs -a "$dev" &&

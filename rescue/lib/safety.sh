@@ -63,12 +63,14 @@ _safety_trim() {
 # ohne Seriennummer ist er zugleich die Kennung, unter der die Disk gesucht wird. Die Größe
 # ist dann das Merkmal, an dem eine vertauschte Disk auffällt.
 safety_confirm_token() {
-	local j=$1 path serial wwn size name what id
+	local j=$1 path serial wwn size name what id dup
 	SAFETY_WANT="" SAFETY_ASK="" SAFETY_ID=""
 	path=$(jq -r '.path // ""' <<<"$j" 2>/dev/null)
 	[[ -n $path ]] || return 1
 	serial=$(_safety_trim "$(jq -r '.serial // ""' <<<"$j")")
 	wwn=$(_safety_trim "$(jq -r '.wwn // ""' <<<"$j")")
+	# Eine Kennung, die auch eine andere angeschlossene Disk meldet, hat disks_json schon entfernt.
+	dup=$(jq -r '.dup // false' <<<"$j")
 
 	if [[ -z $serial && -z $wwn ]]; then
 		name=${path##*/}
@@ -81,6 +83,10 @@ safety_confirm_token() {
 		fi
 		SAFETY_ID="ohne Seriennummer und WWN, $SAFETY_WANT"
 		SAFETY_ASK="Diese Disk meldet weder Seriennummer noch WWN. Bitte Modell und Größe oben genau prüfen.\nZur Bestätigung Gerätename und Größe eingeben, genau so: $SAFETY_WANT"
+		if [[ $dup == true ]]; then
+			SAFETY_ID="ohne eindeutige Kennung, $SAFETY_WANT"
+			SAFETY_ASK="Eine andere angeschlossene Disk meldet dieselbe Seriennummer wie diese. Die Seriennummer taugt hier nicht zur Unterscheidung. Bitte Gerätename, Modell und Größe oben genau prüfen.\nZur Bestätigung Gerätename und Größe eingeben, genau so: $SAFETY_WANT"
+		fi
 		return 0
 	fi
 
@@ -89,6 +95,7 @@ safety_confirm_token() {
 	else
 		what="WWN" id=$wwn
 		SAFETY_ASK="Diese Disk meldet keine Seriennummer.\n"
+		[[ $dup == true ]] && SAFETY_ASK="Eine andere angeschlossene Disk meldet dieselbe Seriennummer wie diese.\n"
 	fi
 	SAFETY_ID="$what $id"
 	if ((${#id} >= 4)); then
@@ -100,16 +107,35 @@ safety_confirm_token() {
 	fi
 }
 
-# safety_confirm_target ZIEL-ID AKTION   Zeigt das Ziel und verlangt dessen Kennung (safety_confirm_token).
-# Eine leere Eingabe bestätigt nie.
+# safety_still ZIEL-ID PFAD   Führt die Kennung jetzt, in diesem Moment, zu genau diesem Pfad?
+# /dev/sdX ist nur ein Name. Nach einem Reset am USB-Hub kann er zu einer anderen Disk gehören.
+safety_still() {
+	local now
+	now=$(disk_resolve "$1")
+	[[ -n $now && $now == "$2" ]]
+}
+
+# safety_confirm_target ZIEL-ID AKTION [PFAD]   Zeigt das Ziel und verlangt dessen Kennung
+# (safety_confirm_token). Eine leere Eingabe bestätigt nie.
+#
+# PFAD ist der Gerätepfad, mit dem der Aufrufer arbeitet und auf den er nach der Bestätigung
+# schreibt. Bestätigt wird nur, wenn die Kennung vor und nach der Eingabe zu genau diesem Pfad
+# führt: Solange der Dialog offen ist, kann sich der Name der Disk ändern. Bei Erfolg steht der
+# bestätigte Pfad in SAFETY_DEV.
 safety_confirm_target() {
-	local tid=$1 action=$2 j tdev intro parts room n got
+	local tid=$1 action=$2 want=${3:-} j tdev intro parts room n got
+	SAFETY_DEV=""
 	j=$(disk_info "$tid")
 	if ! safety_confirm_token "$j" || [[ -z $SAFETY_WANT ]]; then
-		die "Die Ziel-Disk $tid ist nicht mehr zu finden (abgezogen oder neu erkannt?). Es wurde nichts geändert."
+		die "Die Ziel-Disk $tid ist nicht mehr zu finden (abgezogen, neu erkannt oder nicht mehr eindeutig?). Es wurde nichts geändert."
 		return 1
 	fi
 	tdev=$(jq -r .path <<<"$j")
+	if [[ -n $want && $want != "$tdev" ]]; then
+		log "Bestätigung abgebrochen: $tid war $want und ist jetzt $tdev"
+		die "Der Gerätename der Ziel-Disk hat sich geändert (vorher $want, jetzt $tdev). Es wurde nichts geändert. Bitte den Schritt neu beginnen."
+		return 1
+	fi
 	intro="ACHTUNG: $action\n\nZiel: $(disk_label "$j")"
 
 	# Die Aufforderung steht zuletzt, direkt über dem Eingabefeld, und muss sichtbar bleiben.
@@ -144,6 +170,12 @@ safety_confirm_target() {
 		log "Bestätigung für $tdev abgelehnt (Eingabe '$got')"
 		return 1
 	fi
+	if ! safety_still "$tid" "$tdev"; then
+		log "Bestätigung verworfen: $tid führt nicht mehr zu $tdev"
+		die "Während der Bestätigung hat sich der Gerätename der Ziel-Disk geändert, oder sie ist nicht mehr da. Es wurde nichts geändert. Bitte den Schritt neu beginnen."
+		return 1
+	fi
+	SAFETY_DEV=$tdev
 	log "Ziel bestätigt: $tdev ($SAFETY_ID) für: $action"
 	return 0
 }

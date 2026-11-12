@@ -37,6 +37,8 @@ Diese Schutzregeln gelten immer:
 
 - Quell-Disks werden sofort auf Kernelebene schreibgeschützt.
 - Ziele werden über die Seriennummer bestätigt. Du gibst die letzten 4 Zeichen ein, nicht `/dev/sdX`. Meldet eine Disk keine Seriennummer, nimmt der Assistent stattdessen die WWN. Fehlt auch die, verlangt er Gerätename und Größe. Eine leere Eingabe bestätigt nie.
+- Eine Kennung zählt nur, wenn sie eindeutig ist. Melden zwei angeschlossene Disks dieselbe Seriennummer (baugleiche USB-Adapter tun das oft), stehen beide unter ihrem Gerätenamen und werden über Gerätename und Größe bestätigt.
+- Bestätigt wird genau das Gerät, auf das danach geschrieben wird. Ändert sich sein Name, solange der Dialog offen ist, bricht der Schritt ab. Der Klon prüft vor jeder Partition, dass Quelle und Ziel noch dieselben Disks sind.
 - Fremde Disks werden nie automatisch eingehängt. Auch Swap, RAID und LVM werden nicht automatisch aktiviert.
 - Reparaturen laufen nur auf einer Kopie des Images.
 - Von welcher Disk gelesen wird, bestimmst du. Beim Fortsetzen wählst du die Quelle neu. Die Falldatei auf der Ziel-Disk kann deiner Wahl nur widersprechen.
