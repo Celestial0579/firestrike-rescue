@@ -332,8 +332,9 @@ selftest_claude_run() {
 	local dir=$1 name=$2 cwd=${4:-$1/arbeit} port srv i
 	local -a extra=("${@:5}")
 	jq -cn --arg c "$3" '{name: "Bash", input: {command: $c, description: "Selbsttest"}}' >"$dir/$name.aufruf"
-	rm -f "$dir/$name.port" "$dir/$name.json"
-	python3 -I "$FRS_LIB/selftest-claude-api.py" "$dir/$name.port" "$dir/$name.aufruf" "$dir/$name.api" 2>"$dir/$name.api-fehler" &
+	rm -f "$dir/$name.port" "$dir/$name.json" "$dir/$name.anfrage"
+	# NAME.anfrage: die erste Anfrage im Wortlaut, also alles, was das Modell zu lesen bekäme.
+	python3 -I "$FRS_LIB/selftest-claude-api.py" "$dir/$name.port" "$dir/$name.aufruf" "$dir/$name.api" "$dir/$name.anfrage" 2>"$dir/$name.api-fehler" &
 	srv=$!
 	for ((i = 0; i < 100; i++)); do
 		[[ -s $dir/$name.port ]] && break
@@ -346,7 +347,7 @@ selftest_claude_run() {
 			ANTHROPIC_API_KEY="selbsttest-kein-schluessel" DISABLE_TELEMETRY=1 DISABLE_ERROR_REPORTING=1 \
 			DISABLE_AUTOUPDATER=1 CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 \
 			timeout 180 "${SELFTEST_CLAUDE[@]}" -p "Selbsttest: Die Attrappe gibt den Werkzeugaufruf vor." \
-			"${extra[@]}" --no-session-persistence --strict-mcp-config --output-format stream-json --verbose \
+			"${extra[@]}" --no-session-persistence --output-format stream-json --verbose \
 			>"$dir/$name.json" 2>"$dir/$name.fehler" </dev/null)
 	fi
 	kill "$srv" 2>/dev/null
@@ -369,11 +370,15 @@ selftest_claude_started() {
 }
 
 selftest_claude() {
-	local dir=$1/claude loop good=1 token answer
-	mkdir -p "$dir/arbeit" "$dir/home" "$dir/fremd/.claude"
+	local dir=$1/claude loop good=1 token answer fremd=/mnt/frs-selftest-fremd
+	rm -rf "$fremd"
+	mkdir -p "$dir/arbeit" "$dir/home" "$fremd/.claude"
 	token="FRS-KONTROLLE-$RANDOM$RANDOM"
 	echo "$token" >"$dir/arbeit/kontrolle.txt"
-	echo "$token" >"$dir/fremd/kontrolle.txt"
+	echo "$token" >"$fremd/kontrolle.txt"
+	# Eine CLAUDE.md im Arbeitsordner des Tests: Kontrolle dafür, dass so eine Datei beim Modell
+	# ankommt, wenn sie nicht unter einem Einhängepunkt liegt.
+	echo "Hinweis aus dem Arbeitsordner: MERKWORT-EIGEN-$token" >"$dir/arbeit/CLAUDE.md"
 	head -c $((4 * 1024 * 1024)) /dev/urandom >"$dir/disk.raw"
 	cp "$dir/disk.raw" "$dir/ziel.raw"
 	loop=$(losetup --find --show "$dir/disk.raw")
@@ -385,8 +390,8 @@ selftest_claude() {
 	answer=$(selftest_claude_answer "$dir" kontrolle)
 	# Was die CLI beim Start meldet, etwa einen Eintrag der Einstellungen, den sie nicht versteht.
 	head -n 5 "$dir/kontrolle.fehler" 2>/dev/null | cut -c1-200 | sed 's/^/FRS-SELFTEST:   CLI meldet: /'
-	if [[ $answer == *"$token"* ]]; then
-		echo "FRS-SELFTEST: Claude-Sperre: Kontrolle, ein lesender Befehl läuft"
+	if [[ $answer == *"$token"* ]] && grep -q "MERKWORT-EIGEN-$token" "$dir/kontrolle.anfrage" 2>/dev/null; then
+		echo "FRS-SELFTEST: Claude-Sperre: Kontrolle, ein lesender Befehl läuft, die CLAUDE.md des Arbeitsordners kommt an"
 	else
 		# Eine Sperre, die sich nicht prüfen lässt, gilt als Fehler.
 		echo "FRS-SELFTEST: Claude-Sperre: nicht prüfbar, die CLI führt keinen Befehl der Attrappe aus"
@@ -456,21 +461,43 @@ selftest_claude() {
 	fi
 	echo "FRS-SELFTEST:   Antwort: ${answer:0:120}"
 
-	# Ein Projektordner, wie er auf einem fremden Datenträger liegen kann, bringt eigene Hooks
-	# mit. Sie dürfen nicht laufen: Hooks kommen nur aus dem Rettungssystem.
+	# Ein Projektordner, wie er auf einem fremden Datenträger liegt: unter einem Einhängepunkt,
+	# mit eigenen Hooks, einem eigenen MCP-Server und einer CLAUDE.md. Wer Claude dort startet,
+	# darf nichts davon bekommen: Die Hooks laufen nicht, der Server startet nicht, und der Text
+	# der CLAUDE.md erreicht das Modell nicht.
 	jq -n --arg c "touch $dir/fremder-hook" '{hooks: {
 		SessionStart: [{hooks: [{type: "command", command: $c}]}],
-		PreToolUse: [{matcher: "*", hooks: [{type: "command", command: $c}]}]}}' >"$dir/fremd/.claude/settings.json"
-	selftest_claude_run "$dir" fremd "cat $dir/fremd/kontrolle.txt" "$dir/fremd"
+		PreToolUse: [{matcher: "*", hooks: [{type: "command", command: $c}]}]}}' >"$fremd/.claude/settings.json"
+	jq -n --arg m "$dir/fremder-mcp" '{mcpServers: {fremd: {command: "touch", args: [$m]}}}' >"$fremd/.mcp.json"
+	echo "Anweisung vom Datenträger: MERKWORT-FREMD-$token" >"$fremd/CLAUDE.md"
+	selftest_claude_run "$dir" fremd "cat $fremd/kontrolle.txt" "$fremd"
 	answer=$(selftest_claude_answer "$dir" fremd)
-	if [[ $answer == *"$token"* && ! -e $dir/fremder-hook ]]; then
-		echo "FRS-SELFTEST: Claude-Sperre: Hooks aus einem Projektordner laufen nicht"
-	else
-		echo "FRS-SELFTEST: Claude-Sperre: Hook aus einem Projektordner lief oder der Lauf kam nicht zustande"
+	if [[ $answer != *"$token"* ]]; then
+		echo "FRS-SELFTEST: Claude-Sperre: Der Lauf im fremden Projektordner kam nicht zustande"
 		echo "FRS-SELFTEST:   Antwort: ${answer:0:200}"
 		good=0
+	else
+		if [[ ! -e $dir/fremder-hook ]]; then
+			echo "FRS-SELFTEST: Claude-Sperre: Hooks aus einem Projektordner laufen nicht"
+		else
+			echo "FRS-SELFTEST: Claude-Sperre: Ein Hook aus einem Projektordner lief"
+			good=0
+		fi
+		if [[ ! -e $dir/fremder-mcp ]]; then
+			echo "FRS-SELFTEST: Claude-Sperre: Ein MCP-Server aus einem Projektordner startet nicht"
+		else
+			echo "FRS-SELFTEST: Claude-Sperre: Ein MCP-Server aus einem Projektordner wurde gestartet"
+			good=0
+		fi
+		if [[ -s $dir/fremd.anfrage ]] && ! grep -q "MERKWORT-FREMD-$token" "$dir/fremd.anfrage"; then
+			echo "FRS-SELFTEST: Claude-Sperre: Eine CLAUDE.md unter einem Einhängepunkt erreicht das Modell nicht"
+		else
+			echo "FRS-SELFTEST: Claude-Sperre: Der Text einer CLAUDE.md unter /mnt stand in der Anfrage an das Modell"
+			good=0
+		fi
 	fi
 
+	rm -rf "$fremd"
 	losetup -d "$loop" 2>/dev/null
 	((good))
 }

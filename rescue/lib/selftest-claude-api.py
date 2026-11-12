@@ -9,10 +9,12 @@ entscheidet dann Claude Code mit seinen Einstellungen, nicht das Modell.
 
 Die Attrappe lauscht nur auf 127.0.0.1 und nur, solange der Selbsttest läuft.
 
-Aufruf: selftest-claude-api.py PORTDATEI AUFRUF PROTOKOLL
+Aufruf: selftest-claude-api.py PORTDATEI AUFRUF PROTOKOLL [ANFRAGE]
     PORTDATEI   Hierhin schreibt die Attrappe den Port, den sie bekommen hat.
     AUFRUF      JSON-Datei: {"name": "Bash", "input": {"command": "..."}}
     PROTOKOLL   Je Anfrage eine Zeile.
+    ANFRAGE     Hierhin kommt die erste Anfrage der Sitzung im Wortlaut: alles, was Claude Code
+                dem Modell mitgibt. So zeigt sich, ob der Text einer CLAUDE.md beim Modell ankäme.
 """
 import json
 import os
@@ -20,6 +22,7 @@ import sys
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 PORT_FILE, CALL_FILE, LOG_FILE = sys.argv[1:4]
+REQUEST_FILE = sys.argv[4] if len(sys.argv) > 4 else ""
 
 
 def log(line):
@@ -75,6 +78,9 @@ class Handler(BaseHTTPRequestHandler):
         # Der Aufruf geht nur an die Sitzung selbst (sie bietet Bash an), nicht an Hilfsanfragen
         # ohne Werkzeuge, und nur einmal.
         want_tool = "Bash" in tools and not has_tool_result(body)
+        if want_tool and REQUEST_FILE and not os.path.exists(REQUEST_FILE):
+            with open(REQUEST_FILE, "wb") as f:
+                f.write(raw)
         log("POST %s stream=%s tools=%d call=%s" % (path, body.get("stream"), len(tools), want_tool))
         if path.endswith("/count_tokens"):
             self._json(200, {"input_tokens": 10})
