@@ -29,7 +29,7 @@ Du brauchst immer eine **Ziel-Disk**, die mindestens so groß ist wie die defekt
 
    Mit **Strg+B, D** verlässt du die Ansicht, die Rettung läuft weiter. Bei Stromausfall, USB-Abbruch oder Neustart geht es über **„Unterbrochene Rettung fortsetzen“** genau dort weiter, wo der Lauf aufgehört hat. Der Assistent fragt dabei noch einmal nach der Quell-Disk und setzt nur fort, wenn sie zum Rettungsfall gehört.
 4. **Mit dem Image weiterarbeiten:**
-   - Dateien kopieren (rsync oder Midnight Commander). BitLocker geht mit dem Wiederherstellungsschlüssel.
+   - Dateien kopieren (rsync oder Midnight Commander). BitLocker geht mit dem Wiederherstellungsschlüssel. Partitionen aus dem Image sind dabei nur lesend eingehängt, ohne Geräte-, Setuid- und Programmrechte. Verknüpfungen im Image werden beim Durchsehen nicht verfolgt, beim Kopieren bleiben sie als Verknüpfungen erhalten.
    - Image auf eine neue Disk schreiben. Die Größe wird angepasst.
    - Dateisystem auf einer Kopie reparieren
    - Dateien mit PhotoRec suchen

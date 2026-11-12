@@ -208,3 +208,39 @@ tmux_run() {
 	fi
 	tmux attach -t "$name" || true
 }
+
+# ---------------------------------------------------------------------------
+# Fremde Dateisysteme einhängen
+# ---------------------------------------------------------------------------
+# mount_has_opts EINHÄNGEPUNKT OPTION...   Gelten dort wirklich alle genannten Optionen?
+# Gefragt wird der Kernel (findmnt), nicht der eigene Aufruf.
+mount_has_opts() {
+	local mp=$1 line opt n=0
+	shift
+	while IFS= read -r line; do
+		n=$((n + 1))
+		for opt in "$@"; do
+			[[ ",$line," == *",$opt,"* ]] || return 1
+		done
+	done < <(findmnt -n -o VFS-OPTIONS -M "$mp" 2>/dev/null)
+	((n > 0))
+}
+
+# mount_enforce EINHÄNGEPUNKT OPTION...   Setzt fehlende Optionen am Einhängepunkt nach. Gelten
+# danach nicht alle, wird wieder ausgehängt: lieber nichts eingehängt als etwas ohne Schutz.
+# "remount,bind" ändert nur die Optionen des Einhängepunkts, nicht das Dateisystem. Mit -i ruft
+# mount dafür kein Hilfsprogramm des Dateisystems auf (ntfs-3g kann nicht neu einhängen).
+mount_enforce() {
+	local mp=$1 opts
+	shift
+	mount_has_opts "$mp" "$@" && return 0
+	opts=$(
+		IFS=,
+		echo "$*"
+	)
+	run sudo mount -i -o "remount,bind,$opts" "$mp"
+	mount_has_opts "$mp" "$@" && return 0
+	log "Einhängen abgelehnt: An $mp gelten nicht alle Schutzoptionen ($opts). Vorhanden: $(findmnt -n -o VFS-OPTIONS -M "$mp" 2>/dev/null | tr '\n' ' ')"
+	run sudo umount "$mp"
+	return 1
+}

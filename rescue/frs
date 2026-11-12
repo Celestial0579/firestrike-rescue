@@ -153,6 +153,10 @@ selftest_target() {
 			fi
 		fi
 		umount "$FRS_TARGET_MNT"
+		# Dasselbe Abbild noch einmal als Partition aus einem Image: nur lesend, dieselben Sperren.
+		if [[ $fs == ext4 ]]; then
+			selftest_image "$loop" || good=0
+		fi
 		losetup -d "$loop" 2>/dev/null
 		rm -f "$img"
 	done
@@ -161,6 +165,39 @@ selftest_target() {
 	else
 		echo "FRS-SELFTEST: Ziel-Dateisysteme: Schutzoptionen wirken nicht überall"
 	fi
+	((good))
+}
+
+# Partition aus einem Image im gebooteten System: nur lesend und ohne Sonderrechte. Das Abbild
+# enthält die Verknüpfung, die Gerätedatei und das Programm aus selftest_target.
+selftest_image() {
+	local part=$1 mp="$FRS_IMAGE_MNT/selbsttest" good=1
+	if ! part_mount_ro "$part" "$mp"; then
+		echo "FRS-SELFTEST: Image-Partition lässt sich nicht geschützt einhängen. Protokoll:"
+		tail -n 8 "$FRS_LOG" | sed 's/^/FRS-SELFTEST:   /'
+		return 1
+	fi
+	echo "FRS-SELFTEST: Image-Partition eingehängt als $(findmnt -n -o FSTYPE,VFS-OPTIONS -M "$mp" | tr -s ' \n' ' ')"
+	mount_has_opts "$mp" "${IMAGE_MOUNT_OPTS[@]}" || { echo "FRS-SELFTEST: Image-Partition: Schutzoptionen gelten nicht"; good=0; }
+	[[ -s $mp/neu ]] || { echo "FRS-SELFTEST: Image-Partition: Datei ist nicht lesbar"; good=0; }
+	if { echo x >"$mp/schreibprobe"; } 2>/dev/null; then
+		echo "FRS-SELFTEST: Image-Partition: Schreiben war möglich"
+		good=0
+	fi
+	if cat "$mp/verknuepfung" >/dev/null 2>&1; then
+		echo "FRS-SELFTEST: Image-Partition: Verknüpfung wurde verfolgt"
+		good=0
+	fi
+	if { echo x >"$mp/geraet"; } 2>/dev/null; then
+		echo "FRS-SELFTEST: Image-Partition: Gerätedatei wurde geöffnet"
+		good=0
+	fi
+	if "$mp/programm" 2>/dev/null; then
+		echo "FRS-SELFTEST: Image-Partition: Programm aus dem Image wurde ausgeführt"
+		good=0
+	fi
+	umount "$mp"
+	((good)) && echo "FRS-SELFTEST: Image-Partition: nur lesend, Schutzoptionen wirken"
 	((good))
 }
 

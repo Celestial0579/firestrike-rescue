@@ -36,31 +36,12 @@ target_mount_ntfs3g() {
 	run sudo ntfs-3g -o "nodev,nosuid,noexec,uid=$(id -u),gid=$(id -g)" "$1" "$FRS_TARGET_MNT"
 }
 
-# Gelten am Einhängepunkt wirklich alle Schutzoptionen? Gefragt wird der Kernel (findmnt),
-# nicht der eigene Aufruf.
-target_mount_has_opts() {
-	local line opt n=0
-	while IFS= read -r line; do
-		n=$((n + 1))
-		for opt in "${TARGET_MOUNT_OPTS[@]}"; do
-			[[ ",$line," == *",$opt,"* ]] || return 1
-		done
-	done < <(findmnt -n -o VFS-OPTIONS -M "$FRS_TARGET_MNT" 2>/dev/null)
-	((n > 0))
-}
+# Gelten am Einhängepunkt des Ziels wirklich alle Schutzoptionen (mount_has_opts in common.sh)?
+target_mount_has_opts() { mount_has_opts "$FRS_TARGET_MNT" "${TARGET_MOUNT_OPTS[@]}"; }
 
-# Setzt fehlende Schutzoptionen am Einhängepunkt nach. Gelten danach nicht alle, wird das Ziel
-# wieder ausgehängt: lieber kein Ziel als eines ohne Schutz.
-# "remount,bind" ändert nur die Optionen des Einhängepunkts, nicht das Dateisystem. Mit -i ruft
-# mount dafür kein Hilfsprogramm des Dateisystems auf (ntfs-3g kann nicht neu einhängen).
-target_mount_secure() {
-	target_mount_has_opts && return 0
-	run sudo mount -i -o "remount,bind,$(target_mount_optstring)" "$FRS_TARGET_MNT"
-	target_mount_has_opts && return 0
-	log "Ziel abgelehnt: Die Schutzoptionen $(target_mount_optstring) gelten nicht. Vorhanden: $(findmnt -n -o VFS-OPTIONS -M "$FRS_TARGET_MNT" 2>/dev/null | tr '\n' ' ')"
-	run sudo umount "$FRS_TARGET_MNT"
-	return 1
-}
+# Setzt fehlende Schutzoptionen nach. Gelten danach nicht alle, wird das Ziel wieder ausgehängt:
+# lieber kein Ziel als eines ohne Schutz (mount_enforce in common.sh).
+target_mount_secure() { mount_enforce "$FRS_TARGET_MNT" "${TARGET_MOUNT_OPTS[@]}"; }
 
 target_mount_part() {
 	local part=$1 fs

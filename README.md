@@ -40,7 +40,7 @@ Diese Schutzregeln gelten immer:
 - Fremde Disks werden nie automatisch eingehängt. Auch Swap, RAID und LVM werden nicht automatisch aktiviert.
 - Reparaturen laufen nur auf einer Kopie des Images.
 - Von welcher Disk gelesen wird, bestimmst du. Beim Fortsetzen wählst du die Quelle neu. Die Falldatei auf der Ziel-Disk kann deiner Wahl nur widersprechen.
-- Ein Ziel wird ohne Geräte-, Setuid- und Programmrechte eingehängt (`nodev,nosuid,noexec`). Verknüpfungen darauf werden nicht verfolgt (`nosymfollow`).
+- Ein Ziel wird ohne Geräte-, Setuid- und Programmrechte eingehängt (`nodev,nosuid,noexec`). Verknüpfungen darauf werden nicht verfolgt (`nosymfollow`). Für Partitionen aus einem Image gilt dasselbe, und sie sind nur lesend eingehängt.
 - Namen von Datenträgern bleiben Namen. Fallordner werden nur mit Namen aus Buchstaben, Ziffern, Punkt, Unterstrich und Bindestrich angeboten, und kein Menüeintrag wird als Option gelesen. Label und Partitionsnamen der Quelle kommen nur geprüft in den Klon-Job.
 - Texte von Datenträgern sind auch für Claude Daten, keine Anweisungen. Was die Geräte melden, steht in einer Datendatei (`zustand.txt`), nicht in einer `CLAUDE.md`.
 - Der persistente Speicher ist nur die Partition `FRS-DATA` auf dem Stick, von dem gestartet wurde. Unverschlüsselt wird er erst nach einer Rückfrage eingebunden, und `frs.conf` wird gelesen, nicht ausgeführt.

@@ -42,6 +42,7 @@ jobs:
       # Claude: Texte von Datenträgern stehen in einer Datendatei, nie in einer CLAUDE.md.
       # Persistenter Speicher: nur vom eigenen Stick, nie ungefragt, frs.conf als Daten.
       # Klon-Job: Label und Namen der Quelle werden nie zum Befehl.
+      # Image-Partitionen: nur lesend und mit Schutzoptionen, am Einhängepunkt nachgeprüft.
       - name: Schutz-Tests
         run: |
           sudo apt-get install -y -qq jq whiptail
@@ -54,6 +55,7 @@ jobs:
           bash tests/unit-claude-context.sh
           bash tests/unit-persist.sh
           bash tests/unit-clone-job.sh
+          bash tests/unit-image-mount.sh
       - name: Unit-Tests
         run: |
           sudo apt-get install -y -qq jq whiptail

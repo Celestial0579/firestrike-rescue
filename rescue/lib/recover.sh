@@ -197,11 +197,38 @@ image_attach() {
 	echo "$loop"
 }
 
+# Schutzoptionen für jede Partition aus einem Image. Ein Image ist der Inhalt einer fremden
+# Disk: Was darin liegt, wird gelesen und kopiert, sonst nichts.
+#   ro           Es wird nicht geschrieben.
+#   nodev        Gerätedateien im Image öffnen kein Gerät.
+#   nosuid       Setuid- und Setgid-Bits im Image wirken nicht.
+#   noexec       Aus dem Image wird nichts ausgeführt.
+#   nosymfollow  Verknüpfungen im Image werden nicht verfolgt. Eine Verknüpfung nach /etc oder
+#                in den persistenten Speicher zeigte sonst auf Dateien des Rettungssystems.
+#                Kopiert werden Verknüpfungen weiterhin, als Verknüpfungen.
+IMAGE_MOUNT_OPTS=(ro nodev nosuid noexec nosymfollow)
+
 # Partition nur lesend einhängen; behandelt NTFS, ext*, XFS, Btrfs und BitLocker.
+# Danach wird am Einhängepunkt geprüft, ob alle Schutzoptionen gelten (mount_enforce).
 part_mount_ro() {
-	local part=$1 mp=$2 fs
+	local part=$1 mp=$2 fs opts
+	opts=$(
+		IFS=,
+		echo "${IMAGE_MOUNT_OPTS[*]}"
+	)
 	fs=$(sudo blkid -o value -s TYPE "$part")
 	sudo install -d "$mp"
+	if mountpoint -q "$mp"; then
+		# Hängt genau diese Partition schon geschützt dort, bleibt sie eingehängt.
+		if [[ $(findmnt -n -o SOURCE -M "$mp" 2>/dev/null) == "$part" ]] && mount_has_opts "$mp" "${IMAGE_MOUNT_OPTS[@]}"; then
+			return 0
+		fi
+		# Über etwas anderes wird nicht eingehängt: Sonst wäre unklar, wofür die Prüfung gilt.
+		if ! run sudo umount "$mp"; then
+			log "Einhängen abgelehnt: $mp ist noch in Benutzung und lässt sich nicht aushängen."
+			return 1
+		fi
+	fi
 	case $fs in
 	BitLocker)
 		local key
@@ -209,16 +236,17 @@ part_mount_ro() {
 		sudo install -d "$FRS_RUN/dislocker-$(basename "$part")"
 		run sudo dislocker -r -V "$part" -p"$key" -- "$FRS_RUN/dislocker-$(basename "$part")" ||
 			{ die "Entschlüsselung fehlgeschlagen. Schlüssel prüfen."; return 1; }
-		run sudo mount -o ro,loop "$FRS_RUN/dislocker-$(basename "$part")/dislocker-file" "$mp" ||
-			run sudo ntfs-3g -o ro "$FRS_RUN/dislocker-$(basename "$part")/dislocker-file" "$mp"
+		run sudo mount -o "$opts,loop" "$FRS_RUN/dislocker-$(basename "$part")/dislocker-file" "$mp" ||
+			run sudo ntfs-3g -o ro,nodev,nosuid,noexec "$FRS_RUN/dislocker-$(basename "$part")/dislocker-file" "$mp"
 		;;
-	ntfs) run sudo mount -t ntfs3 -o ro "$part" "$mp" || run sudo ntfs-3g -o ro,recover "$part" "$mp" ;;
-	ext2 | ext3 | ext4) run sudo mount -o ro,noload "$part" "$mp" ;;
-	xfs) run sudo mount -o ro,norecovery "$part" "$mp" ;;
-	btrfs) run sudo mount -o ro,rescue=usebackuproot "$part" "$mp" || run sudo mount -o ro,rescue=all "$part" "$mp" ;;
+	ntfs) run sudo mount -t ntfs3 -o "$opts" "$part" "$mp" || run sudo ntfs-3g -o ro,nodev,nosuid,noexec,recover "$part" "$mp" ;;
+	ext2 | ext3 | ext4) run sudo mount -o "$opts,noload" "$part" "$mp" ;;
+	xfs) run sudo mount -o "$opts,norecovery" "$part" "$mp" ;;
+	btrfs) run sudo mount -o "$opts,rescue=usebackuproot" "$part" "$mp" || run sudo mount -o "$opts,rescue=all" "$part" "$mp" ;;
 	"") return 1 ;;
-	*) run sudo mount -o ro "$part" "$mp" ;;
-	esac
+	*) run sudo mount -o "$opts" "$part" "$mp" ;;
+	esac || return 1
+	mount_enforce "$mp" "${IMAGE_MOUNT_OPTS[@]}"
 }
 
 image_pick_part() {
