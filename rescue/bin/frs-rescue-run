@@ -5,6 +5,9 @@
 #   frs-rescue-run CASE_DIR [--no-pause]
 #
 # CASE_DIR enthält case.env mit SRC_ID (Seriennummer/WWN/Pfad) und SRC_SIZE.
+#
+# Der Fallordner liegt auf der Ziel-Disk, also auf einem Datenträger, den jemand angeschlossen
+# hat. case.env wird deshalb als Daten gelesen und geprüft, nie als Shell-Code (lib/casefile.sh).
 
 set -uo pipefail
 
@@ -17,15 +20,16 @@ IMG="$CASE/image.img"
 MAP="$CASE/image.map"
 LOG="$CASE/rescue.log"
 
-# shellcheck disable=SC1090
-. "$ENV"
+# Die Bibliothek liegt neben diesem Skript: installiert unter /usr/local/lib/frs, im Repository
+# unter rescue/lib. Bewusst ohne Umweg über die Umgebung, das Skript läuft als root.
+HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+LIB=$HERE/../lib/frs
+[[ -r $LIB/casefile.sh ]] || LIB=$HERE/../lib
+[[ -r $LIB/casefile.sh ]] || { echo "frs-rescue-run: $LIB/casefile.sh fehlt." >&2; exit 2; }
+# shellcheck disable=SC1091
+. "$LIB/casefile.sh"
 
 say() { printf '\n\033[1;33m%s\033[0m\n' "$*" | tee -a "$LOG"; }
-setv() {
-	# Schlüssel in case.env und in der laufenden Shell setzen/ersetzen
-	if grep -q "^$1=" "$ENV"; then sed -i "s|^$1=.*|$1=\"$2\"|" "$ENV"; else echo "$1=\"$2\"" >>"$ENV"; fi
-	printf -v "$1" "%s" "$2"
-}
 finish() {
 	if ((PAUSE)); then
 		echo
@@ -33,11 +37,29 @@ finish() {
 	fi
 	exit "${1:-0}"
 }
+# Schlüssel in der Falldatei setzen. Der Wert wird geprüft, die Datei neu geschrieben.
+setv() {
+	casefile_set "$ENV" "$1" "$2" && return 0
+	say "Die Falldatei lässt sich nicht fortschreiben: $CASEFILE_ERROR"
+	finish 2
+}
+
+if ! casefile_load "$ENV"; then
+	echo "Dieser Rettungsfall wird nicht verwendet. Seine Falldatei ist ungültig:" >&2
+	echo "  $CASEFILE_ERROR" >&2
+	echo "Die Datei wurde nur gelesen, nichts daraus wurde ausgeführt." >&2
+	finish 2
+fi
+SRC_ID=$(casefile_get SRC_ID)
+SRC_SIZE=$(casefile_get SRC_SIZE)
+SRC_LABEL=$(casefile_get SRC_LABEL "$SRC_ID")
 
 # Quelle über die Kennung auflösen; der Gerätepfad kann sich nach USB-Resets ändern.
 SRC=$(lsblk -J -b -d -o PATH,SERIAL,WWN | jq -r --arg id "$SRC_ID" \
 	'.blockdevices[] | select(((.serial // "") | gsub("^\\s+|\\s+$"; "")) == $id or .wwn == $id or .path == $id) | .path' | head -n1)
-[[ -z $SRC && -b $SRC_ID ]] && SRC=$SRC_ID
+# Ohne Seriennummer und WWN ist die Kennung der Gerätepfad selbst. Die Prüfung der Falldatei
+# lässt als Pfad nur /dev/… ohne ".." zu.
+[[ -z $SRC && $SRC_ID == /dev/* && -b $SRC_ID ]] && SRC=$SRC_ID
 if [[ -z $SRC ]]; then
 	say "Quell-Disk $SRC_ID ist nicht (mehr) angeschlossen. Der Stand ist gespeichert; nach dem Anschließen 'Unterbrochene Rettung fortsetzen' wählen."
 	setv STATE interrupted
@@ -53,7 +75,7 @@ esac
 
 setv STATE running
 setv SRC_PATH "$SRC"
-[[ -z ${STARTED:-} ]] && setv STARTED "$(date -Is)"
+[[ -z $(casefile_get STARTED) ]] && setv STARTED "$(date -Is)"
 [[ -f $CASE/smart-before.txt ]] || smartctl -x "$SRC" >"$CASE/smart-before.txt" 2>&1
 
 say "Firestrike Rescue · Datenrettung von $SRC ($SRC_ID) nach $IMG"
@@ -64,7 +86,7 @@ PHASES=(
 	"2|Rückwärts-Durchlauf über die übersprungenen Bereiche|-n -R"
 	"3|Fehlerbereiche einzeln mit Direktzugriff und 3 Wiederholungen|-d -r3"
 )
-DONE=${PHASE_DONE:-0}
+DONE=$(casefile_get PHASE_DONE 0)
 for ph in "${PHASES[@]}"; do
 	IFS='|' read -r n title opts <<<"$ph"
 	((n <= DONE)) && continue
@@ -98,7 +120,7 @@ setv STATE "done"
 	echo "Kennung:     $SRC_ID"
 	echo "Größe:       $SRC_SIZE Bytes"
 	echo "Image:       $IMG"
-	echo "Begonnen:    $STARTED"
+	echo "Begonnen:    $(casefile_get STARTED)"
 	echo "Beendet:     $(date -Is)"
 	echo "System:      Firestrike Rescue $(. /etc/frs-release 2>/dev/null; echo "${FRS_VERSION:-dev}")"
 	echo

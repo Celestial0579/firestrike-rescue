@@ -9,7 +9,7 @@ set -u
 
 FRS_LIB="${FRS_LIB:-/usr/local/lib/frs}"
 [[ -d $FRS_LIB ]] || FRS_LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib"
-for f in common disks safety target recover clone resize persist claude tools; do
+for f in common disks safety casefile target recover clone resize persist claude tools; do
 	# shellcheck disable=SC1090
 	. "$FRS_LIB/$f.sh"
 done
@@ -33,12 +33,8 @@ selftest() {
 		41984 89088 linear $loop 41984
 	EOF
 	src=/dev/mapper/frs-bad
-	cat >"$dir/case/case.env" <<-EOF
-		SRC_ID="$src"
-		SRC_SIZE="$((64 * 1024 * 1024))"
-		SRC_LABEL="Selbsttest (dm-error)"
-		STATE="new"
-	EOF
+	casefile_create "$dir/case/case.env" "SRC_ID=$src" "SRC_SIZE=$((64 * 1024 * 1024))" \
+		"SRC_LABEL=Selbsttest (dm-error)" "STATE=new"
 	set +e
 	frs-rescue-run "$dir/case" --no-pause
 	local rc=$?
@@ -55,7 +51,7 @@ selftest() {
 		echo "FRS-SELFTEST: gerettete Daten weichen ab"
 		ok=0
 	fi
-	grep -q '^STATE="done"' "$dir/case/case.env" || ok=0
+	[[ $(casefile_peek "$dir/case/case.env" STATE) == "done" ]] || ok=0
 	# Werkzeuge vorhanden?
 	local t
 	for t in ddrescue partclone.ntfs partclone.extfs ntfsresize smartctl nvme sgdisk sfdisk cryptsetup dislocker \
