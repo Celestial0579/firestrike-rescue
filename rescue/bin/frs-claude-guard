@@ -190,6 +190,23 @@ qsplit() {
 	done
 	printf '%s\n' "$out"
 }
+# Die Dateien der Sperre und die Ordner, in denen sie liegen.
+LOCKED=(/etc/claude-code/managed-settings.json /etc/claude-code/CLAUDE.md /usr/local/bin/frs-claude-guard /run/frs/readonly)
+LOCKED_DIRS='/|/etc|/usr|/usr/local|/usr/local/bin|/run|/run/frs'
+# names_lock TEXT   Nennt ein Wort des Texts eine Datei der Sperre über Platzhalter, ohne ihren
+#   Namen zu schreiben (/etc/claude*, /etc/{claude-code,x})? Maßgeblich ist der feste Anfang des
+#   Worts bis zum ersten Platzhalter: Beginnt eine Datei der Sperre damit, kann das Wort sie treffen.
+names_lock() {
+	local w lit p
+	for w in $1; do
+		[[ $w == /* && $w == *[*?[{]* ]] || continue
+		lit=${w%%[*?[{]*}
+		for p in "${LOCKED[@]}"; do
+			[[ $p == "$lit"* ]] && return 0
+		done
+	done
+	return 1
+}
 # Die Programme, die ein Dateisystem prüfen oder reparieren.
 FSCK='e2fsck|fsck(\.[a-z0-9]+)?|dosfsck'
 # fsck_writes ZEILE   Schreibt dieser fsck-Aufruf? Ohne -n ja, mit -y, -p oder -a auch.
@@ -226,6 +243,22 @@ check_command() {
 	if has "> *$re" || writes 'rm|mv|cp|tee|truncate|dd|ln|install|chmod|chown|chattr|shred|unlink|rsync' "$re" '' || writes sed "$re" '' "$lim"; then
 		deny "Die Liste der schreibgeschützten Quell-Disks (/run/frs/readonly) wird nicht verändert."
 	fi
+
+	# Dasselbe über Umwege: Platzhalter, die auf die Dateien der Sperre passen, und Löschen,
+	# Verschieben oder Umstellen der Rechte für einen Ordner, in dem sie liegen.
+	tmp="Die Regeln und die Sperre für Claude und die Liste der Quell-Disks werden auch nicht über Platzhalter oder ihren Ordner verändert."
+	while IFS= read -r line; do
+		names_lock "$line" && deny "$tmp"
+	done < <(segs 'rm|rmdir|mv|cp|tee|sed|truncate|dd|ln|install|chmod|chown|chattr|shred|unlink|rsync|find|tar|touch')
+	re='> *([^ ;|&()<>]+)(.*)$'
+	lim=$flat
+	while [[ $lim =~ $re ]]; do
+		names_lock "${BASH_REMATCH[1]}" && deny "$tmp"
+		lim=${BASH_REMATCH[2]}
+	done
+	re=" ($LOCKED_DIRS)/?$S"
+	writes 'rm|rmdir|mv|chmod|chown|chattr|shred|truncate|unlink' "$re" '' && deny "$tmp"
+	writes find "$re" '' ' -(delete|exec|execdir|ok|okdir|fprint|fprint0|fprintf|fls)( |$)' && deny "$tmp"
 
 	# --- Gesperrt 3: Reparaturen nur auf der Kopie --------------------------------------------
 	# Gesperrt ist der Aufruf, der image.img selbst nennt oder eine Variable benutzt, während
@@ -323,7 +356,8 @@ check_command() {
 	writes kpartx ' -[a-z]*[au]' " -[a-z]*r[a-z]*$S" && note "kpartx ohne -r legt beschreibbare Geräte an"
 
 	# Dateisysteme und Bootbereich ändern
-	word 'ntfsfix|ntfsrecover|ntfscp|ntfswipe|ntfstruncate|xfs_fsr|xfs_copy|xfs_mdrestore|resize2fs|ntfsresize|xfs_growfs|ntfslabel|e2label|fatlabel|exfatlabel|e4defrag|e2undo|btrfstune|btrfs-convert|testdisk|photorec|chntpw|ms-sys|wimapply' && note "ein Dateisystem wird verändert oder eine Disk durchsucht"
+	word 'ntfsfix|ntfsrecover|ntfscp|ntfswipe|ntfstruncate|xfs_fsr|xfs_copy|xfs_mdrestore|resize2fs|ntfsresize|xfs_growfs|ntfslabel|e2label|fatlabel|dosfslabel|exfatlabel|swaplabel|tune\.exfat|(resize|defrag|sload)\.f2fs|e4defrag|e2undo|e2image|btrfstune|btrfs-convert|btrfs-image|btrfs-select-super|btrfs-zero-log|fixparts|testdisk|photorec|chntpw|reged|ms-sys|wimapply' && note "ein Dateisystem wird verändert oder eine Disk durchsucht"
+	writes 'xfs_io|qemu-io' '' " -[a-z]*r[a-z]*$S| --read-only$S" && note "ein Werkzeug für rohe Schreibzugriffe läuft ohne -r"
 	writes xfs_repair '' " -[A-Za-z]*n[A-Za-z]*$S" && note "xfs_repair ohne -n verändert das Dateisystem"
 	word tune2fs && ! only_reads tune2fs '-l' '-l' && note "tune2fs verändert das Dateisystem"
 	word xfs_admin && ! only_reads xfs_admin '-l|-u' '-l|-u' && note "xfs_admin verändert das Dateisystem"
@@ -332,6 +366,7 @@ check_command() {
 		fsck_writes "$line" && note "fsck ohne -n verändert das Dateisystem"
 	done < <(segs "$FSCK")
 	word 'grub-install|grub-mkconfig|update-grub|os-prober' && note "der Bootbereich wird verändert oder alle Partitionen werden eingehängt"
+	word bootctl && ! sub_reads bootctl 'status|list|is-installed' && note "bootctl verändert den Bootbereich"
 	word efibootmgr && ! only_reads efibootmgr '-v|--verbose|-V|--version|-h|--help|-u|--unicode' '' && note "efibootmgr verändert die Boot-Einträge der Firmware"
 	has "${B}wimlib-imagex +apply" && note "ein Windows-Abbild wird auf eine Partition geschrieben"
 	word qemu-img && { ! sub_reads qemu-img 'info|check|compare|map|measure' || writes qemu-img ' (-r|--repair)' ''; } && note "qemu-img verändert ein Abbild oder schreibt auf ein Gerät"
@@ -351,6 +386,8 @@ check_command() {
 
 	# LVM, RAID, Verschlüsselung, Geräte aus Abbildern
 	word '(pv|vg|lv)(create|remove|change|resize|extend|reduce|rename|move|convert|import|export|merge|split|cfgrestore|importclone|mknodes)' && note "LVM wird verändert oder aktiviert"
+	writes 'pvscan|vgscan|pvck|vgck' ' (-a|--activate|--repair|--updatemetadata|--mknodes)' '' && note "LVM wird verändert oder aktiviert"
+	word integritysetup && ! sub_reads integritysetup 'dump|status|close' && note "integritysetup verändert den Datenträger"
 	re='-D|--detail|-E|--examine|-Q|--query|-V|--version|-h|--help'
 	word mdadm && ! only_reads mdadm "$re|-s|--scan|-v|--verbose|-b|--brief|-Y|--export" "$re" && note "ein RAID wird zusammengesetzt oder verändert"
 	word dmsetup && ! sub_reads dmsetup 'ls|info|status|table|deps|targets|version|help' && note "dmsetup legt Geräte an oder verändert sie"

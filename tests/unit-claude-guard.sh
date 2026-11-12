@@ -100,6 +100,18 @@ sudo chattr -i /run/frs/readonly
 sudo cp /usr/local/bin/frs-claude-guard /tmp/x
 sudo sed -i -e /sdb/d /run/frs/readonly
 sudo truncate -s 0 /run/frs/readonly
+sudo rm -rf /etc/claude*
+sudo rm /etc/cl*/man*
+sudo chmod 000 /usr/local/bin/frs-*
+sudo rm -f /run/frs/*
+sudo sh -c ': > /etc/cl*/m*.json'
+sudo mv /etc/claude-{code,alt}
+sudo rm -rf /etc
+sudo mv /usr/local/bin /usr/local/bin.alt
+sudo chmod -R 000 /usr/local/bin/
+sudo find /etc -name 'man*' -delete
+sudo find / -name '*guard*' -exec rm {} +
+sudo rm -rf /*
 EOF
 
 echo "Gesperrt: Reparatur auf dem Original-Image"
@@ -254,6 +266,17 @@ sudo sed -i s/a/b/ /usr/local/lib/frs/safety.sh
 echo "true" | sudo tee -a /usr/local/lib/frs/common.sh
 sudo cp /tmp/frs /usr/local/bin/frs
 sudo parted --script /dev/sdc mklabel gpt
+sudo e2image -I /dev/sdc1 meta.e2i
+sudo swaplabel -L x /dev/sdc2
+sudo resize.f2fs /dev/sdc1
+sudo tune.exfat -L NEU /dev/sdc1
+sudo fixparts /dev/sdc
+sudo qemu-io -c 'write 0 4k' image.img.repair
+sudo btrfs-image -r meta.img /dev/sdc1
+sudo bootctl install
+sudo reged -e /mnt/x/Windows/System32/config/SYSTEM
+sudo pvscan --cache -aay
+sudo integritysetup format /dev/sdc1
 EOF
 guard "sudo mkfs.ext4 /dev/sdc1"
 check "die Rückfrage sagt dem Techniker, warum" '[[ $(jq -r .hookSpecificOutput.permissionDecisionReason <<<"$OUT") == "Rettungssystem: ein Dateisystem wird neu angelegt. Der Techniker bestätigt"*"Seriennummer"* && $(jq -r .hookSpecificOutput.hookEventName <<<"$OUT") == PreToolUse ]]'
@@ -392,6 +415,16 @@ sed -n 1,40p /usr/local/lib/frs/safety.sh
 head -n 30 /usr/local/lib/frs/common.sh
 ls -la /mnt/frs-target/FRS/
 cat /mnt/frs-target/FRS/20261112-0900_Modell_1234/report.txt
+ls -la /etc/claude*
+du -sh /etc/* 2>/dev/null | tail
+sudo rm -f /mnt/frs-target/tmp/*.part
+find /mnt/frs-image/loop0p2 -name '*.jpg'
+sudo find /mnt/frs-target/ausgabe -name '*.tmp' -delete
+sudo chown -R rescue: /mnt/frs-target/ausgabe
+sudo qemu-io -r -c 'read 0 4k' image.img
+sudo bootctl status
+sudo pvscan
+ls /usr/local/bin/
 EOF
 
 echo "Jedes Werkzeug, das einen Befehl ausführt"
