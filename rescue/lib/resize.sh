@@ -85,8 +85,19 @@ resize_part() {
 	clear
 	echo "Verkleinere Dateisystem auf $part …"
 	case $fs in
-	ntfs) yes y | runv sudo ntfsresize --force -s "$((bytes - 1048576))" "$part" || { pause; return 0; } ;;
-	*) runv sudo e2fsck -fy "$part"; runv sudo resize2fs "$part" "$(((bytes - 1048576) / 1024))K" || { pause; return 0; } ;;
+	ntfs) yes y | runv sudo ntfsresize --force -s "$((bytes - 1048576))" "$part" || { echo "Das Dateisystem ließ sich nicht verkleinern. Die Partition bleibt, wie sie ist."; pause; return 0; } ;;
+	*)
+		# e2fsck: 0 = sauber, 1 und 2 = Fehler behoben, ab 4 bleiben Fehler stehen. Dann wird
+		# nichts verkleinert.
+		local frc=0
+		runv sudo e2fsck -fy "$part" || frc=$?
+		if ((frc >= 4)); then
+			echo "Die Prüfung des Dateisystems ist gescheitert (e2fsck: $frc). Es wurde nichts verkleinert."
+			pause
+			return 0
+		fi
+		runv sudo resize2fs "$part" "$(((bytes - 1048576) / 1024))K" || { echo "Das Dateisystem ließ sich nicht verkleinern. Die Partition bleibt, wie sie ist."; pause; return 0; }
+		;;
 	esac
 	echo "Verkleinere Partition …"
 	echo ", ${want}GiB" | runv sudo sfdisk --no-reread -N "$num" "$dev"

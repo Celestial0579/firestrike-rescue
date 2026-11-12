@@ -44,11 +44,42 @@ run() {
 	return "$rc"
 }
 
-# runv CMD...  Wie run, zeigt die Ausgabe aber zusätzlich auf dem Bildschirm.
+# term_clean   Nimmt Steuerzeichen aus der Ausgabe eines Werkzeugs, bevor sie Bildschirm und
+# Protokoll erreicht. fsck, xfs_repair, sgdisk und andere geben Datei-, Partitions- und
+# Volumennamen von fremden Datenträgern aus, also auch Steuerfolgen für das Terminal: Bildschirm
+# löschen, Cursor setzen, eigenen Text an die Stelle schreiben.
+# Es bleiben Zeilenwechsel, Wagenrücklauf (Fortschrittsanzeigen) und Tabulator. Entfernt werden
+# die übrigen Steuerzeichen bis 0x1F, DEL, die Steuerzeichen U+0080 bis U+009F (die
+# Linux-Konsole liest U+009B wie ESC [) und einzelne Bytes, die kein gültiges UTF-8 bilden.
+# Gearbeitet wird ohne Puffer, damit Fortschrittsanzeigen sofort erscheinen. perl gehört zum
+# Grundsystem. Fehlt es doch, bleibt tr für die Zeichen bis 0x1F.
+term_clean() {
+	if command -v perl >/dev/null 2>&1; then
+		perl -e '
+			$| = 1;
+			my $rest = "";
+			while (sysread(STDIN, my $d, 65536)) {
+				$d = $rest . $d;
+				$rest = "";
+				# Ein UTF-8-Zeichen, das am Ende des Blocks angefangen ist, wartet auf den nächsten.
+				if ($d =~ s/([\xc2-\xdf]|[\xe0-\xef][\x80-\xbf]?|[\xf0-\xf4][\x80-\xbf]{0,2})\z//) { $rest = $1; }
+				$d =~ s/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]|\xc2[\x80-\x9f]//g;
+				$d =~ s/([\xc2-\xdf][\x80-\xbf]|[\xe0-\xef][\x80-\xbf]{2}|[\xf0-\xf4][\x80-\xbf]{3})|[\x80-\xff]/defined $1 ? $1 : ""/ge;
+				syswrite(STDOUT, $d);
+			}'
+	else
+		LC_ALL=C stdbuf -o0 tr -d '\000-\010\013\014\016-\037\177'
+	fi
+}
+
+# runv CMD...  Wie run, zeigt die Ausgabe aber zusätzlich auf dem Bildschirm (gefiltert, siehe
+# term_clean). Zurück kommt der Rückgabewert des Befehls, nicht der des Filters oder von tee:
+# Wer auf einen Fehler reagiert ("runv … || return"), muss ihn auch erfahren.
 runv() {
 	log "\$ $*"
-	local rc=0
-	"$@" 2>&1 | tee -a "${FRS_LOG:-/dev/null}" || rc=${PIPESTATUS[0]}
+	local rc
+	"$@" 2>&1 | term_clean | tee -a "${FRS_LOG:-/dev/null}"
+	rc=${PIPESTATUS[0]}
 	log "  -> rc=$rc"
 	return "$rc"
 }
