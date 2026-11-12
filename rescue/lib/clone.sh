@@ -78,7 +78,8 @@ clone_from_device() {
 		# Keine Partitionstabelle: ganzes Gerät 1:1
 		((tsize >= ssize)) || { die "Quelle ohne Partitionstabelle und Ziel ist kleiner. Das geht nicht."; return 0; }
 		safety_confirm_target "$tid" "Ziel wird mit dem Inhalt von $sdev überschrieben." "$tdev" || return 0
-		tmux_run "frs-klon" bash -c "sudo dd if='$sdev' of='$tdev' bs=4M iflag=fullblock conv=fsync status=progress; echo; read -r -p 'Fertig. Enter … ' _"
+		# Die Pfade sind eigene Argumente, nie Teil des Befehlstexts.
+		tmux_run "frs-klon" bash -c 'sudo dd if="$1" of="$2" bs=4M iflag=fullblock conv=fsync status=progress; echo; read -r -p "Fertig. Enter … " _' _ "$sdev" "$tdev"
 		return 0
 	fi
 

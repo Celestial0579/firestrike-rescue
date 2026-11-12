@@ -67,6 +67,7 @@ selftest() {
 	[[ $(casefile_peek "$dir/case/case.env" STATE) == "done" ]] || ok=0
 	selftest_target "$dir" || ok=0
 	selftest_search "$dir" || ok=0
+	selftest_tmux "$dir" || ok=0
 	selftest_claude "$dir" || ok=0
 	# Werkzeuge vorhanden?
 	local t
@@ -263,6 +264,26 @@ selftest_search() {
 	losetup -d "$loop" 2>/dev/null
 	rm -f "$img"
 	((good))
+}
+
+# Lange Läufe (Rettung, Klon, Kopien) starten in tmux. Pfade gehen dabei als eigene Argumente
+# an das Programm und stehen nie im Text des Befehls. Geprüft wird mit dem tmux der ISO, dass
+# ein Argument mit Anführungszeichen und Semikolon unverändert ankommt und nichts daraus läuft.
+selftest_tmux() {
+	local dir=$1 out="$1/tmux-argumente" a="ein Pfad mit ' und \"" b="zwei; touch $1/MARKE-tmux" i
+	rm -f "$out" "$dir/MARKE-tmux"
+	tmux new-session -d -s frs-selftest -x 80 -y 24 bash -c 'printf "%s|" "$1" "$2" >"$3"' _ "$a" "$b" "$out"
+	for ((i = 0; i < 50; i++)); do
+		[[ -s $out ]] && break
+		sleep 0.1
+	done
+	tmux kill-session -t frs-selftest 2>/dev/null
+	if [[ $(cat "$out" 2>/dev/null) == "$a|$b|" && ! -e $dir/MARKE-tmux ]]; then
+		echo "FRS-SELFTEST: tmux: Pfade kommen als Argumente an, nichts daraus wird ausgeführt"
+	else
+		echo "FRS-SELFTEST: tmux: Argumente kamen verändert an oder wurden ausgeführt"
+		return 1
+	fi
 }
 
 # Sperre für Claude im gebooteten System. Die Claude-Code-CLI der ISO läuft gegen eine Attrappe

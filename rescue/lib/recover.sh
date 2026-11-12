@@ -51,7 +51,8 @@ recover_run() {
 		ui_msg "Rettung läuft weiter" "Die Rettung läuft im Hintergrund weiter.\n\nZurück zur Ansicht: Hauptmenü > Laufende Rettung anzeigen\noder auf tty2 (Alt+F2): tmux attach -t frs-rettung"
 		return 0
 	fi
-	cp -f "$FRS_LOG" "$case/" 2>/dev/null || true
+	# Liegt im Fallordner schon etwas unter diesem Namen, wird es ersetzt und nie durchschrieben.
+	cp -f --remove-destination "$FRS_LOG" "$case/" 2>/dev/null || true
 	local state
 	if ! state=$(casefile_peek "$case/case.env" STATE); then
 		recover_case_invalid "$case"
@@ -191,7 +192,8 @@ recover_after() {
 		disk) image_to_disk "$case" "$img" ;;
 		repair) image_repair "$case" "$img" ;;
 		carve) image_carve "$case" "$img" ;;
-		vhdx) tmux_run "frs-vhdx" bash -c "qemu-img convert -p -O vhdx -o subformat=dynamic '$img' '$case/image.vhdx'; echo; read -r -p 'Fertig. Enter … ' _" ;;
+		# Pfade sind eigene Argumente, nie Teil des Befehlstexts (auch unten bei rsync und cp).
+		vhdx) tmux_run "frs-vhdx" bash -c 'qemu-img convert -p -O vhdx -o subformat=dynamic "$1" "$2"; echo; read -r -p "Fertig. Enter … " _' _ "$img" "$case/image.vhdx" ;;
 		report) ui_textfile "Bericht" "$case/report.txt" ;;
 		claude) claude_start "$case" ;;
 		done) return 0 ;;
@@ -291,7 +293,8 @@ image_copy_files() {
 	all)
 		local ropts="-aHAX"
 		[[ $(target_fs) == exfat || $(target_fs) == ntfs* || $(target_fs) == fuseblk ]] && ropts="-rt --modify-window=2"
-		tmux_run "frs-kopie" bash -c "sudo rsync $ropts --info=progress2 --ignore-errors '$mp/' '$dst/' 2>&1 | tee -a '$case/kopie.log'; echo; read -r -p 'Fertig. Enter … ' _"
+		# $1 sind die Optionen von rsync (fester Text von oben) und werden mit Absicht in Wörter zerlegt.
+		tmux_run "frs-kopie" bash -c 'sudo rsync $1 --info=progress2 --ignore-errors "$2/" "$3/" 2>&1 | tee -a "$4"; echo; read -r -p "Fertig. Enter … " _' _ "$ropts" "$mp" "$dst" "$case/kopie.log"
 		;;
 	mc) sudo mc "$mp" "$dst" ;;
 	shell) (cd "$mp" && PS1="[frs image] \w \$ " bash --norc -i) ;;
@@ -311,7 +314,7 @@ image_repair() {
 	if [[ ! -f $copy ]]; then
 		(($(target_free) > need)) || { die "Für die Kopie fehlen $(human "$need") auf dem Ziel."; return 0; }
 		ui_yesno "Reparatur" "Das Original-Image bleibt unverändert. Repariert wird eine Kopie:\n$copy\n\nDas belegt etwa $(human "$need"). Kopie jetzt anlegen?" || return 0
-		tmux_run "frs-kopie" bash -c "cp --sparse=always '$img' '$copy' && echo Kopie fertig; read -r -p 'Enter … ' _"
+		tmux_run "frs-kopie" bash -c 'cp --sparse=always "$1" "$2" && echo Kopie fertig; read -r -p "Enter … " _' _ "$img" "$copy"
 	fi
 	loop=$(image_attach "$copy" rw)
 	part=$(image_pick_part "$loop") || return 0

@@ -98,6 +98,8 @@ tmux_run() {
 }
 qemu-img() { :; }
 export -f qemu-img
+# Der Filter für angezeigte Texte gehört zu common.sh und spielt hier keine Rolle.
+text_clean() { cat; }
 
 # ---------------------------------------------------------------------------
 echo "Der Assistent vergibt nur zulässige Namen:"
@@ -216,6 +218,36 @@ rm -f "$T/menues" "$T/tmux" "$T/msg"
 echo x >"$T/menues"
 recover_after "$T/ziel/FRS/20261112-0900_WDC_gut"
 check "zulässiger Name: die Umwandlung wird gestartet" '[[ $(cat "$T/tmux" 2>/dev/null) == "frs-vhdx bash -c qemu-img convert"*"/FRS/20261112-0900_WDC_gut/image.vhdx"* ]]'
+
+# ---------------------------------------------------------------------------
+# Zweite Sicherung: Auch ohne die Prüfung des Namens wird kein Pfad zum Befehl. Pfade sind
+# eigene Argumente des Befehls und stehen nie in seinem Text.
+echo "Pfade sind Argumente, nie Befehlstext:"
+check "kein Befehlstext in doppelten Anführungszeichen mehr (bash -c \"…\")" '! grep -rn "bash -c \"" "$REPO/rescue/lib" "$REPO/rescue/frs" "$REPO/rescue/bin"'
+casefile_dirname_ok() { return 0; }
+zielfall "y'; touch MARKE-argument; echo '"
+rm -f "$T/menues" "$T/tmux" "$T/msg"
+echo x >"$T/menues"
+recover_after "$T/ziel/FRS/y'; touch MARKE-argument; echo '"
+check "Name mit Anführungszeichen, Namensprüfung abgeschaltet: Der Befehl startet, der Name bleibt ein Argument" '[[ -s $T/tmux ]] && ! markers'
+# Das Protokoll wird in den Fallordner kopiert. Liegt dort eine Verknüpfung gleichen Namens,
+# wird sie ersetzt und nicht durchschrieben.
+unset -f recover_run
+# shellcheck disable=SC1091
+. "$REPO/rescue/lib/recover.sh"
+casefile_dirname_ok() { return 0; }
+tmux_run() { :; }
+tmux() { return 1; }
+recover_case_invalid() { :; }
+recover_after() { :; }
+zielfall 20261112-0900_Protokoll
+echo "geheim" >"$T/opfer"
+FRS_LOG="$T/frs-sitzung.log"
+echo "Zeile aus dem Protokoll" >"$FRS_LOG"
+ln -s "$T/opfer" "$T/ziel/FRS/20261112-0900_Protokoll/$(basename "$FRS_LOG")"
+recover_run "$T/ziel/FRS/20261112-0900_Protokoll" /dev/sdx >/dev/null 2>&1
+check "Verknüpfung mit dem Namen des Protokolls: Ihr Ziel bleibt unberührt" '[[ $(cat "$T/opfer") == geheim ]]'
+check "im Fallordner liegt danach das Protokoll als gewöhnliche Datei" '[[ ! -L $T/ziel/FRS/20261112-0900_Protokoll/frs-sitzung.log && $(cat "$T/ziel/FRS/20261112-0900_Protokoll/frs-sitzung.log") == "Zeile aus dem Protokoll" ]]'
 
 cd "$REPO" || exit 1
 rm -rf "$T"
