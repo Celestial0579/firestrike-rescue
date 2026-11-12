@@ -213,6 +213,8 @@ TEXT_UNSAFE_RE='[^\x{20}-\x{5B}\x{5D}-\x{5F}\x{61}-\x{7E}\x{A1}-\x{AC}\x{AE}-\x{
 # text_clean [BREITE]   Filtert die Standardeingabe Zeile für Zeile. Mit BREITE wird jede Zeile
 # auf so viele Zeichen gekürzt und endet dann auf "…". Eine gekürzte Zeile wird im Dialog nicht
 # umbrochen: Auch der Rest eines langen Labels kann so keine eigene Zeile bilden.
+# Die Breite übergibt safety.sh. In dieser Datei allein sieht shellcheck keinen solchen Aufruf.
+# shellcheck disable=SC2120
 text_clean() {
 	jq -Rr --arg re "$TEXT_UNSAFE_RE" --argjson w "${1:-0}" \
 		'gsub($re; "?") | if $w > 1 and length > $w then .[0:$w - 1] + "…" else . end'

@@ -87,12 +87,12 @@ check "die letzten 4 Zeichen der Seriennummer bestätigen" '[[ $RC == 0 ]]'
 echo "Bericht aus dem Fallordner mit Steuerzeichen:"
 printf 'Quelle: Testdisk\nModell: \033[2J\033[HALLES GERETTET\nZeile\\nmit Backslash\n' >"$T/report.txt"
 sum=$(md5sum <"$T/report.txt")
-show datei "$ENTER"
+show datei "\t$ENTER"
 check "angezeigt wird die gefilterte Fassung" '[[ $SCREEN == *"Modell: ?[2J?[HALLES GERETTET"* && $SCREEN == *"Zeile?nmit Backslash"* ]]'
 check "die Datei selbst bleibt, wie sie ist" '[[ $(md5sum <"$T/report.txt") == "$sum" ]]'
 
 echo "Eigener Text mit Zeilenwechsel:"
-show text "$ENTER"
+show text "\t$ENTER"
 check "\"\\n\" wird zum Zeilenwechsel, nicht zu ?n" '[[ $SCREEN == *"Quelle: A"* && $SCREEN == *"Ziel:   B"* && $SCREEN != *"?n"* && $SCREEN != *"A\\nZiel"* ]]'
 
 rm -rf "$T"

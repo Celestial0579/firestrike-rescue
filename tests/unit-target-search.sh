@@ -147,7 +147,7 @@ part() {
 }
 # machine   Neue Maschine: nichts eingehängt, nichts geschützt, keine Partitionen.
 machine() {
-	rm -rf "$T/inhalt" "$T/ro" "$T/mnt" "$T/mounted" "$T/source" "$T/events" "$T/log" "$FRS_RUN/search-lock"
+	rm -rf "${T:?}/inhalt" "${T:?}/ro" "${T:?}/mnt" "${T:?}/mounted" "${T:?}/source" "${T:?}/events" "${T:?}/log" "$FRS_RUN/search-lock"
 	mkdir -p "$T/inhalt" "$T/ro"
 	PARTS="" UMOUNT_OK=1 SETRO_FAIL="" DIRTY="" REFUSE=""
 	TARGET_CASE_PART="" TARGET_CASE_ACTIVE=0
