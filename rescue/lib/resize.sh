@@ -178,6 +178,11 @@ resize_expert() {
 	tid=$(disk_pick "Experte" "Welche Disk?") || return 0
 	dev=$(disk_resolve "$tid")
 	t=$(ui_menu "Experte" "Werkzeug für $dev:" -- gdisk "gdisk (GPT)" fdisk "fdisk" parted "parted" cfdisk "cfdisk (Menü)") || return 0
-	ui_msg "Hinweis" "Änderungen in diesen Werkzeugen sind sofort wirksam. Der Schreibschutz des Assistenten gilt hier nur für als Quelle markierte Disks."
+	# Die Werkzeuge schreiben sofort und fragen dabei höchstens nach dem Befehl, nie nach der Disk.
+	# Deshalb gilt auch hier die Bestätigung des Assistenten.
+	safety_confirm_target "$tid" "$t arbeitet direkt auf dieser Disk, Änderungen sind sofort wirksam. Der Schreibschutz des Assistenten gilt nur für Disks, die als Quelle markiert sind." || return 0
+	# Gestartet wird auf der Disk, die bestätigt wurde, auch wenn ihr Gerätepfad inzwischen ein anderer ist.
+	dev=$(disk_resolve "$tid")
+	[[ -n $dev ]] || { die "Die Disk $tid ist nicht mehr zu finden."; return 0; }
 	sudo "$t" "$dev"
 }

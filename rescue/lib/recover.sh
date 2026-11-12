@@ -23,13 +23,15 @@ recover_wizard() {
 	model=$(jq -r '.model // "Disk"' <<<"$sj" | tr -c 'A-Za-z0-9._-' '_' | sed 's/_*$//')
 	case="$FRS_TARGET_MNT/FRS/$(date +%Y%m%d-%H%M)_${model}_${sid//[^A-Za-z0-9]/_}"
 	mkdir -p "$case" || { die "Kann $case nicht anlegen."; return 0; }
-	cat >"$case/case.env" <<-EOF
-		SRC_ID="$sid"
-		SRC_SIZE="$size"
-		SRC_LABEL="$(disk_label "$sj")"
-		TARGET_ID="$tid"
-		STATE="new"
-	EOF
+	# Eine Kennung, die sich in der Falldatei nicht darstellen lässt, wird durch den Gerätepfad
+	# ersetzt. Die Disk wird darüber genauso gefunden, solange sie nicht umgesteckt wird.
+	casefile_value_ok SRC_ID "$sid" || sid=$sdev
+	casefile_value_ok TARGET_ID "$tid" || tid=$(disk_resolve "$tid")
+	if ! casefile_create "$case/case.env" "SRC_ID=$sid" "SRC_SIZE=$size" \
+		"SRC_LABEL=$(casefile_clean_text "$(disk_label "$sj")")" "TARGET_ID=$tid" "STATE=new"; then
+		die "Der Rettungsfall konnte nicht angelegt werden: $CASEFILE_ERROR"
+		return 0
+	fi
 	log "Neuer Rettungsfall: $case"
 	recover_run "$case"
 }
@@ -43,14 +45,22 @@ recover_run() {
 		return 0
 	fi
 	cp -f "$FRS_LOG" "$case/" 2>/dev/null || true
-	# shellcheck disable=SC1091
-	local STATE=""
-	. "$case/case.env"
-	if [[ $STATE == "done" ]]; then
+	local state
+	if ! state=$(casefile_peek "$case/case.env" STATE); then
+		recover_case_invalid "$case"
+	elif [[ $state == "done" ]]; then
 		recover_after "$case"
 	else
-		ui_msg "Rettung unterbrochen" "Die Rettung wurde unterbrochen (Status: $STATE).\n\nFortsetzen: Hauptmenü > Unterbrochene Rettung fortsetzen.\nDer bisherige Stand bleibt erhalten."
+		ui_msg "Rettung unterbrochen" "Die Rettung wurde unterbrochen (Status: $state).\n\nFortsetzen: Hauptmenü > Unterbrochene Rettung fortsetzen.\nDer bisherige Stand bleibt erhalten."
 	fi
+}
+
+# Sagt, warum ein Rettungsfall nicht verwendet wird. Die Falldatei kommt von der Ziel-Disk und
+# wird nur gelesen und geprüft (lib/casefile.sh).
+recover_case_invalid() {
+	casefile_load "$1/case.env" || true
+	log "Falldatei abgelehnt: $1/case.env: $CASEFILE_ERROR"
+	ui_msg "Rettungsfall nicht verwendbar" "Die Falldatei von $(basename "$1") ist ungültig:\n\n$CASEFILE_ERROR\n\nDie Datei wurde nur gelesen, nichts daraus wurde ausgeführt. Stammt die Disk aus fremder Hand, ist Vorsicht angebracht. Image und Protokoll im Fallordner bleiben unberührt."
 }
 
 recover_resume() {
@@ -64,18 +74,22 @@ recover_resume() {
 	local items=() c st
 	for c in "$FRS_TARGET_MNT"/FRS/*/; do
 		[[ -f $c/case.env ]] || continue
-		st=$(grep '^STATE=' "$c/case.env" | cut -d'"' -f2)
+		st=$(casefile_peek "$c/case.env" STATE) || st="ungültig"
 		items+=("$(basename "$c")" "[$st]")
 	done
 	local pick
 	pick=$(ui_menu "Fortsetzen" "Welcher Rettungsfall?" -- "${items[@]}") || return 0
 	c="$FRS_TARGET_MNT/FRS/$pick"
-	st=$(grep '^STATE=' "$c/case.env" | cut -d'"' -f2)
+	if ! casefile_load "$c/case.env"; then
+		recover_case_invalid "$c"
+		return 0
+	fi
+	st=$(casefile_get STATE)
 	if [[ $st == "done" ]]; then
 		recover_after "$c"
 	else
 		local sid sdev
-		sid=$(grep '^SRC_ID=' "$c/case.env" | cut -d'"' -f2)
+		sid=$(casefile_get SRC_ID)
 		sdev=$(disk_resolve "$sid")
 		[[ -n $sdev ]] && safety_set_ro "$sdev"
 		recover_run "$c"
