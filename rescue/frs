@@ -308,6 +308,12 @@ selftest_claude_answer() {
 		tr -s '\n\t ' ' '
 }
 
+# selftest_claude_started VERZEICHNIS NAME   Ist die Sitzung zustande gekommen? Ein Befehl, der
+#   nicht lief, beweist sonst nichts.
+selftest_claude_started() {
+	jq -e 'select(.type == "system" and .subtype == "init")' "$1/$2.json" >/dev/null 2>&1
+}
+
 selftest_claude() {
 	local dir=$1/claude loop good=1 token answer
 	mkdir -p "$dir/arbeit" "$dir/home" "$dir/fremd/.claude"
@@ -375,22 +381,26 @@ selftest_claude() {
 	# Erlaubnis-Regeln gelten nur aus dem Rettungssystem. Eine Erlaubnis von außen (hier über die
 	# Kommandozeile, sonst aus einem Projektordner oder vom Benutzer) schaltet keine Rückfrage ab.
 	selftest_claude_run "$dir" erlaubt "touch $dir/arbeit/lief-erlaubt" "$dir/arbeit" --allowedTools Bash
-	if [[ ! -e $dir/arbeit/lief-erlaubt ]]; then
+	answer=$(selftest_claude_answer "$dir" erlaubt)
+	if selftest_claude_started "$dir" erlaubt && [[ ! -e $dir/arbeit/lief-erlaubt ]]; then
 		echo "FRS-SELFTEST: Claude-Sperre: eine Erlaubnis von außen schaltet keine Rückfrage ab"
 	else
-		echo "FRS-SELFTEST: Claude-Sperre: Mit einer Erlaubnis von außen lief ein Befehl ohne Rückfrage"
+		echo "FRS-SELFTEST: Claude-Sperre: Mit einer Erlaubnis von außen lief ein Befehl ohne Rückfrage, oder der Lauf kam nicht zustande"
 		good=0
 	fi
+	echo "FRS-SELFTEST:   Antwort: ${answer:0:120}"
 
 	# Auto-Modus: Dort entscheidet ein Klassifikator statt des Technikers, Befehle laufen ohne
 	# Rückfrage. Er ist abgeschaltet.
 	selftest_claude_run "$dir" auto "touch $dir/arbeit/lief-auto" "$dir/arbeit" --permission-mode auto
-	if [[ ! -e $dir/arbeit/lief-auto ]]; then
+	answer=$(selftest_claude_answer "$dir" auto)
+	if selftest_claude_started "$dir" auto && [[ ! -e $dir/arbeit/lief-auto ]]; then
 		echo "FRS-SELFTEST: Claude-Sperre: kein Auto-Modus, Modus der Sitzung: $(jq -r 'select(.type == "system" and .subtype == "init") | .permissionMode' "$dir/auto.json" 2>/dev/null | head -n 1)"
 	else
-		echo "FRS-SELFTEST: Claude-Sperre: Im Auto-Modus lief ein Befehl ohne Rückfrage"
+		echo "FRS-SELFTEST: Claude-Sperre: Im Auto-Modus lief ein Befehl ohne Rückfrage, oder der Lauf kam nicht zustande"
 		good=0
 	fi
+	echo "FRS-SELFTEST:   Antwort: ${answer:0:120}"
 
 	# Ein Projektordner, wie er auf einem fremden Datenträger liegen kann, bringt eigene Hooks
 	# mit. Sie dürfen nicht laufen: Hooks kommen nur aus dem Rettungssystem.
