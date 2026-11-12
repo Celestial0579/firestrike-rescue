@@ -52,8 +52,12 @@ jobs:
           bash tests/unit-claude-context.sh
       - name: Unit-Tests
         run: |
-          sudo apt-get install -y -qq jq
+          sudo apt-get install -y -qq jq whiptail
           bash tests/unit-clone-plan.sh
+          bash tests/unit-safety-confirm.sh
+      # Zeichnet den Bestätigungsdialog mit echtem whiptail in ein Pseudo-Terminal.
+      - name: Dialogtest
+        run: bash tests/dialog-safety-confirm.sh
 
   build:
     needs: lint

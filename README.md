@@ -36,7 +36,7 @@ nvme0n1   [OK]     Samsung SSD 990 PRO 2TB      1.8TiB     S7DNNJ0W123456       
 Diese Schutzregeln gelten immer:
 
 - Quell-Disks werden sofort auf Kernelebene schreibgeschützt.
-- Ziele werden über die Seriennummer bestätigt. Du gibst die letzten 4 Zeichen ein, nicht `/dev/sdX`.
+- Ziele werden über die Seriennummer bestätigt. Du gibst die letzten 4 Zeichen ein, nicht `/dev/sdX`. Meldet eine Disk keine Seriennummer, nimmt der Assistent stattdessen die WWN. Fehlt auch die, verlangt er Gerätename und Größe. Eine leere Eingabe bestätigt nie.
 - Fremde Disks werden nie automatisch eingehängt. Auch Swap, RAID und LVM werden nicht automatisch aktiviert.
 - Reparaturen laufen nur auf einer Kopie des Images.
 - Von welcher Disk gelesen wird, bestimmst du. Beim Fortsetzen wählst du die Quelle neu. Die Falldatei auf der Ziel-Disk kann deiner Wahl nur widersprechen.

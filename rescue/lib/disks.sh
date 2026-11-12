@@ -42,10 +42,15 @@ disk_info() {
 	disks_json | jq -c --arg id "$id" 'select(.serial == $id or .wwn == $id or .path == $id)' | head -n1
 }
 
+# Eine Zeile zur Disk: Pfad · Modell · Größe · SN Seriennummer · Bus.
+# disks_json liefert fehlende Angaben als leere Zeichenkette, nicht als null.
 disk_label() {
 	local j=$1
-	printf '%s · %s · SN %s · %s · %s' "$(jq -r .path <<<"$j")" "$(jq -r '.model // "?"' <<<"$j")" \
-		"$(human "$(jq -r .size <<<"$j")")" "$(jq -r '.serial // "–"' <<<"$j")" "$(jq -r '.tran // "?"' <<<"$j")"
+	printf '%s · %s · %s · SN %s · %s' "$(jq -r .path <<<"$j")" \
+		"$(jq -r 'if (.model // "") == "" then "?" else .model end' <<<"$j")" \
+		"$(human "$(jq -r .size <<<"$j")")" \
+		"$(jq -r 'if (.serial // "") == "" then "–" else .serial end' <<<"$j")" \
+		"$(jq -r '.tran // "?"' <<<"$j")"
 }
 
 # SMART-Bewertung: gibt "OK", "WARN", "DEFEKT" oder "UNBEKANNT" und eine Begründung aus.

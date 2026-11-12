@@ -110,10 +110,50 @@ ui_menu() {
 		--menu -- "$text" "$UI_H" "$UI_W" "$mh" "$@" 3>&1 1>/dev/tty 2>&3
 }
 
+# Zeilen, die whiptail in einer Eingabebox neben dem Text belegt (Rahmen, Eingabefeld, Knöpfe).
+# Gemessen sind es 6; die siebte ist Reserve, falls eine andere newt-Version anders rechnet.
+UI_INPUT_FRAME=7
+
+# ui_fold TEXT   Gibt den Text so aus, wie er im Dialog steht: "\n" wird zum Zeilenwechsel,
+# überlange Zeilen werden am letzten Leerzeichen umbrochen. Erst damit lässt sich vorher sagen,
+# wie viele Zeilen ein Text belegt. whiptail muss danach nichts mehr selbst umbrechen.
+ui_fold() {
+	_ui_size
+	local width=$((UI_W - 6)) line cut left
+	((width < 20)) && width=20
+	while IFS= read -r line || [[ -n $line ]]; do
+		while ((${#line} > width)); do
+			cut=${line:0:width}
+			left=${cut% *}
+			# Nur am Leerzeichen trennen, wenn davor überhaupt etwas steht.
+			[[ $cut == *" "* && -n ${left// /} ]] && cut=$left
+			printf '%s\n' "$cut"
+			line=${line:${#cut}}
+			line=${line# }
+		done
+		printf '%s\n' "$line"
+	done <<<"${1//\\n/$'\n'}"
+}
+
+# Wie viele Textzeilen eine Eingabebox auf diesem Bildschirm höchstens zeigen kann.
+ui_input_room() {
+	_ui_size
+	echo $((UI_H - UI_INPUT_FRAME))
+}
+
+# ui_input TITEL TEXT [VORGABE]   gibt die Eingabe auf stdout aus
+# Die Box wächst mit dem Text. whiptail schneidet Text, der nicht hineinpasst, ohne Hinweis ab;
+# bei fester Höhe fehlte dann ausgerechnet die letzte Zeile, also die Eingabeaufforderung.
+# Mehr als ui_input_room Zeilen passen nicht: Wer längere Texte hat, kürzt sie vorher selbst.
 ui_input() {
 	_ui_size
+	local text height
+	text=$(ui_fold "$2")
+	height=$(($(wc -l <<<"$text") + UI_INPUT_FRAME))
+	((height < 12)) && height=12
+	((height > UI_H)) && height=$UI_H
 	whiptail --backtitle "$UI_BACKTITLE" --title "$1" --ok-button "OK" --cancel-button "Abbrechen" \
-		--inputbox "$2" 12 "$UI_W" "${3:-}" 3>&1 1>/dev/tty 2>&3
+		--inputbox "$text" "$height" "$UI_W" "${3:-}" 3>&1 1>/dev/tty 2>&3
 }
 
 ui_password() {
