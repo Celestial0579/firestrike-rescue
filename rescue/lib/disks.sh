@@ -1,15 +1,33 @@
 # shellcheck shell=bash
 # Datenträger erkennen, SMART bewerten, Disks über Seriennummer/WWN auswählen.
 
+# Ist PFAD ein Blockgerät? Eigene Funktion, damit Tests sie ersetzen können.
+is_blockdev() { [[ -b $1 ]]; }
+
 # Gerät, von dem das Rettungssystem gestartet wurde (der Stick), z. B. /dev/sdb.
+#
+# Maßgeblich ist das eingehängte Live-Medium unter /cdrom: Von ihm läuft das System wirklich.
+# Das Label FRS_RESCUE zählt nur, wenn /cdrom kein Gerät mehr ist (Start "in den RAM"), und nur,
+# wenn genau eine Disk es trägt. Ein Label kann jeder auf jede Disk schreiben: Eine fremde Disk
+# mit diesem Label gälte sonst als der Stick und ihre Partition FRS-DATA als eigener Speicher.
 boot_disk() {
-	local dev
-	dev=$(blkid -t LABEL=FRS_RESCUE -o device 2>/dev/null | head -n1)
-	[[ -z $dev ]] && dev=$(findmnt -no SOURCE /cdrom 2>/dev/null)
-	[[ -z $dev ]] && return 1
-	local pk
-	pk=$(lsblk -no PKNAME "$dev" 2>/dev/null | head -n1)
-	if [[ -n $pk ]]; then echo "/dev/$pk"; else echo "$dev"; fi
+	local dev pk cand disks=()
+	dev=$(findmnt -n -o SOURCE /cdrom 2>/dev/null | head -n1)
+	if [[ $dev == /dev/* ]] && is_blockdev "$dev"; then
+		pk=$(lsblk -no PKNAME "$dev" 2>/dev/null | head -n1)
+		if [[ -n $pk ]]; then echo "/dev/$pk"; else echo "$dev"; fi
+		return 0
+	fi
+	# Die ISO trägt das Label auf der ganzen Disk und auf ihrer ersten Partition. Gezählt werden
+	# deshalb Disks, nicht Geräte.
+	while IFS= read -r cand; do
+		[[ -n $cand ]] || continue
+		pk=$(lsblk -no PKNAME "$cand" 2>/dev/null | head -n1)
+		[[ -n $pk ]] && cand="/dev/$pk"
+		[[ " ${disks[*]} " == *" $cand "* ]] || disks+=("$cand")
+	done < <(blkid -t LABEL=FRS_RESCUE -o device 2>/dev/null)
+	((${#disks[@]} == 1)) || return 1
+	echo "${disks[0]}"
 }
 
 # Alle physischen Disks als JSON-Zeilen (ohne Loop, RAM, CD, ohne den Boot-Stick).
