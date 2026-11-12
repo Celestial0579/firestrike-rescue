@@ -1,0 +1,33 @@
+{
+  "permissions": {
+    "deny": [
+      "Bash(*--setrw*)",
+      "Bash(*hdparm*-r0*)",
+      "Bash(*hdparm*-r 0*)",
+      "Bash(*/etc/claude-code*)",
+      "Bash(*frs-claude-guard*)",
+      "Edit(//etc/claude-code/**)",
+      "Edit(//usr/local/bin/frs-claude-guard)",
+      "Edit(//run/frs/readonly)"
+    ],
+    "disableBypassPermissionsMode": "disable"
+  },
+  "disableAutoMode": "disable",
+  "allowManagedPermissionRulesOnly": true,
+  "allowManagedHooksOnly": true,
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/usr/local/bin/frs-claude-guard",
+            "timeout": 10,
+            "onFailure": "block"
+          }
+        ]
+      }
+    ]
+  }
+}

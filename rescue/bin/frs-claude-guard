@@ -1,0 +1,441 @@
+#!/usr/bin/env bash
+# Sperre für Claude im Rettungssystem: PreToolUse-Hook von Claude Code.
+#
+# Eingetragen in /etc/claude-code/managed-settings.json, für jedes Werkzeug. Claude Code ruft
+# dieses Skript vor jedem Werkzeugaufruf auf und übergibt die Anfrage als JSON auf der
+# Standardeingabe. Was hier entschieden wird, entscheidet nicht das Modell: Die Regeln in
+# /etc/claude-code/CLAUDE.md sagen Claude, was es tun soll, dieses Skript legt fest, was geht.
+#
+#   Rückgabe 2             Der Aufruf wird nicht ausgeführt. Die Begründung (stderr) geht an Claude.
+#   Rückgabe 0 mit "ask"   Der Techniker muss den Aufruf selbst bestätigen, in jedem Modus und
+#                          auch dann, wenn er solche Befehle sonst ohne Rückfrage erlaubt hat.
+#   Rückgabe 0 ohne Text   Keine Entscheidung, es gilt die übliche Rückfrage von Claude Code.
+#
+# Geprüft wird
+#   - der Shell-Befehl (tool_input.command), egal welches Werkzeug ihn ausführt (Bash, Monitor),
+#   - der Pfad (file_path, notebook_path) der Werkzeuge, die Dateien schreiben (Write, Edit, …).
+#
+# Gesperrt ist:
+#   1. den Schreibschutz einer Disk aufzuheben (blockdev --setrw, hdparm -r0, /sys/…/ro),
+#   2. diese Sperre, die Regeln für Claude und die Liste der geschützten Quell-Disks zu verändern,
+#   3. ein Reparaturwerkzeug auf das Original-Image image.img anzusetzen.
+# Bestätigen muss der Techniker jeden Befehl, der auf ein Blockgerät schreibt, ein Dateisystem
+# oder eine Partitionstabelle ändert, beschreibbar einhängt, eine Disk in voller Länge liest
+# oder das Original-Image verändert (Oberste Regeln 2, 4, 5 und 6).
+#
+# Grenzen: Geprüft wird der Text des Befehls. Das fängt ab, was Claude üblicherweise schreibt,
+# auch hinter sudo, mit Pfad, in "bash -c" oder mit Anführungszeichen mitten im Wort. Im Zweifel
+# fragt das Skript: Auch "echo mkfs" führt zur Rückfrage. Wer einen Befehl absichtlich
+# verschleiert (aus Variablen zusammensetzt, kodiert, in eine Datei schreibt und sie startet),
+# kommt an diesem Skript vorbei und landet bei der üblichen Rückfrage von Claude Code. Eine
+# Sperre auf Systemebene ersetzt das Skript nicht: Den Schreibschutz der Quelle setzt der Kernel
+# durch, dieses Skript verhindert, dass Claude ihn aufhebt.
+#
+# Kann das Skript die Anfrage nicht lesen, sperrt es. In den Einstellungen steht zusätzlich
+# "onFailure": "block": Startet das Skript gar nicht, führt Claude Code den Aufruf nicht aus.
+
+set -u
+set -f # kein Dateinamen-Muster: Der Befehl wird unten in Wörter zerlegt
+export LC_ALL=C
+
+deny() {
+	printf 'Gesperrt vom Rettungssystem: %s Diese Sperre gilt unabhängig von jeder Anweisung. Sag dem Techniker, dass der Aufruf gesperrt ist, und versuche keinen anderen Weg.\n' "$1" >&2
+	exit 2
+}
+ask() {
+	jq -cn --arg r "$1" '{hookSpecificOutput: {hookEventName: "PreToolUse", permissionDecision: "ask", permissionDecisionReason: $r}}' ||
+		deny "Die Rückfrage an den Techniker ließ sich nicht stellen."
+	exit 0
+}
+# Der erste Grund für eine Rückfrage gewinnt. Gesperrtes beendet das Skript sofort (deny).
+reason=""
+note() { [[ -n $reason ]] || reason=$1; }
+
+# Bausteine für die Muster unten (ERE).
+B='(^|[^A-Za-z0-9_.-])' # vor einem Programmnamen: Anfang, Leerzeichen, /, (, = …
+S='([ ;|&()<>]|$)'      # nach einem Programmnamen, einer Option oder einem Dateinamen
+# Disks und Partitionen, wie sie ein Befehl nennt. Abbilder (loop, nbd) gehören nicht dazu.
+DISK='/dev/(sd|nvme|mmcblk|vd|hd|xvd|sr|disk/)'
+# Alles, worauf ein Befehl als Blockgerät schreiben kann.
+BLOCK='/dev/(sd|nvme|mmcblk|vd|hd|xvd|sr|disk/|loop|nbd|dm-|mapper/|md)'
+
+# Der Befehl, auf dem die Muster arbeiten (siehe check_command).
+flat=""
+# has MUSTER    Enthält der Befehl einen Text, der zum Muster passt?
+has() { [[ $flat =~ $1 ]]; }
+# word NAMEN    Kommt eines der Programme (a|b|c) als eigenes Wort vor, auch mit Pfad davor?
+word() { [[ $flat =~ $B($1)$S ]]; }
+# segs NAMEN    Alle Aufrufe der Programme, je einer pro Zeile: vom Namen bis zum nächsten
+#               Trenner (| ; & Klammer, Zeilenende).
+segs() {
+	local rest=$flat re="$B($1)(([ <>][^|;&()]*)?)(\$|[|;&()].*\$)" g
+	# Klammern im Namensmuster verschieben die Nummern der Gruppen dahinter.
+	g=${1//[^(]/}
+	g=${#g}
+	while [[ $rest =~ $re ]]; do
+		printf '%s\n' "${BASH_REMATCH[2]}${BASH_REMATCH[3 + g]}"
+		rest=${BASH_REMATCH[5 + g]}
+	done
+}
+# args ZEILE    Die Wörter eines Aufrufs ohne den Namen und ohne Umleitungen (2>/dev/null, > x).
+args() {
+	local w skip=0 first=1
+	for w in $1; do
+		if ((first)); then
+			first=0
+			continue
+		fi
+		if ((skip)); then
+			skip=0
+			continue
+		fi
+		if [[ $w =~ ^[0-9]*(\>\>?|\<)(.*)$ ]]; then
+			[[ -n ${BASH_REMATCH[2]} ]] || skip=1
+			continue
+		fi
+		printf '%s\n' "$w"
+	done
+}
+# only_reads NAMEN ERLAUBT NÖTIG [WERT]   Sind alle Aufrufe nur lesend? Das sind sie, wenn in
+#   jedem Aufruf jede Option zum Muster ERLAUBT passt und, falls NÖTIG nicht leer ist,
+#   mindestens eine zu NÖTIG. Mit WERT muss außerdem jedes andere Wort zu WERT passen.
+#   Lässt sich kein Aufruf abgrenzen, gilt der Befehl als schreibend.
+only_reads() {
+	local line w seen n=0
+	while IFS= read -r line; do
+		[[ -n $line ]] || continue
+		n=$((n + 1))
+		seen=0
+		while IFS= read -r w; do
+			[[ -n $w ]] || continue
+			if [[ $w == -* ]]; then
+				[[ $w =~ ^($2)$ ]] || return 1
+				[[ -n $3 && $w =~ ^($3)$ ]] && seen=1
+			elif [[ -n ${4:-} ]]; then
+				[[ $w =~ ^($4)$ ]] || return 1
+			fi
+		done < <(args "$line")
+		[[ -z $3 ]] || ((seen)) || return 1
+	done < <(segs "$1")
+	((n > 0))
+}
+# sub_reads NAMEN UNTERBEFEHLE   Sind alle Aufrufe nur lesend? Das sind sie, wenn nach dem Namen
+#   (und Optionen davor) einer der genannten Unterbefehle steht: "nvme smart-log".
+#   Lässt sich kein Aufruf abgrenzen, gilt der Befehl als schreibend.
+sub_reads() {
+	local line w rest n=0
+	while IFS= read -r line; do
+		[[ -n $line ]] || continue
+		n=$((n + 1))
+		rest=""
+		while IFS= read -r w; do
+			[[ -z $rest && $w == -* ]] && continue
+			rest+="${rest:+ }$w"
+		done < <(args "$line")
+		[[ $rest =~ ^($2)( |$) ]] || return 1
+	done < <(segs "$1")
+	((n > 0))
+}
+# writes NAMEN AUSLÖSER AUSNAHME [AUCH]   Gibt es einen Aufruf, der zum Muster AUSLÖSER passt
+#   (leer: jeder), nicht zum Muster AUSNAHME (leer: keine) und, falls angegeben, auch zum Muster
+#   AUCH? Geprüft wird je Aufruf: Die Option -r eines anderen Befehls in derselben Zeile nimmt
+#   keinen Aufruf aus.
+writes() {
+	local line
+	while IFS= read -r line; do
+		[[ -n $line ]] || continue
+		[[ -z $2 || $line =~ $2 ]] || continue
+		[[ -n $3 && $line =~ $3 ]] && continue
+		[[ -z ${4:-} || $line =~ $4 ]] || continue
+		return 0
+	done < <(segs "$1")
+	return 1
+}
+# flatten BEFEHL   Der Befehl als eine Zeile, ohne Anführungszeichen und Backslashes: So steht
+#   "blockdev --set''rw" hier als "blockdev --setrw". Zeilenende und Backtick trennen Befehle.
+flatten() {
+	printf '%s' "${1//$'\\\n'/ }" | tr '\n\t\r`\001' '; ;;;' | tr -d "\\\\\"'" | tr -s ' '
+}
+# qsplit BEFEHL   Zerlegt den Befehl an den Trennern, die nicht in Anführungszeichen stehen
+#   (| ; & Klammern, Zeilenende). Je Teil eine Zeile; ein Zeilenende innerhalb eines Teils
+#   erscheint als \001. Nur dafür da, Aufrufe von Suchwerkzeugen samt ihrem Suchmuster
+#   ('ata|nvme') als ein Stück zu erkennen. Die Regeln selbst arbeiten nie mit Anführungszeichen.
+qsplit() {
+	local s=$1 c q="" out="" i n=${#1} esc=0
+	for ((i = 0; i < n; i++)); do
+		c=${s:i:1}
+		if ((esc)); then
+			esc=0
+			if [[ $c == $'\n' ]]; then
+				out=${out%\\}
+				c=' '
+			fi
+		elif [[ -z $q ]]; then
+			case $c in
+			\\) esc=1 ;;
+			\' | \") q=$c ;;
+			'|' | ';' | '&' | '(' | ')' | $'\n')
+				printf '%s\n' "$out"
+				out=""
+				continue
+				;;
+			esac
+		elif [[ $c == "$q" ]]; then
+			q=""
+		elif [[ $q == '"' && $c == \\ ]]; then
+			esc=1
+		fi
+		[[ $c == $'\n' ]] && c=$'\001'
+		out+=$c
+	done
+	printf '%s\n' "$out"
+}
+# Die Programme, die ein Dateisystem prüfen oder reparieren.
+FSCK='e2fsck|fsck(\.[a-z0-9]+)?|dosfsck'
+# fsck_writes ZEILE   Schreibt dieser fsck-Aufruf? Ohne -n ja, mit -y, -p oder -a auch.
+fsck_writes() {
+	local n=" -[A-Za-z]*n[A-Za-z]*$S" w=" -[A-Za-z]*[ypa][A-Za-z]*$S"
+	[[ ! $1 =~ $n || $1 =~ $w ]]
+}
+
+# ---------------------------------------------------------------------------------------------
+# Shell-Befehl
+# ---------------------------------------------------------------------------------------------
+check_command() {
+	local line part tmp re lim keep=""
+	flat=$(flatten "$1")
+
+	# --- Gesperrt 1: Schreibschutz aufheben ---------------------------------------------------
+	if has '--setrw|BLKROSET|0x125[dD]'; then
+		deny "Der Schreibschutz einer Disk wird nicht aufgehoben (blockdev --setrw)."
+	fi
+	if word hdparm && has "(^| )-[A-Za-z]*r ?0$S"; then
+		deny "Der Schreibschutz einer Disk wird nicht aufgehoben (hdparm -r0)."
+	fi
+	re="/sys/[^ ;|&()<>]*/(ro|force_ro)$S"
+	if has "> *$re" || writes 'tee|dd|cp|install|mv' "$re" ''; then
+		deny "Der Schreibschutz einer Disk wird nicht über /sys aufgehoben."
+	fi
+
+	# --- Gesperrt 2: Sperre, Regeln und Liste der Quell-Disks ---------------------------------
+	if has '/etc/claude-code|frs-claude-guard|managed-settings'; then
+		deny "Die Regeln und die Sperre für Claude werden nicht per Shell angefasst. Zum Lesen der Regeln das Lesewerkzeug benutzen."
+	fi
+	re="/run/frs/readonly$S"
+	lim=' (-[A-Za-z]*i|--in-place)'
+	if has "> *$re" || writes 'rm|mv|cp|tee|truncate|dd|ln|install|chmod|chown|chattr|shred|unlink|rsync' "$re" '' || writes sed "$re" '' "$lim"; then
+		deny "Die Liste der schreibgeschützten Quell-Disks (/run/frs/readonly) wird nicht verändert."
+	fi
+
+	# --- Gesperrt 3: Reparaturen nur auf der Kopie --------------------------------------------
+	# Gesperrt ist der Aufruf, der image.img selbst nennt oder eine Variable benutzt, während
+	# image.img im Befehl steht. Nur lesende Prüfungen (fsck -n, xfs_repair -n) bleiben möglich.
+	if has "image\.img$S"; then
+		re="image\.img$S|[$]"
+		lim="^($FSCK|xfs_repair) "
+		while IFS= read -r line; do
+			[[ $line =~ $re ]] || continue
+			[[ $line =~ $lim ]] && ! fsck_writes "$line" && continue
+			deny "Auf dem Original-Image image.img wird nichts repariert. Repariert wird nur die Kopie image.img.repair."
+		done < <(segs "ntfsfix|ntfsrecover|$FSCK|xfs_repair|btrfstune|testdisk|photorec|chkdsk|debugfs|xfs_db|tune2fs|resize2fs|ntfsresize|chntpw")
+		lim=" (check +[^|;&()]*--(repair|init-[a-z-]+|clear-[a-z-]+)|rescue)"
+		while IFS= read -r line; do
+			[[ $line =~ $re && $line =~ $lim ]] &&
+				deny "Auf dem Original-Image image.img wird nichts repariert. Repariert wird nur die Kopie image.img.repair."
+		done < <(segs btrfs)
+	fi
+
+	# --- Der Techniker bestätigt selbst ---------------------------------------------------------
+	# Auf ein Blockgerät schreiben, eine Disk ohne Längenangabe lesen
+	word dd && has "(^| )of=" && note "dd schreibt auf sein Ziel (of=)"
+	has "(>|${B}tee( +-[a-z]+)*) *$BLOCK" && note "die Ausgabe wird direkt auf ein Blockgerät geschrieben"
+	has "(>|${B}tee( +-[a-z]+)*) */sys/" && note "eine Einstellung des Kernels unter /sys wird geändert"
+	while IFS= read -r line; do
+		[[ $line =~ $BLOCK ]] && note "ein Blockgerät wird direkt gelesen oder beschrieben (${line%% *})"
+	done < <(segs 'cp|mv|install|rsync|truncate|fallocate|sponge|ln')
+	re="[ <](if=)?$DISK"
+	while IFS= read -r line; do
+		[[ $line =~ $re ]] || continue
+		case ${line%% *} in
+		dd) lim=' count=[0-9]+' ;;
+		xxd) lim=' (-l|-len|--len)[= ]?[0-9]+ ' ;;
+		hexdump) lim=' (-n|--length)[= ]?[0-9]+ ' ;;
+		od) lim=' (-N|--read-bytes)[= ]?[0-9]+ ' ;;
+		cmp) lim=' (-n|--bytes)[= ]?[0-9]+ ' ;;
+		tail) lim=' (-c|--bytes)[= ]?[0-9]+ ' ;;
+		*) lim='' ;;
+		esac
+		[[ -n $lim && "$line " =~ $lim ]] && continue
+		note "eine Disk wird ohne Längenangabe gelesen (${line%% *})"
+	done < <(segs 'dd|cat|md5sum|sha1sum|sha256sum|sha512sum|b2sum|cksum|cmp|strings|grep|egrep|fgrep|pv|zstd|pigz|gzip|xz|hexdump|xxd|od|tail|wc|tar|cpio|foremost')
+	# Rettungsfall, Original-Image und Mapfile: nicht löschen, verschieben oder überschreiben
+	re="image\.(img|map)$S|/FRS(/|$S)"
+	while IFS= read -r line; do
+		[[ $line =~ $re ]] && note "ein Rettungsfall, das Original-Image oder sein Mapfile wird verändert oder gelöscht (${line%% *})"
+	done < <(segs 'rm|mv|truncate|shred|unlink|tee')
+	if has "image\.(img|map)$S"; then
+		has "> *[^ ;|&()<>]*image\.(img|map)$S" && note "das Original-Image oder sein Mapfile wird überschrieben"
+		re='(^|/)image\.(img|map)$'
+		while IFS= read -r line; do
+			# Das Ziel ist das letzte Wort.
+			tmp=$(args "$line" | tail -n 1)
+			[[ $tmp =~ $re ]] && note "das Original-Image oder sein Mapfile wird überschrieben (${line%% *})"
+		done < <(segs 'cp|rsync|install|ln')
+	fi
+
+	# Der Assistent selbst: Seine Prüfungen sind Teil des Schutzes.
+	re='/usr/local/(lib/frs|bin/frs)'
+	if has "> *$re" || writes 'rm|mv|cp|tee|truncate|dd|ln|install|chmod|chown|rsync|patch' "$re" '' || writes sed "$re" '' ' (-[A-Za-z]*i|--in-place)'; then
+		note "der Assistent des Rettungssystems wird verändert"
+	fi
+
+	# Ab hier zählen Programmnamen nur dort, wo sie etwas ausführen können: Aufrufe von grep,
+	# pgrep und ähnlichen Suchwerkzeugen fallen weg ("dmesg | grep -i nvme" fragt nicht nach).
+	# Was diese Werkzeuge selbst von einer Disk lesen oder wohin sie schreiben, ist oben geprüft.
+	# Ein solcher Aufruf bleibt stehen, sobald er selbst etwas ausführen könnte: $( ), ${ },
+	# Backtick oder mehrere Zeilen.
+	re='^ *(sudo( +-[nEH]+)* +)?(grep|egrep|fgrep|pgrep|pidof|which|whereis|whatis|apropos|lsmod|modinfo)( |$)'
+	while IFS= read -r part; do
+		if [[ $part =~ $re && $part != *$'\001'* && $part != *'`'* && $part != *'$('* && $part != *'${'* ]]; then
+			continue
+		fi
+		keep+="$part"$'\n'
+	done < <(qsplit "$1")
+	flat=$(flatten "$keep")
+
+	word 'mkfs(\.[a-z0-9]+)?|mke2fs|mkswap|mkntfs|mkdosfs|mkexfatfs|mkudffs' && note "ein Dateisystem wird neu angelegt"
+	word 'cgdisk|cfdisk|blkdiscard|shred|badblocks|fstrim|zerofree' && note "eine Disk wird verändert oder in voller Länge belastet"
+
+	# Partitionierer zeigen auch nur an (sgdisk -p, sfdisk -d, fdisk -l, parted print). Nur dann
+	# bleibt die Rückfrage aus.
+	re='-p|--print|-v|--verify|-i|--info=[0-9]+|-L|--list-types|-V|--version|-D|--display-alignment|-E|--end-of-largest|-F|--first-aligned-in-largest|-f|--first-in-largest|-h|--help'
+	word sgdisk && ! only_reads sgdisk "$re" "$re" && note "sgdisk verändert die Partitionstabelle"
+	re='-l|--list|-d|--dump|-J|--json|-s|--show-size|-g|--show-geometry|-V|--verify|-F|--list-free|-T|--list-types|-v|--version|-h|--help'
+	word sfdisk && ! only_reads sfdisk "$re|-q|--quiet|-o|--output|--bytes" "$re" && note "sfdisk verändert die Partitionstabelle"
+	re='-l|--list|-x|--list-details|-s|--getsz|-V|--version|-h|--help'
+	word fdisk && ! only_reads fdisk "$re|-o|--output|--bytes" "$re" && note "fdisk verändert die Partitionstabelle"
+	word gdisk && ! only_reads gdisk '-l' '-l' && note "gdisk verändert die Partitionstabelle"
+	# parted -l, parted GERÄT print, parted -s GERÄT unit MiB print free
+	re='^parted( +(-[sm]+|--script|--machine))*( +(-l|--list|-v|--version|-h|--help)| +[^ -][^ ]*( +unit +[A-Za-z%]+)* +print( +(free|all|[0-9]+))*)( +[0-9]?>[^ ]*)* *$'
+	word parted && writes parted '' "$re" && note "parted verändert die Partitionstabelle"
+	# wipefs ohne -a zeigt Signaturen nur an.
+	writes wipefs ' (-a|--all|-o|--offset)' " (-n|--no-act)$S" && note "wipefs löscht Signaturen"
+	writes kpartx ' -[a-z]*[au]' " -[a-z]*r[a-z]*$S" && note "kpartx ohne -r legt beschreibbare Geräte an"
+
+	# Dateisysteme und Bootbereich ändern
+	word 'ntfsfix|ntfsrecover|ntfscp|ntfswipe|ntfstruncate|xfs_fsr|xfs_copy|xfs_mdrestore|resize2fs|ntfsresize|xfs_growfs|ntfslabel|e2label|fatlabel|exfatlabel|e4defrag|e2undo|btrfstune|btrfs-convert|testdisk|photorec|chntpw|ms-sys|wimapply' && note "ein Dateisystem wird verändert oder eine Disk durchsucht"
+	writes xfs_repair '' " -[A-Za-z]*n[A-Za-z]*$S" && note "xfs_repair ohne -n verändert das Dateisystem"
+	word tune2fs && ! only_reads tune2fs '-l' '-l' && note "tune2fs verändert das Dateisystem"
+	word xfs_admin && ! only_reads xfs_admin '-l|-u' '-l|-u' && note "xfs_admin verändert das Dateisystem"
+	writes 'debugfs|xfs_db' ' -[a-z]*[wx]' '' && note "ein Dateisystem-Debugger läuft im Schreibmodus"
+	while IFS= read -r line; do
+		fsck_writes "$line" && note "fsck ohne -n verändert das Dateisystem"
+	done < <(segs "$FSCK")
+	word 'grub-install|grub-mkconfig|update-grub|os-prober' && note "der Bootbereich wird verändert oder alle Partitionen werden eingehängt"
+	word efibootmgr && ! only_reads efibootmgr '-v|--verbose|-V|--version|-h|--help|-u|--unicode' '' && note "efibootmgr verändert die Boot-Einträge der Firmware"
+	has "${B}wimlib-imagex +apply" && note "ein Windows-Abbild wird auf eine Partition geschrieben"
+	word qemu-img && { ! sub_reads qemu-img 'info|check|compare|map|measure' || writes qemu-img ' (-r|--repair)' ''; } && note "qemu-img verändert ein Abbild oder schreibt auf ein Gerät"
+
+	# Volle Durchläufe über eine Disk (Regel 4) und die Abläufe des Assistenten
+	tmp=$flat
+	flat=${flat//partclone.info/}
+	flat=${flat//partclone.chkimg/}
+	word 'ddrescue|partclone(\.[a-z0-9]+)?|ntfsclone|fsarchiver|safecopy|ewfacquire|clonezilla|ocs-[a-z-]+' && note "eine Disk wird in voller Länge gelesen oder geschrieben"
+	flat=$tmp
+	word frs-rescue-run && note "eine Rettung wird gestartet: Die Quelle wird in voller Länge gelesen, das Ziel beschrieben"
+	has "$B(\.|source) +/usr/local/lib/frs" && note "Abläufe des Assistenten laufen mit Root-Rechten, hängen ein und schreiben"
+	writes smartctl " (-t|--test|-X|--abort|-s|--set|--smart|-o|--offlineauto|-S|--saveauto)([ =]|$)|scterc,[0-9]" '' && note "smartctl startet einen Selbsttest oder ändert Einstellungen der Disk"
+	word hdparm && ! only_reads hdparm '-I|-i|-C|-g|-H|-v|-V|-h|--Istdout|--dco-identify' '' '/dev/[A-Za-z0-9/_.:-]+' && note "hdparm ändert Einstellungen der Disk oder belastet sie"
+	writes sdparm " (-s|--set|-c|--clear|-D|--defaults|-C|--command|-S|--save)([ =]|$)" '' && note "sdparm ändert Einstellungen der Disk"
+	word nvme && ! sub_reads nvme 'list|list-subsys|list-ns|list-ctrl|id-ctrl|id-ns|ns-descs|smart-log|smart-log-add|error-log|fw-log|effects-log|self-test-log|sanitize-log|endurance-log|persistent-event-log|get-log|get-feature|get-property|show-regs|show-hostnqn|show-topology|supported-log-pages|version|help' && note "nvme verändert die Disk oder ihre Einstellungen"
+
+	# LVM, RAID, Verschlüsselung, Geräte aus Abbildern
+	word '(pv|vg|lv)(create|remove|change|resize|extend|reduce|rename|move|convert|import|export|merge|split|cfgrestore|importclone|mknodes)' && note "LVM wird verändert oder aktiviert"
+	re='-D|--detail|-E|--examine|-Q|--query|-V|--version|-h|--help'
+	word mdadm && ! only_reads mdadm "$re|-s|--scan|-v|--verbose|-b|--brief|-Y|--export" "$re" && note "ein RAID wird zusammengesetzt oder verändert"
+	word dmsetup && ! sub_reads dmsetup 'ls|info|status|table|deps|targets|version|help' && note "dmsetup legt Geräte an oder verändert sie"
+	re=" (luksDump|isLuks|status|benchmark|luksUUID|tcryptDump|bitlkDump|fvault2Dump|close|luksClose|--version|--help)$S"
+	lim=" (open|luksOpen|bitlkOpen|tcryptOpen|plainOpen)$S"
+	tmp=" (-r|--readonly)$S"
+	while IFS= read -r line; do
+		[[ $line =~ $re ]] && continue
+		[[ $line =~ $lim && $line =~ $tmp ]] && continue
+		note "cryptsetup ohne --readonly kann den Datenträger verändern"
+	done < <(segs cryptsetup)
+	writes losetup '^losetup +[^ ]' " (--read-only|--all|--list|--associated|--detach|--detach-all|-[A-Za-z]*[radlDj][A-Za-z]*)$S" && note "losetup ohne -r legt ein beschreibbares Gerät an"
+	writes qemu-nbd ' (-c|--connect)' " (-r|--read-only|-s|--snapshot)$S" && note "qemu-nbd ohne -r legt ein beschreibbares Gerät an"
+
+	# Einhängen: mount ohne ro hängt beschreibbar ein. "mount" allein zeigt nur an.
+	re=" (-r|--read-only)$S| (-o|--options)[= ]*([^ ]*,)?ro(,[^ ]*)?$S"
+	lim="[ =,]rw(,|$S)| (-w|--rw|--read-write)$S"
+	tmp='^[a-z-]+ +[^ ]'
+	while IFS= read -r line; do
+		[[ $line =~ $tmp ]] || continue
+		[[ $line =~ $re && ! $line =~ $lim ]] && continue
+		note "mount ohne ro hängt beschreibbar ein"
+	done < <(segs 'mount|systemd-mount')
+	word swapon && note "eine Swap-Partition der Disk wird benutzt und dabei beschrieben"
+	writes 'dislocker|dislocker-fuse' '' " (-r|--readonly)$S" && note "dislocker ohne -r öffnet das BitLocker-Volume beschreibbar"
+
+	# Namen, die auch ein Dateisystemtyp sind: "mount -t btrfs" ist kein Aufruf von btrfs.
+	re='^(.*) (-t|--types)[ =]+[^ ;|&()]+(.*)$'
+	while [[ $flat =~ $re ]]; do
+		flat="${BASH_REMATCH[1]}${BASH_REMATCH[3]}"
+	done
+	writes 'ntfs-3g|lowntfs-3g|mount\.[a-z0-9_-]+|fuse2fs|exfat-fuse' '' " -o *([^ ]*,)?ro(,[^ ]*)?$S" && note "ein Dateisystem wird ohne ro eingehängt"
+	writes btrfs " (check|rescue|balance|replace|scrub|quota|qgroup|receive|(filesystem|fi) +(resize|defrag[a-z]*|label|sync|mkswapfile)|(device|dev) +(add|delete|remove)|(subvolume|sub) +(create|delete|snapshot|set-default)|property +set)$S" '' && note "ein Btrfs-Dateisystem wird verändert oder vollständig geprüft"
+	return 0
+}
+
+# ---------------------------------------------------------------------------------------------
+# Pfad eines Werkzeugs, das Dateien schreibt
+# ---------------------------------------------------------------------------------------------
+check_path() {
+	local p=$1 real q
+	real=$(realpath -m -- "$p" 2>/dev/null) || deny "Der Pfad der Datei war nicht prüfbar."
+	for q in "$p" "$real"; do
+		case $q in
+		/etc/claude-code | /etc/claude-code/* | /usr/local/bin/frs-claude-guard | /run/frs/readonly)
+			deny "Die Regeln und die Sperre für Claude und die Liste der schreibgeschützten Quell-Disks werden nicht verändert."
+			;;
+		/dev/*) note "eine Datei unter /dev wird direkt beschrieben" ;;
+		/usr/local/lib/frs | /usr/local/lib/frs/* | /usr/local/bin/frs*) note "der Assistent des Rettungssystems wird verändert" ;;
+		*/image.img | */image.map) note "das Original-Image oder sein Mapfile wird überschrieben" ;;
+		esac
+	done
+}
+
+# ---------------------------------------------------------------------------------------------
+input=$(cat) || deny "Die Anfrage war nicht lesbar."
+tool=$(jq -er '.tool_name | strings' <<<"$input" 2>/dev/null) || deny "Die Anfrage war nicht lesbar (kein Werkzeugname)."
+
+# Jedes Werkzeug, das einen Shell-Befehl ausführt, übergibt ihn als Text in tool_input.command.
+t=$(jq -er '.tool_input.command | type' <<<"$input" 2>/dev/null) || deny "Die Anfrage war nicht lesbar (Eingabe des Werkzeugs)."
+case $t in
+string)
+	cmd=$(jq -er '.tool_input.command' <<<"$input" 2>/dev/null) || deny "Die Anfrage war nicht lesbar (Befehl)."
+	check_command "$cmd"
+	;;
+null) [[ $tool != Bash ]] || deny "Die Anfrage war nicht lesbar (kein Befehl)." ;;
+*) deny "Die Anfrage war nicht lesbar (Befehl ist kein Text)." ;;
+esac
+
+# Werkzeuge, die Dateien schreiben. Read liest nur: Die Regeln darf Claude lesen.
+if [[ $tool != Read ]]; then
+	for key in file_path notebook_path; do
+		t=$(jq -er --arg k "$key" '.tool_input[$k] | type' <<<"$input" 2>/dev/null) || deny "Die Anfrage war nicht lesbar (Eingabe des Werkzeugs)."
+		case $t in
+		null) continue ;;
+		string)
+			path=$(jq -er --arg k "$key" '.tool_input[$k]' <<<"$input" 2>/dev/null) || deny "Die Anfrage war nicht lesbar (Pfad)."
+			check_path "$path"
+			;;
+		*) deny "Die Anfrage war nicht lesbar (Pfad ist kein Text)." ;;
+		esac
+	done
+fi
+
+if [[ -n $reason ]]; then
+	ask "Rettungssystem: $reason. Der Techniker bestätigt jeden solchen Aufruf selbst. Vorher Gerät, Modell und Seriennummer prüfen."
+fi
+exit 0

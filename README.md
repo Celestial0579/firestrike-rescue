@@ -46,6 +46,7 @@ Diese Schutzregeln gelten immer:
 - Was ein Datenträger über sich meldet (Modell, Label, Partitionsname), steht in Dialogen nur gefiltert: sichtbare Zeichen, alles andere als `?`. Eine Seriennummer mit anderen Zeichen gilt nicht als Kennung.
 - Die Suche nach Rettungsfällen schreibt nicht. Die gewählte Disk ist dabei schreibgeschützt und nur lesend eingehängt, bis du einen Rettungsfall gewählt hast.
 - Der persistente Speicher ist nur die Partition `FRS-DATA` auf dem Stick, von dem gestartet wurde. Unverschlüsselt wird er erst nach einer Rückfrage eingebunden, und `frs.conf` wird gelesen, nicht ausgeführt.
+- Für Claude sind die wichtigsten Regeln gesperrt statt nur aufgeschrieben. Den Schreibschutz einer Disk aufheben, die Sperre anfassen oder das Original-Image reparieren kann Claude nicht. Jeden schreibenden Befehl bestätigst du selbst, und keine Rückfrage lässt sich dauerhaft abschalten. Auto-Modus und Modus ohne Rückfragen gibt es nicht.
 
 Was ist drin
 ------------
@@ -79,6 +80,7 @@ Die ISO landet in `out/`.
 | `build/grub/` | Bootmenü und Theme |
 | `rescue/frs` | Assistent, Bibliotheken in `rescue/lib/` |
 | `rescue/claude/CLAUDE.md` | Regeln für Claude im Rettungssystem |
+| `rescue/claude/managed-settings.json`, `rescue/bin/frs-claude-guard` | Sperre für Claude: Was die Regeln verbieten, lehnt ein Hook ab. Kein Auto-Modus, Hooks und Erlaubnis-Regeln nur aus dem Rettungssystem |
 | `tests/qemu-smoke.sh` | Boot-Tests (UEFI, BIOS, Selbsttest mit simulierter defekter Disk) |
 
 Design

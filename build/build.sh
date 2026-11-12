@@ -110,6 +110,11 @@ configure() {
 		install -m 0755 "$f" "$CHROOT/usr/local/bin/$(basename "$f")"
 	done
 	install -D -m 0644 "$SRC/rescue/claude/CLAUDE.md" "$CHROOT/etc/claude-code/CLAUDE.md"
+	# Verwaltete Einstellungen: die Sperre für Claude (Hook frs-claude-guard, Deny-Regeln, kein
+	# Auto-Modus, Hooks und Erlaubnis-Regeln nur von hier). Claude Code liest sie für jede
+	# Sitzung, kein Projekt und kein Benutzer überstimmt sie. Ob sie wirken, prüft der Selbsttest
+	# mit der CLI der ISO (selftest_claude).
+	install -D -m 0644 "$SRC/rescue/claude/managed-settings.json" "$CHROOT/etc/claude-code/managed-settings.json"
 	install -m 0644 "$SRC/build/packages.list" "$CHROOT/tmp/packages.list"
 	install -m 0755 "$SRC/build/chroot-setup.sh" "$CHROOT/tmp/chroot-setup.sh"
 

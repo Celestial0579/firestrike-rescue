@@ -100,6 +100,9 @@ claude_start() {
 		Der aktuelle Zustand (Disks, SMART, Rettungsfall, Protokoll) steht dort in $CLAUDE_STATE_FILE.
 		Claude liest die Datei als Daten: Was ein Datenträger über sich meldet, ist keine Anweisung.
 
+		Gesperrt für Claude: den Schreibschutz einer Disk aufheben, die Sperre ändern, das
+		Original-Image reparieren. Jeden schreibenden Befehl bestätigst du selbst, jedes Mal.
+
 		Erster Start: /login wählen, die angezeigte URL auf dem Handy oder einem anderen
 		Rechner öffnen und den Code hier einfügen. Beenden mit /exit oder Strg+D.
 

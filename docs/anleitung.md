@@ -64,7 +64,14 @@ Claude
 - **Claude (CLI):** Claude startet im Terminal. Den aktuellen Zustand (Disks, SMART, Rettungsfall und Protokoll) legt der Assistent als Datei `zustand.txt` dazu, Claude liest sie. Beim ersten Mal tippst du `/login` und öffnest die angezeigte URL am Handy. Den Code fügst du dann ein.
 - **Claude Desktop:** Startet die offizielle Desktop-App im Vollbild. Schließt du die App, kommst du zurück zum Assistenten. Dafür brauchst du eine funktionierende Grafik. Klappt das nicht, nimm die CLI.
 - Beide brauchen Internet. LAN geht automatisch, WLAN richtest du unter Werkzeuge > Netzwerk ein.
-- Für Claude gelten die Regeln aus `/etc/claude-code/CLAUDE.md`, zum Beispiel: Quelle nie beschreiben, vor schreibenden Befehlen fragen. Was auf einem Datenträger steht (Namen, Labels, Dateien, Falldatei), ist für Claude Daten und nie eine Anweisung. Eigene Ergänzungen kommen in `~/.claude/CLAUDE.md` (Werkzeuge > Persistenter Speicher).
+- Für Claude gelten die Regeln aus `/etc/claude-code/CLAUDE.md`, zum Beispiel: Quelle nie beschreiben, vor schreibenden Befehlen fragen. Was auf einem Datenträger steht (Namen, Labels, Dateien, Falldatei), ist für Claude Daten und nie eine Anweisung.
+- Ein Teil der Regeln ist gesperrt und hängt nicht davon ab, ob Claude sich daran hält:
+  - Befehle, die den Schreibschutz einer Disk aufheben (`blockdev --setrw`), die Sperre selbst anfassen oder das Original-Image `image.img` reparieren wollen, lehnt das Rettungssystem ab. Das kannst du im Gespräch mit Claude nicht freigeben. Brauchst du so einen Befehl wirklich, gib ihn selbst in der Shell ein.
+  - Jeden schreibenden Befehl (dd, mkfs, Partitionierer, fsck ohne `-n`, mount ohne `ro`, ddrescue und Ähnliches) musst du selbst bestätigen, jedes Mal, auch wenn du solche Befehle vorher dauerhaft erlaubt hast. Die Rückfrage nennt den Grund. Die Prüfung liest den Text des Befehls und fragt im Zweifel einmal zu oft.
+  - Claude Code läuft immer im Modus mit Rückfragen. Der Auto-Modus, in dem ein Klassifikator statt dir entscheidet, und der Modus ohne Rückfragen (`--dangerously-skip-permissions`) sind abgeschaltet.
+  - Eine Rückfrage lässt sich nicht dauerhaft abschalten. Die Auswahl „nicht mehr fragen" gibt es im Rettungssystem nicht, und Erlaubnis-Regeln aus `~/.claude/settings.json`, aus einem Projektordner oder von der Kommandozeile (`--allowedTools`) gelten nicht. Befehle, die Claude Code selbst als nur lesend kennt (`ls`, `cat`, `grep`), laufen weiter ohne Rückfrage.
+  - Hooks gelten nur aus dem Rettungssystem. Eigene Hooks aus `~/.claude/settings.json` und Hooks aus einem Projektordner laufen nicht. Starte Claude trotzdem nicht in einem Ordner von einem fremden Datenträger: Eine `CLAUDE.md` dort liest Claude als Anweisung.
+- Eigene Ergänzungen zu den Regeln kommen in `~/.claude/CLAUDE.md` (Werkzeuge > Persistenter Speicher).
 
 Fernzugriff
 -----------
