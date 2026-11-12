@@ -116,6 +116,7 @@ resize_gptfix() {
 		;;
 	primary)
 		safety_check_target "$tid" || return 0
+		safety_confirm_target "$tid" "Die primäre GPT wird in gdisk aus der Backup-GPT wiederhergestellt." || return 0
 		ui_msg "gdisk" "gdisk startet jetzt interaktiv.\n\nTastenfolge: r (Recovery) > c (load backup partition table) > v (prüfen) > w (schreiben).\nMit q beendest du ohne zu speichern."
 		sudo gdisk "$dev"
 		;;
