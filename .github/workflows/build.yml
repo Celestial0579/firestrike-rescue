@@ -40,6 +40,13 @@ jobs:
       # Ziel-Dateisysteme: Einhängen nur mit Schutzoptionen, am Einhängepunkt nachgeprüft.
       # Namen von der Ziel-Disk: nie Option, nie Befehl (auch mit echtem whiptail geprüft).
       # Claude: Texte von Datenträgern stehen in einer Datendatei, nie in einer CLAUDE.md.
+      # Persistenter Speicher: nur vom eigenen Stick, nie ungefragt, frs.conf als Daten.
+      # Klon-Job: Label und Namen der Quelle werden nie zum Befehl.
+      # Image-Partitionen: nur lesend und mit Schutzoptionen, am Einhängepunkt nachgeprüft.
+      # Fortsetzen: Die Suche nach Rettungsfällen schreibt nicht.
+      # Dialoge: Texte von Datenträgern nur gefiltert (auch mit echtem whiptail geprüft).
+      # Sperre für Claude: Der Hook entscheidet, nicht das Modell. Mit der CLI der ISO prüft es
+      # der Selbsttest im Boot-Test (selftest_claude).
       - name: Schutz-Tests
         run: |
           sudo apt-get install -y -qq jq whiptail
@@ -50,6 +57,13 @@ jobs:
           bash tests/unit-case-names.sh
           bash tests/dialog-menu-entries.sh
           bash tests/unit-claude-context.sh
+          bash tests/unit-persist.sh
+          bash tests/unit-clone-job.sh
+          bash tests/unit-image-mount.sh
+          bash tests/unit-target-search.sh
+          bash tests/unit-dialog-text.sh
+          bash tests/dialog-disk-text.sh
+          bash tests/unit-claude-guard.sh
       - name: Unit-Tests
         run: |
           sudo apt-get install -y -qq jq whiptail

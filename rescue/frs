@@ -66,6 +66,8 @@ selftest() {
 	fi
 	[[ $(casefile_peek "$dir/case/case.env" STATE) == "done" ]] || ok=0
 	selftest_target "$dir" || ok=0
+	selftest_search "$dir" || ok=0
+	selftest_claude "$dir" || ok=0
 	# Werkzeuge vorhanden?
 	local t
 	for t in ddrescue partclone.ntfs partclone.extfs ntfsresize smartctl nvme sgdisk sfdisk cryptsetup dislocker \
@@ -153,6 +155,10 @@ selftest_target() {
 			fi
 		fi
 		umount "$FRS_TARGET_MNT"
+		# Dasselbe Abbild noch einmal als Partition aus einem Image: nur lesend, dieselben Sperren.
+		if [[ $fs == ext4 ]]; then
+			selftest_image "$loop" || good=0
+		fi
 		losetup -d "$loop" 2>/dev/null
 		rm -f "$img"
 	done
@@ -161,6 +167,257 @@ selftest_target() {
 	else
 		echo "FRS-SELFTEST: Ziel-Dateisysteme: Schutzoptionen wirken nicht überall"
 	fi
+	((good))
+}
+
+# Partition aus einem Image im gebooteten System: nur lesend und ohne Sonderrechte. Das Abbild
+# enthält die Verknüpfung, die Gerätedatei und das Programm aus selftest_target.
+selftest_image() {
+	local part=$1 mp="$FRS_IMAGE_MNT/selbsttest" good=1
+	if ! part_mount_ro "$part" "$mp"; then
+		echo "FRS-SELFTEST: Image-Partition lässt sich nicht geschützt einhängen. Protokoll:"
+		tail -n 8 "$FRS_LOG" | sed 's/^/FRS-SELFTEST:   /'
+		return 1
+	fi
+	echo "FRS-SELFTEST: Image-Partition eingehängt als $(findmnt -n -o FSTYPE,VFS-OPTIONS -M "$mp" | tr -s ' \n' ' ')"
+	mount_has_opts "$mp" "${IMAGE_MOUNT_OPTS[@]}" || { echo "FRS-SELFTEST: Image-Partition: Schutzoptionen gelten nicht"; good=0; }
+	[[ -s $mp/neu ]] || { echo "FRS-SELFTEST: Image-Partition: Datei ist nicht lesbar"; good=0; }
+	if { echo x >"$mp/schreibprobe"; } 2>/dev/null; then
+		echo "FRS-SELFTEST: Image-Partition: Schreiben war möglich"
+		good=0
+	fi
+	if cat "$mp/verknuepfung" >/dev/null 2>&1; then
+		echo "FRS-SELFTEST: Image-Partition: Verknüpfung wurde verfolgt"
+		good=0
+	fi
+	if { echo x >"$mp/geraet"; } 2>/dev/null; then
+		echo "FRS-SELFTEST: Image-Partition: Gerätedatei wurde geöffnet"
+		good=0
+	fi
+	if "$mp/programm" 2>/dev/null; then
+		echo "FRS-SELFTEST: Image-Partition: Programm aus dem Image wurde ausgeführt"
+		good=0
+	fi
+	umount "$mp"
+	((good)) && echo "FRS-SELFTEST: Image-Partition: nur lesend, Schutzoptionen wirken"
+	((good))
+}
+
+# Suche nach Rettungsfällen im gebooteten System: Sie darf die Disk nicht verändern. Eine
+# gedachte Disk (Abbild mit zwei Partitionen) trägt auf der zweiten einen Rettungsfall. Geprüft
+# wird Byte für Byte, dass die Suche nichts schreibt, und dass die Partition erst nach der Wahl
+# des Rettungsfalls beschreibbar ist.
+selftest_search() {
+	local dir=$1 img="$1/suche.raw" loop good=1 before after i
+	truncate -s 96M "$img"
+	sgdisk -n 1:0:+32M -n 2:0:0 "$img" >/dev/null 2>&1
+	loop=$(losetup --find --show -P "$img")
+	udevadm settle
+	mkfs.ext4 -q -F "${loop}p1"
+	mkfs.ext4 -q -F "${loop}p2"
+	mkdir -p "$dir/roh"
+	mount "${loop}p2" "$dir/roh"
+	mkdir -p "$dir/roh/FRS/20261112-0900_Selbsttest"
+	casefile_create "$dir/roh/FRS/20261112-0900_Selbsttest/case.env" "SRC_ID=ABC" "SRC_SIZE=1" "STATE=done"
+	umount "$dir/roh"
+	for i in 1 2 3 4 5 6 7 8 9 10; do
+		udevadm settle
+		[[ $(lsblk -no FSTYPE "${loop}p1") == ext4 && $(lsblk -no FSTYPE "${loop}p2") == ext4 ]] && break
+		sleep 1
+	done
+	before=$(md5sum <"$loop")
+	if target_find_cases_on "$loop"; then
+		echo "FRS-SELFTEST: Suche: Rettungsfall auf $TARGET_CASE_PART, eingehängt als $(findmnt -n -o FSTYPE,VFS-OPTIONS -M "$FRS_TARGET_MNT" | tr -s ' \n' ' ')"
+		[[ $TARGET_CASE_PART == "${loop}p2" ]] || { echo "FRS-SELFTEST: Suche: falsche Partition"; good=0; }
+		mount_has_opts "$FRS_TARGET_MNT" "${TARGET_SEARCH_OPTS[@]}" || { echo "FRS-SELFTEST: Suche: nicht nur lesend oder ohne Schutzoptionen eingehängt"; good=0; }
+		[[ $(blockdev --getro "${loop}p2") == 1 ]] || { echo "FRS-SELFTEST: Suche: Partition ist nicht schreibgeschützt"; good=0; }
+		[[ $(blockdev --getro "${loop}p1") == 0 ]] || { echo "FRS-SELFTEST: Suche: Schreibschutz der Partition ohne Rettungsfall blieb zurück"; good=0; }
+		if { echo x >"$FRS_TARGET_MNT/schreibprobe"; } 2>/dev/null; then
+			echo "FRS-SELFTEST: Suche: Schreiben war möglich"
+			good=0
+		fi
+		target_search_end
+		after=$(md5sum <"$loop")
+		if [[ $before == "$after" ]]; then
+			echo "FRS-SELFTEST: Suche: Disk Byte für Byte unverändert"
+		else
+			echo "FRS-SELFTEST: Suche: Disk wurde verändert"
+			good=0
+		fi
+		[[ $(blockdev --getro "${loop}p2") == 0 ]] || { echo "FRS-SELFTEST: Suche: Schreibschutz blieb nach dem Abbruch zurück"; good=0; }
+		# Zweiter Durchlauf: Der Rettungsfall wird gewählt, jetzt muss Schreiben gehen.
+		if target_find_cases_on "$loop" && target_case_writable && { echo x >"$FRS_TARGET_MNT/schreibprobe"; } 2>/dev/null &&
+			target_mount_has_opts; then
+			echo "FRS-SELFTEST: Suche: nach der Wahl des Rettungsfalls beschreibbar, mit Schutzoptionen"
+		else
+			echo "FRS-SELFTEST: Suche: nach der Wahl des Rettungsfalls nicht beschreibbar. Protokoll:"
+			tail -n 8 "$FRS_LOG" | sed 's/^/FRS-SELFTEST:   /'
+			good=0
+		fi
+		mountpoint -q "$FRS_TARGET_MNT" && umount "$FRS_TARGET_MNT"
+	else
+		echo "FRS-SELFTEST: Suche: Rettungsfall nicht gefunden. Protokoll:"
+		tail -n 8 "$FRS_LOG" | sed 's/^/FRS-SELFTEST:   /'
+		good=0
+	fi
+	losetup -d "$loop" 2>/dev/null
+	rm -f "$img"
+	((good))
+}
+
+# Sperre für Claude im gebooteten System. Die Claude-Code-CLI der ISO läuft gegen eine Attrappe
+# der API (selftest-claude-api.py): kein Konto, kein Modell. Die Attrappe verlangt einen
+# Shell-Befehl, so wie ein Modell es täte, das einer Anweisung von einem Datenträger folgt. Ob
+# er läuft, entscheidet Claude Code mit den verwalteten Einstellungen aus /etc/claude-code.
+SELFTEST_CLAUDE=(/usr/local/bin/claude)
+
+# selftest_claude_run VERZEICHNIS NAME BEFEHL [ARBEITSVERZEICHNIS [ARGUMENTE …]]
+#   Ein Lauf der CLI, in dem die Attrappe den Shell-Befehl verlangt. Mitschnitt: NAME.json.
+#   ARGUMENTE gehen zusätzlich an die CLI.
+selftest_claude_run() {
+	local dir=$1 name=$2 cwd=${4:-$1/arbeit} port srv i
+	local -a extra=("${@:5}")
+	jq -cn --arg c "$3" '{name: "Bash", input: {command: $c, description: "Selbsttest"}}' >"$dir/$name.aufruf"
+	rm -f "$dir/$name.port" "$dir/$name.json"
+	python3 -I "$FRS_LIB/selftest-claude-api.py" "$dir/$name.port" "$dir/$name.aufruf" "$dir/$name.api" 2>"$dir/$name.api-fehler" &
+	srv=$!
+	for ((i = 0; i < 100; i++)); do
+		[[ -s $dir/$name.port ]] && break
+		sleep 0.2
+	done
+	port=$(cat "$dir/$name.port" 2>/dev/null)
+	if [[ $port =~ ^[0-9]+$ ]]; then
+		(cd "$cwd" && env -i HOME="$dir/home" PATH="$PATH" TERM=dumb LANG=C.UTF-8 \
+			CLAUDE_CONFIG_DIR="$dir/home/.claude" ANTHROPIC_BASE_URL="http://127.0.0.1:$port" \
+			ANTHROPIC_API_KEY="selbsttest-kein-schluessel" DISABLE_TELEMETRY=1 DISABLE_ERROR_REPORTING=1 \
+			DISABLE_AUTOUPDATER=1 CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 \
+			timeout 180 "${SELFTEST_CLAUDE[@]}" -p "Selbsttest: Die Attrappe gibt den Werkzeugaufruf vor." \
+			"${extra[@]}" --no-session-persistence --strict-mcp-config --output-format stream-json --verbose \
+			>"$dir/$name.json" 2>"$dir/$name.fehler" </dev/null)
+	fi
+	kill "$srv" 2>/dev/null
+	wait "$srv" 2>/dev/null
+	return 0
+}
+
+# selftest_claude_answer VERZEICHNIS NAME   Was die CLI dem "Modell" auf den Aufruf geantwortet
+#   hat: die Ausgabe des Befehls oder der Grund, aus dem er nicht lief.
+selftest_claude_answer() {
+	jq -r 'select(.type == "user") | .message.content[]? | select(.type == "tool_result") |
+		(.content | if type == "array" then map(.text? // "") | join(" ") else tostring end)' "$1/$2.json" 2>/dev/null |
+		tr -s '\n\t ' ' '
+}
+
+# selftest_claude_started VERZEICHNIS NAME   Ist die Sitzung zustande gekommen? Ein Befehl, der
+#   nicht lief, beweist sonst nichts.
+selftest_claude_started() {
+	jq -e 'select(.type == "system" and .subtype == "init")' "$1/$2.json" >/dev/null 2>&1
+}
+
+selftest_claude() {
+	local dir=$1/claude loop good=1 token answer
+	mkdir -p "$dir/arbeit" "$dir/home" "$dir/fremd/.claude"
+	token="FRS-KONTROLLE-$RANDOM$RANDOM"
+	echo "$token" >"$dir/arbeit/kontrolle.txt"
+	echo "$token" >"$dir/fremd/kontrolle.txt"
+	head -c $((4 * 1024 * 1024)) /dev/urandom >"$dir/disk.raw"
+	cp "$dir/disk.raw" "$dir/ziel.raw"
+	loop=$(losetup --find --show "$dir/disk.raw")
+	blockdev --setro "$loop"
+
+	# Kontrolle: Einen lesenden Befehl der Attrappe führt die CLI aus, seine Ausgabe kommt beim
+	# "Modell" an. Ohne das bewiese der Rest nichts.
+	selftest_claude_run "$dir" kontrolle "cat $dir/arbeit/kontrolle.txt"
+	answer=$(selftest_claude_answer "$dir" kontrolle)
+	# Was die CLI beim Start meldet, etwa einen Eintrag der Einstellungen, den sie nicht versteht.
+	head -n 5 "$dir/kontrolle.fehler" 2>/dev/null | cut -c1-200 | sed 's/^/FRS-SELFTEST:   CLI meldet: /'
+	if [[ $answer == *"$token"* ]]; then
+		echo "FRS-SELFTEST: Claude-Sperre: Kontrolle, ein lesender Befehl läuft"
+	else
+		# Eine Sperre, die sich nicht prüfen lässt, gilt als Fehler.
+		echo "FRS-SELFTEST: Claude-Sperre: nicht prüfbar, die CLI führt keinen Befehl der Attrappe aus"
+		echo "FRS-SELFTEST:   Antwort: ${answer:0:200}"
+		losetup -d "$loop" 2>/dev/null
+		return 1
+	fi
+
+	# Gesperrt: den Schreibschutz aufheben. Der Befehl hätte als root Erfolg. Die Antwort muss
+	# vom Sperr-Skript stammen: Dann hat es entschieden und nicht eine fehlende Erlaubnis.
+	selftest_claude_run "$dir" setrw "blockdev --setrw $loop"
+	answer=$(selftest_claude_answer "$dir" setrw)
+	if [[ $(blockdev --getro "$loop") == 1 && $answer == *"Gesperrt vom Rettungssystem"* ]]; then
+		echo "FRS-SELFTEST: Claude-Sperre: blockdev --setrw gesperrt, die Disk bleibt schreibgeschützt"
+	else
+		echo "FRS-SELFTEST: Claude-Sperre: blockdev --setrw nicht vom Sperr-Skript gesperrt (ro=$(blockdev --getro "$loop"))"
+		echo "FRS-SELFTEST:   Antwort: ${answer:0:200}"
+		good=0
+	fi
+	blockdev --setro "$loop"
+
+	# Dasselbe mit Anführungszeichen mitten im Wort.
+	selftest_claude_run "$dir" verschleiert "blockdev --set''rw $loop"
+	answer=$(selftest_claude_answer "$dir" verschleiert)
+	if [[ $(blockdev --getro "$loop") == 1 && $answer == *"Gesperrt vom Rettungssystem"* ]]; then
+		echo "FRS-SELFTEST: Claude-Sperre: blockdev --set''rw gesperrt"
+	else
+		echo "FRS-SELFTEST: Claude-Sperre: blockdev --set''rw nicht vom Sperr-Skript gesperrt (ro=$(blockdev --getro "$loop"))"
+		echo "FRS-SELFTEST:   Antwort: ${answer:0:200}"
+		good=0
+	fi
+	blockdev --setro "$loop"
+
+	# Schreibender Befehl: Er läuft nur, wenn der Techniker ihn bestätigt. Hier ist niemand, der
+	# bestätigt. Die Antwort muss den Grund des Sperr-Skripts nennen.
+	selftest_claude_run "$dir" dd "dd if=/dev/zero of=$dir/ziel.raw bs=1M count=1 conv=notrunc"
+	answer=$(selftest_claude_answer "$dir" dd)
+	if cmp -s "$dir/disk.raw" "$dir/ziel.raw" && [[ $answer == *"Rettungssystem: dd schreibt"* ]]; then
+		echo "FRS-SELFTEST: Claude-Sperre: dd of= verlangt die Bestätigung des Technikers"
+	else
+		echo "FRS-SELFTEST: Claude-Sperre: dd of= lief oder das Sperr-Skript hat nicht nachgefragt"
+		echo "FRS-SELFTEST:   Antwort: ${answer:0:200}"
+		good=0
+	fi
+
+	# Erlaubnis-Regeln gelten nur aus dem Rettungssystem. Eine Erlaubnis von außen (hier über die
+	# Kommandozeile, sonst aus einem Projektordner oder vom Benutzer) schaltet keine Rückfrage ab.
+	selftest_claude_run "$dir" erlaubt "touch $dir/arbeit/lief-erlaubt" "$dir/arbeit" --allowedTools Bash
+	answer=$(selftest_claude_answer "$dir" erlaubt)
+	if selftest_claude_started "$dir" erlaubt && [[ ! -e $dir/arbeit/lief-erlaubt ]]; then
+		echo "FRS-SELFTEST: Claude-Sperre: eine Erlaubnis von außen schaltet keine Rückfrage ab"
+	else
+		echo "FRS-SELFTEST: Claude-Sperre: Mit einer Erlaubnis von außen lief ein Befehl ohne Rückfrage, oder der Lauf kam nicht zustande"
+		good=0
+	fi
+	echo "FRS-SELFTEST:   Antwort: ${answer:0:120}"
+
+	# Auto-Modus: Dort entscheidet ein Klassifikator statt des Technikers, Befehle laufen ohne
+	# Rückfrage. Er ist abgeschaltet.
+	selftest_claude_run "$dir" auto "touch $dir/arbeit/lief-auto" "$dir/arbeit" --permission-mode auto
+	answer=$(selftest_claude_answer "$dir" auto)
+	if selftest_claude_started "$dir" auto && [[ ! -e $dir/arbeit/lief-auto ]]; then
+		echo "FRS-SELFTEST: Claude-Sperre: kein Auto-Modus, Modus der Sitzung: $(jq -r 'select(.type == "system" and .subtype == "init") | .permissionMode' "$dir/auto.json" 2>/dev/null | head -n 1)"
+	else
+		echo "FRS-SELFTEST: Claude-Sperre: Im Auto-Modus lief ein Befehl ohne Rückfrage, oder der Lauf kam nicht zustande"
+		good=0
+	fi
+	echo "FRS-SELFTEST:   Antwort: ${answer:0:120}"
+
+	# Ein Projektordner, wie er auf einem fremden Datenträger liegen kann, bringt eigene Hooks
+	# mit. Sie dürfen nicht laufen: Hooks kommen nur aus dem Rettungssystem.
+	jq -n --arg c "touch $dir/fremder-hook" '{hooks: {
+		SessionStart: [{hooks: [{type: "command", command: $c}]}],
+		PreToolUse: [{matcher: "*", hooks: [{type: "command", command: $c}]}]}}' >"$dir/fremd/.claude/settings.json"
+	selftest_claude_run "$dir" fremd "cat $dir/fremd/kontrolle.txt" "$dir/fremd"
+	answer=$(selftest_claude_answer "$dir" fremd)
+	if [[ $answer == *"$token"* && ! -e $dir/fremder-hook ]]; then
+		echo "FRS-SELFTEST: Claude-Sperre: Hooks aus einem Projektordner laufen nicht"
+	else
+		echo "FRS-SELFTEST: Claude-Sperre: Hook aus einem Projektordner lief oder der Lauf kam nicht zustande"
+		echo "FRS-SELFTEST:   Antwort: ${answer:0:200}"
+		good=0
+	fi
+
+	losetup -d "$loop" 2>/dev/null
 	((good))
 }
 

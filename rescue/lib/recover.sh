@@ -82,9 +82,12 @@ recover_resume() {
 	# Namen, wie der Assistent ihn vergibt (casefile_dirname_ok). Jeder andere Name könnte als
 	# Option oder als Befehl gelesen werden, sobald er in einem Menü oder einer Befehlszeile
 	# steht. Solche Einträge werden gezählt, ihr Name wird nirgends ausgegeben.
+	# Bis hierher ist die Disk nur lesend eingehängt und auf Kernelebene schreibgeschützt
+	# (target_find_cases). Jeder Ausstieg vor der Wahl eines Falls endet mit target_search_end.
 	if [[ -L $FRS_TARGET_MNT/FRS ]]; then
 		log "Fortsetzen abgelehnt: FRS auf der Ziel-Disk ist eine Verknüpfung"
 		ui_msg "Fortsetzen" "Der Ordner FRS auf dieser Disk ist eine Verknüpfung. Der Assistent legt FRS immer als Ordner an und verwendet diese Disk so nicht.\n\nStammt die Disk aus fremder Hand, ist Vorsicht angebracht."
+		target_search_end
 		return 0
 	fi
 	local items=() c name st skipped=0
@@ -109,11 +112,25 @@ recover_resume() {
 	fi
 	if ((${#items[@]} == 0)); then
 		ui_msg "Fortsetzen" "Auf dieser Disk liegt kein Rettungsfall, den der Assistent verwenden kann."
+		target_search_end
 		return 0
 	fi
 	local pick
-	pick=$(ui_menu "Fortsetzen" "Welcher Rettungsfall?" -- "${items[@]}") || return 0
-	casefile_dirname_ok "$pick" || return 0
+	if ! pick=$(ui_menu "Fortsetzen" "Welcher Rettungsfall?" -- "${items[@]}") || ! casefile_dirname_ok "$pick"; then
+		target_search_end
+		return 0
+	fi
+	# Der Techniker hat die Disk als Ziel genannt und einen Rettungsfall auf ihr gewählt. Erst
+	# jetzt wird sie beschreibbar eingehängt. Eine Disk, die in dieser Sitzung als Quelle
+	# geschützt wurde, bleibt geschützt.
+	if ! safety_check_target "$tid"; then
+		target_search_end
+		return 0
+	fi
+	if ! target_case_writable; then
+		die "Die Partition mit dem Rettungsfall ließ sich nicht beschreibbar einhängen. Details im Protokoll."
+		return 0
+	fi
 	c="$FRS_TARGET_MNT/FRS/$pick"
 	if ! casefile_load "$c/case.env"; then
 		recover_case_invalid "$c"
@@ -160,7 +177,7 @@ recover_after() {
 		return 0
 	fi
 	while true; do
-		choice=$(ui_menu "Image weiterverwenden" "Rettung abgeschlossen: $(basename "$case")\n\n$(ddrescuelog -t "$case/image.map" 2>/dev/null | grep -E 'rescued|bad' | head -n 3)\n\nWas soll mit dem Image passieren?" -- \
+		choice=$(ui_menu "Image weiterverwenden" "Rettung abgeschlossen: $(basename "$case")\n\n$(ddrescuelog -t "$case/image.map" 2>/dev/null | grep -E 'rescued|bad' | head -n 3 | text_clean)\n\nWas soll mit dem Image passieren?" -- \
 			copy "Dateien aus dem Image kopieren" \
 			disk "Image auf eine neue Disk schreiben (Größe wird angepasst)" \
 			repair "Dateisystem auf einer Kopie des Images reparieren" \
@@ -197,11 +214,38 @@ image_attach() {
 	echo "$loop"
 }
 
+# Schutzoptionen für jede Partition aus einem Image. Ein Image ist der Inhalt einer fremden
+# Disk: Was darin liegt, wird gelesen und kopiert, sonst nichts.
+#   ro           Es wird nicht geschrieben.
+#   nodev        Gerätedateien im Image öffnen kein Gerät.
+#   nosuid       Setuid- und Setgid-Bits im Image wirken nicht.
+#   noexec       Aus dem Image wird nichts ausgeführt.
+#   nosymfollow  Verknüpfungen im Image werden nicht verfolgt. Eine Verknüpfung nach /etc oder
+#                in den persistenten Speicher zeigte sonst auf Dateien des Rettungssystems.
+#                Kopiert werden Verknüpfungen weiterhin, als Verknüpfungen.
+IMAGE_MOUNT_OPTS=(ro nodev nosuid noexec nosymfollow)
+
 # Partition nur lesend einhängen; behandelt NTFS, ext*, XFS, Btrfs und BitLocker.
+# Danach wird am Einhängepunkt geprüft, ob alle Schutzoptionen gelten (mount_enforce).
 part_mount_ro() {
-	local part=$1 mp=$2 fs
+	local part=$1 mp=$2 fs opts
+	opts=$(
+		IFS=,
+		echo "${IMAGE_MOUNT_OPTS[*]}"
+	)
 	fs=$(sudo blkid -o value -s TYPE "$part")
 	sudo install -d "$mp"
+	if mountpoint -q "$mp"; then
+		# Hängt genau diese Partition schon geschützt dort, bleibt sie eingehängt.
+		if [[ $(findmnt -n -o SOURCE -M "$mp" 2>/dev/null) == "$part" ]] && mount_has_opts "$mp" "${IMAGE_MOUNT_OPTS[@]}"; then
+			return 0
+		fi
+		# Über etwas anderes wird nicht eingehängt: Sonst wäre unklar, wofür die Prüfung gilt.
+		if ! run sudo umount "$mp"; then
+			log "Einhängen abgelehnt: $mp ist noch in Benutzung und lässt sich nicht aushängen."
+			return 1
+		fi
+	fi
 	case $fs in
 	BitLocker)
 		local key
@@ -209,16 +253,17 @@ part_mount_ro() {
 		sudo install -d "$FRS_RUN/dislocker-$(basename "$part")"
 		run sudo dislocker -r -V "$part" -p"$key" -- "$FRS_RUN/dislocker-$(basename "$part")" ||
 			{ die "Entschlüsselung fehlgeschlagen. Schlüssel prüfen."; return 1; }
-		run sudo mount -o ro,loop "$FRS_RUN/dislocker-$(basename "$part")/dislocker-file" "$mp" ||
-			run sudo ntfs-3g -o ro "$FRS_RUN/dislocker-$(basename "$part")/dislocker-file" "$mp"
+		run sudo mount -o "$opts,loop" "$FRS_RUN/dislocker-$(basename "$part")/dislocker-file" "$mp" ||
+			run sudo ntfs-3g -o ro,nodev,nosuid,noexec "$FRS_RUN/dislocker-$(basename "$part")/dislocker-file" "$mp"
 		;;
-	ntfs) run sudo mount -t ntfs3 -o ro "$part" "$mp" || run sudo ntfs-3g -o ro,recover "$part" "$mp" ;;
-	ext2 | ext3 | ext4) run sudo mount -o ro,noload "$part" "$mp" ;;
-	xfs) run sudo mount -o ro,norecovery "$part" "$mp" ;;
-	btrfs) run sudo mount -o ro,rescue=usebackuproot "$part" "$mp" || run sudo mount -o ro,rescue=all "$part" "$mp" ;;
+	ntfs) run sudo mount -t ntfs3 -o "$opts" "$part" "$mp" || run sudo ntfs-3g -o ro,nodev,nosuid,noexec,recover "$part" "$mp" ;;
+	ext2 | ext3 | ext4) run sudo mount -o "$opts,noload" "$part" "$mp" ;;
+	xfs) run sudo mount -o "$opts,norecovery" "$part" "$mp" ;;
+	btrfs) run sudo mount -o "$opts,rescue=usebackuproot" "$part" "$mp" || run sudo mount -o "$opts,rescue=all" "$part" "$mp" ;;
 	"") return 1 ;;
-	*) run sudo mount -o ro "$part" "$mp" ;;
-	esac
+	*) run sudo mount -o "$opts" "$part" "$mp" ;;
+	esac || return 1
+	mount_enforce "$mp" "${IMAGE_MOUNT_OPTS[@]}"
 }
 
 image_pick_part() {

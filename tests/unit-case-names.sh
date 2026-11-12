@@ -66,6 +66,8 @@ safety_set_ro() { :; }
 safety_check_target() { return 0; }
 target_prepare() { return 0; }
 target_find_cases() { return 0; }
+target_search_end() { echo ende >>"$T/suche"; }
+target_case_writable() { echo beschreibbar >>"$T/suche"; }
 disk_resolve() { echo /dev/sdx; }
 disk_label() { echo "Disk"; }
 ddrescuelog() { :; }

@@ -1,28 +1,58 @@
 # shellcheck shell=bash
 # Datenträger erkennen, SMART bewerten, Disks über Seriennummer/WWN auswählen.
 
+# Ist PFAD ein Blockgerät? Eigene Funktion, damit Tests sie ersetzen können.
+is_blockdev() { [[ -b $1 ]]; }
+
 # Gerät, von dem das Rettungssystem gestartet wurde (der Stick), z. B. /dev/sdb.
+#
+# Maßgeblich ist das eingehängte Live-Medium unter /cdrom: Von ihm läuft das System wirklich.
+# Das Label FRS_RESCUE zählt nur, wenn /cdrom kein Gerät mehr ist (Start "in den RAM"), und nur,
+# wenn genau eine Disk es trägt. Ein Label kann jeder auf jede Disk schreiben: Eine fremde Disk
+# mit diesem Label gälte sonst als der Stick und ihre Partition FRS-DATA als eigener Speicher.
 boot_disk() {
-	local dev
-	dev=$(blkid -t LABEL=FRS_RESCUE -o device 2>/dev/null | head -n1)
-	[[ -z $dev ]] && dev=$(findmnt -no SOURCE /cdrom 2>/dev/null)
-	[[ -z $dev ]] && return 1
-	local pk
-	pk=$(lsblk -no PKNAME "$dev" 2>/dev/null | head -n1)
-	if [[ -n $pk ]]; then echo "/dev/$pk"; else echo "$dev"; fi
+	local dev pk cand disks=()
+	dev=$(findmnt -n -o SOURCE /cdrom 2>/dev/null | head -n1)
+	if [[ $dev == /dev/* ]] && is_blockdev "$dev"; then
+		pk=$(lsblk -no PKNAME "$dev" 2>/dev/null | head -n1)
+		if [[ -n $pk ]]; then echo "/dev/$pk"; else echo "$dev"; fi
+		return 0
+	fi
+	# Die ISO trägt das Label auf der ganzen Disk und auf ihrer ersten Partition. Gezählt werden
+	# deshalb Disks, nicht Geräte.
+	while IFS= read -r cand; do
+		[[ -n $cand ]] || continue
+		pk=$(lsblk -no PKNAME "$cand" 2>/dev/null | head -n1)
+		[[ -n $pk ]] && cand="/dev/$pk"
+		[[ " ${disks[*]} " == *" $cand "* ]] || disks+=("$cand")
+	done < <(blkid -t LABEL=FRS_RESCUE -o device 2>/dev/null)
+	((${#disks[@]} == 1)) || return 1
+	echo "${disks[0]}"
 }
 
 # Alle physischen Disks als JSON-Zeilen (ohne Loop, RAM, CD, ohne den Boot-Stick).
+#
+# Was eine Disk über sich meldet, steht danach in Dialogen, in Menüs und in der Falldatei:
+#   - Das Modell wird gefiltert (TEXT_UNSAFE_RE in common.sh): nur sichtbare Zeichen, höchstens
+#     40 (so lang sind die Modellangaben von ATA- und NVMe-Disks).
+#   - Seriennummer und WWN sind Kennungen. Der Techniker tippt sie zur Bestätigung ab, und über
+#     sie wird die Disk wiedergefunden. Sie gelten deshalb nur, wenn sie aus einem engen
+#     Zeichenvorrat bestehen, demselben wie in der Falldatei. Sonst gilt die Disk als eine ohne
+#     Seriennummer bzw. ohne WWN und wird über das nächste Merkmal erkannt (disk_id).
 disks_json() {
 	local bd
 	bd=$(boot_disk 2>/dev/null || true)
 	lsblk -J -b -d -o NAME,PATH,SIZE,MODEL,SERIAL,WWN,TRAN,ROTA,TYPE,RM,LOG-SEC,PHY-SEC 2>/dev/null |
-		jq -c --arg bd "$bd" '.blockdevices[]
+		jq -c --arg bd "$bd" --arg re "$TEXT_UNSAFE_RE" '
+			def trim: gsub("^\\s+|\\s+$"; "");
+			def id_or_empty: if test("^[A-Za-z0-9][A-Za-z0-9 #+.:=@_/%?,-]{0,199}$") then . else "" end;
+			.blockdevices[]
 			| select(.type == "disk")
 			| select(.name | test("^(loop|ram|zram|sr|dm-|md)") | not)
 			| select(.path != $bd)
-			| .model = ((.model // "") | gsub("^\\s+|\\s+$"; ""))
-			| .serial = ((.serial // "") | gsub("^\\s+|\\s+$"; ""))'
+			| .model = ((.model // "") | trim | gsub($re; "?") | .[0:40])
+			| .serial = ((.serial // "") | trim | id_or_empty)
+			| .wwn = ((.wwn // "") | trim | id_or_empty | if . == "" then null else . end)'
 }
 
 # Eindeutige, stabile Kennung einer Disk: Seriennummer, sonst WWN, sonst Pfad.
@@ -142,9 +172,12 @@ disk_pick() {
 }
 
 # Partitionen einer Disk als JSON-Zeilen (mit Dateisystem und Größe).
+# Label und Partitionsname stehen danach in Menüs und werden deshalb gefiltert (TEXT_UNSAFE_RE).
 disk_parts() {
 	lsblk -J -b -o NAME,PATH,SIZE,FSTYPE,LABEL,PARTTYPE,PARTLABEL,MOUNTPOINT,FSAVAIL "$1" 2>/dev/null |
-		jq -c '.blockdevices[0].children[]?'
+		jq -c --arg re "$TEXT_UNSAFE_RE" '.blockdevices[0].children[]?
+			| if .label != null then .label |= gsub($re; "?") else . end
+			| if .partlabel != null then .partlabel |= gsub($re; "?") else . end'
 }
 
 # Wird irgendeine Partition der Disk gerade benutzt?

@@ -162,15 +162,27 @@ ui_password() {
 		--passwordbox "$2" 12 "$UI_W" 3>&1 1>/dev/tty 2>&3
 }
 
+# ui_textfile TITEL DATEI   Zeigt eine Datei. Ihr Inhalt kann von einem Datenträger stammen
+# (Bericht im Fallordner, SMART-Ausgabe, Protokoll). Gezeigt wird deshalb eine gefilterte Kopie
+# (text_clean), die Datei selbst bleibt, wie sie ist.
 ui_textfile() {
 	_ui_size
-	whiptail --backtitle "$UI_BACKTITLE" --title "$1" --scrolltext --textbox "$2" "$UI_H" "$UI_W" >/dev/tty
+	local f
+	if [[ ! -r $2 ]]; then
+		ui_msg "$1" "Die Datei gibt es nicht, oder sie ist nicht lesbar."
+		return 0
+	fi
+	f=$(mktemp)
+	expand "$2" 2>/dev/null | text_clean >"$f"
+	whiptail --backtitle "$UI_BACKTITLE" --title "$1" --scrolltext --textbox "$f" "$UI_H" "$UI_W" >/dev/tty
+	rm -f "$f"
 }
 
+# ui_text TITEL TEXT   Zeigt einen längeren Text zum Blättern. "\n" im Text ist ein Zeilenwechsel.
 ui_text() {
 	local f
 	f=$(mktemp)
-	printf '%s\n' "$2" >"$f"
+	printf '%s\n' "${2//\\n/$'\n'}" >"$f"
 	ui_textfile "$1" "$f"
 	rm -f "$f"
 }
@@ -183,6 +195,29 @@ ui_info() {
 pause() {
 	echo
 	read -r -p "Weiter mit Enter … " _
+}
+
+# ---------------------------------------------------------------------------
+# Texte von Datenträgern
+# ---------------------------------------------------------------------------
+# Was ein Datenträger über sich meldet (Modell, Label, Partitionsname) oder was auf ihm steht
+# (Bericht, Protokoll), kommt nur gefiltert in einen Dialog und in den Zustand für Claude. Es
+# bleiben sichtbare Zeichen: ASCII, lateinische Buchstaben mit Akzent, übliche Satzzeichen und
+# die Linien von lsblk. Alles andere wird zu "?": Steuerzeichen und Escape-Folgen, unsichtbare
+# Zeichen, Wechsel der Schreibrichtung, der Backtick und der Backslash.
+# Der Backslash gehört dazu, weil whiptail die Zeichenfolge "\n" in jedem Text als Zeilenwechsel
+# liest. Ein Label könnte sonst eigene Zeilen in einen Dialog setzen, etwa eine zweite
+# Aufforderung zur Bestätigung.
+TEXT_UNSAFE_RE='[^\x{20}-\x{5B}\x{5D}-\x{5F}\x{61}-\x{7E}\x{A1}-\x{AC}\x{AE}-\x{24F}\x{2010}-\x{2027}\x{2030}-\x{203A}\x{2500}-\x{257F}]'
+
+# text_clean [BREITE]   Filtert die Standardeingabe Zeile für Zeile. Mit BREITE wird jede Zeile
+# auf so viele Zeichen gekürzt und endet dann auf "…". Eine gekürzte Zeile wird im Dialog nicht
+# umbrochen: Auch der Rest eines langen Labels kann so keine eigene Zeile bilden.
+# Die Breite übergibt safety.sh. In dieser Datei allein sieht shellcheck keinen solchen Aufruf.
+# shellcheck disable=SC2120
+text_clean() {
+	jq -Rr --arg re "$TEXT_UNSAFE_RE" --argjson w "${1:-0}" \
+		'gsub($re; "?") | if $w > 1 and length > $w then .[0:$w - 1] + "…" else . end'
 }
 
 # ---------------------------------------------------------------------------
@@ -207,4 +242,40 @@ tmux_run() {
 		tmux set-option -t "$name" remain-on-exit off >/dev/null
 	fi
 	tmux attach -t "$name" || true
+}
+
+# ---------------------------------------------------------------------------
+# Fremde Dateisysteme einhängen
+# ---------------------------------------------------------------------------
+# mount_has_opts EINHÄNGEPUNKT OPTION...   Gelten dort wirklich alle genannten Optionen?
+# Gefragt wird der Kernel (findmnt), nicht der eigene Aufruf.
+mount_has_opts() {
+	local mp=$1 line opt n=0
+	shift
+	while IFS= read -r line; do
+		n=$((n + 1))
+		for opt in "$@"; do
+			[[ ",$line," == *",$opt,"* ]] || return 1
+		done
+	done < <(findmnt -n -o VFS-OPTIONS -M "$mp" 2>/dev/null)
+	((n > 0))
+}
+
+# mount_enforce EINHÄNGEPUNKT OPTION...   Setzt fehlende Optionen am Einhängepunkt nach. Gelten
+# danach nicht alle, wird wieder ausgehängt: lieber nichts eingehängt als etwas ohne Schutz.
+# "remount,bind" ändert nur die Optionen des Einhängepunkts, nicht das Dateisystem. Mit -i ruft
+# mount dafür kein Hilfsprogramm des Dateisystems auf (ntfs-3g kann nicht neu einhängen).
+mount_enforce() {
+	local mp=$1 opts
+	shift
+	mount_has_opts "$mp" "$@" && return 0
+	opts=$(
+		IFS=,
+		echo "$*"
+	)
+	run sudo mount -i -o "remount,bind,$opts" "$mp"
+	mount_has_opts "$mp" "$@" && return 0
+	log "Einhängen abgelehnt: An $mp gelten nicht alle Schutzoptionen ($opts). Vorhanden: $(findmnt -n -o VFS-OPTIONS -M "$mp" 2>/dev/null | tr '\n' ' ')"
+	run sudo umount "$mp"
+	return 1
 }

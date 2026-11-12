@@ -114,7 +114,11 @@ safety_confirm_target() {
 
 	# Die Aufforderung steht zuletzt, direkt über dem Eingabefeld, und muss sichtbar bleiben.
 	# Reicht der Bildschirm nicht für alles, wird deshalb die Partitionsliste gekürzt.
-	parts=$(lsblk -o NAME,SIZE,FSTYPE,LABEL "$tdev" 2>/dev/null)
+	# Die Label in der Liste stammen von der Ziel-Disk. Gefiltert und auf die Breite des Dialogs
+	# gekürzt können sie keine eigene Zeile in den Dialog setzen, etwa eine zweite Aufforderung
+	# zur Bestätigung.
+	_ui_size
+	parts=$(lsblk -o NAME,SIZE,FSTYPE,LABEL "$tdev" 2>/dev/null | text_clean "$((UI_W - 6))")
 	if [[ -n $parts ]]; then
 		parts=$(ui_fold "$parts")
 		n=$(wc -l <<<"$parts")

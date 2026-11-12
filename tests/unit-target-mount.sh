@@ -15,6 +15,8 @@ cd "$(dirname "$0")/.." || exit 1
 
 T=$(mktemp -d)
 # shellcheck disable=SC1091
+. rescue/lib/common.sh
+# shellcheck disable=SC1091
 . rescue/lib/target.sh
 FRS_TARGET_MNT=/mnt/frs-target
 
@@ -120,7 +122,7 @@ reset
 NTFS3_OK=0 REMOUNT_OK=0
 mount_part ntfs
 check "Nachsetzen scheitert: Ziel abgelehnt und wieder ausgehängt" '[[ $RC != 0 && -z $OPTS && $CALLS == *"umount /mnt/frs-target"* ]]'
-check "Grund steht im Protokoll" '[[ $LOG == *"Ziel abgelehnt"*"nosymfollow"* ]]'
+check "Grund steht im Protokoll" '[[ $LOG == *"Einhängen abgelehnt"*"nosymfollow"* ]]'
 
 echo "Der Kernel übernimmt eine Option nicht:"
 for o in nodev nosuid noexec nosymfollow; do

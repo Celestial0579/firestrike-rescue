@@ -1,17 +1,101 @@
 # shellcheck shell=bash
 # Persistenter Speicher auf dem Boot-Stick (Partition FRS-DATA, LUKS2 + ext4).
 # Die ISO wird dafür nicht verändert: Die Partition wird hinter den ISO-Bereich angehängt.
+#
+# Wer den Speicher stellt, bestimmt die Sitzung: Aus ihm kommen Programme (~/.local/bin), die
+# Regeln und Einstellungen für Claude (~/.claude), SSH-Schlüssel und WLAN-Profile. Deshalb gilt:
+#   - Der eigene Speicher ist die Partition FRS-DATA auf dem Stick, von dem das System läuft,
+#     und nur sie. Eine Partition gleichen Namens auf einer anderen Disk wird nie verwendet.
+#   - Eingebunden wird er erst, wenn der Techniker ihn in dieser Sitzung freigibt: mit der
+#     Passphrase (verschlüsselt) oder mit einem ausdrücklichen Ja (unverschlüsselt).
+#   - Aus dem Speicher wird nichts als Shell-Code gelesen. frs.conf ist eine Liste von
+#     Einstellungen (persist_config_load).
 
 PERSIST_LABEL="FRS-DATA"
 PERSIST_MAPPER="frs-data"
+PERSIST_MAPPER_DEV="/dev/mapper/$PERSIST_MAPPER"
+PERSIST_CONFIG="/etc/frs/frs.conf"
 # Verzeichnisse im Home, die auf die Persistenz zeigen
 PERSIST_HOME_DIRS=(.claude .config/Claude .local/share/keyrings .local/share/claude .local/bin .ssh .config/rclone)
 
+# persist_candidates DISK   Partitionen von DISK, die den Namen des Speichers tragen.
+persist_candidates() {
+	lsblk -J -o PATH,PARTLABEL,LABEL "$1" 2>/dev/null |
+		jq -r --arg l "$PERSIST_LABEL" '.blockdevices[0].children[]? | select(.partlabel == $l or .label == $l) | .path'
+}
+
+# Die Partition des eigenen Speichers: FRS-DATA auf dem Boot-Stick. Ist der Stick nicht sicher
+# zu erkennen oder tragen dort mehrere Partitionen den Namen, gibt es keinen Speicher.
 persist_find() {
-	local d
-	d=$(blkid -t PARTLABEL="$PERSIST_LABEL" -o device 2>/dev/null | head -n1)
-	[[ -z $d ]] && d=$(blkid -t LABEL="$PERSIST_LABEL" -o device 2>/dev/null | grep -v mapper | head -n1)
-	[[ -n $d ]] && echo "$d"
+	local bd parts
+	bd=$(boot_disk 2>/dev/null) || return 1
+	mapfile -t parts < <(persist_candidates "$bd")
+	((${#parts[@]} == 1)) || return 1
+	echo "${parts[0]}"
+}
+
+# Partitionen mit dem Namen des Speichers auf anderen Disks als dem Boot-Stick.
+persist_foreign() {
+	local bd
+	bd=$(boot_disk 2>/dev/null || true)
+	lsblk -J -o PATH,PKNAME,TYPE,PARTLABEL,LABEL 2>/dev/null |
+		jq -r --arg l "$PERSIST_LABEL" --arg bd "$bd" '.blockdevices[] | .. | objects
+			| select(.type? == "part") | select(.partlabel == $l or .label == $l)
+			| select(("/dev/" + (.pkname // "")) != $bd) | .path'
+}
+
+# Sagt einmal je Sitzung, dass eine fremde Partition den Namen des Speichers trägt. Sie wird
+# weder eingehängt noch sonst angefasst.
+persist_foreign_notice() {
+	local list
+	list=$(persist_foreign | tr '\n' ' ')
+	[[ -n ${list// /} ]] || return 0
+	log "Partition mit dem Namen $PERSIST_LABEL auf einer anderen Disk wird nicht verwendet: $list"
+	[[ -f $FRS_RUN/persist-foreign-told ]] && return 0
+	touch "$FRS_RUN/persist-foreign-told"
+	ui_msg "Persistenter Speicher" "Auf einer anderen Disk liegt eine Partition mit dem Namen $PERSIST_LABEL:\n\n   $list\n\nDer Speicher dieses Rettungssystems liegt nur auf dem Stick, von dem es gestartet wurde. Die Partition wird nicht verwendet und nicht eingehängt.\n\nStammt die Disk aus fremder Hand, ist Vorsicht angebracht. Ist es dein Speicher auf einem anderen Stick, starte von jenem Stick."
+}
+
+# Einstellungen, die frs.conf setzen darf, mit dem Muster ihres Wertes.
+persist_config_pattern() {
+	case $1 in
+	FRS_TECHNIKER) echo '^[^[:cntrl:]"$`\]{0,100}$' ;;
+	FRS_TARGET_FS) echo '^(ext4|exfat)$' ;;
+	FRS_SSH_AUTOSTART) echo '^[01]$' ;;
+	*) return 1 ;;
+	esac
+}
+
+# persist_config_load DATEI   Liest frs.conf als Daten, nie als Shell-Code.
+# Gültig sind Leerzeilen, Kommentare (#) und Zeilen der Form NAME=Wert oder NAME="Wert" für die
+# Namen aus persist_config_pattern. Solche Zeilen setzen die gleichnamige Variable. Jede andere
+# Zeile wird nicht übernommen, ihre Nummer steht danach in PERSIST_CONFIG_REJECTED.
+persist_config_load() {
+	local LC_ALL=C file=$1 line key value pattern n=0
+	local quoted='^([A-Z_]+)="([^"]*)"$' bare='^([A-Z_]+)=([A-Za-z0-9._-]*)$'
+	PERSIST_CONFIG_REJECTED=""
+	[[ -f $file && ! -L $file && -r $file ]] || return 1
+	while IFS= read -r line || [[ -n $line ]]; do
+		n=$((n + 1))
+		if ((n > 200)); then
+			PERSIST_CONFIG_REJECTED+=" ab $n"
+			break
+		fi
+		line=${line%$'\r'}
+		line=${line#"${line%%[![:space:]]*}"}
+		line=${line%"${line##*[![:space:]]}"}
+		[[ -z $line || $line == \#* ]] && continue
+		if [[ $line =~ $quoted || $line =~ $bare ]]; then
+			key=${BASH_REMATCH[1]}
+			value=${BASH_REMATCH[2]}
+			if pattern=$(persist_config_pattern "$key") && [[ $value =~ $pattern ]]; then
+				printf -v "$key" '%s' "$value"
+				continue
+			fi
+		fi
+		PERSIST_CONFIG_REJECTED+=" $n"
+	done 2>/dev/null <"$file"
+	return 0
 }
 
 persist_is_open() { mountpoint -q "$FRS_PERSIST"; }
@@ -24,7 +108,7 @@ persist_open() {
 	[[ -z $dev ]] && return 1
 	local fsdev=$dev
 	if [[ $(sudo blkid -o value -s TYPE "$dev") == crypto_LUKS ]]; then
-		if [[ ! -e /dev/mapper/$PERSIST_MAPPER ]]; then
+		if [[ ! -e $PERSIST_MAPPER_DEV ]]; then
 			local pw tries=0
 			while ((tries < 3)); do
 				pw=$(ui_password "Persistenter Speicher" "Passphrase für den persistenten Speicher (Configs, Claude-Login):\n\nAbbrechen = ohne Persistenz weiter") || return 1
@@ -32,12 +116,23 @@ persist_open() {
 				tries=$((tries + 1))
 				ui_msg "Falsche Passphrase" "Entsperren fehlgeschlagen ($tries/3)."
 			done
-			[[ -e /dev/mapper/$PERSIST_MAPPER ]] || return 1
+			[[ -e $PERSIST_MAPPER_DEV ]] || return 1
 		fi
-		fsdev=/dev/mapper/$PERSIST_MAPPER
+		fsdev=$PERSIST_MAPPER_DEV
+	else
+		# Ohne Verschlüsselung gibt es keine Passphrase, die den Speicher als den eigenen ausweist.
+		# Er wird deshalb nie ohne Rückfrage eingebunden. Beim Start fragt der Assistent nur einmal.
+		[[ ${1:-} == startup && -f $FRS_RUN/persist-plain-declined ]] && return 1
+		if ! ui_yesno "Speicher nicht verschlüsselt" "Der persistente Speicher auf dem Stick ($dev) ist nicht verschlüsselt.\n\nWer den Stick in der Hand hatte, kann seinen Inhalt verändert haben: Programme unter ~/.local/bin, Regeln und Einstellungen für Claude, SSH-Schlüssel, WLAN-Profile. Der Assistent bindet das alles ein.\n\nWar der Stick immer bei dir? Dann den Speicher verwenden?" --defaultno; then
+			touch "$FRS_RUN/persist-plain-declined"
+			log "Unverschlüsselter Speicher $dev nicht eingebunden (abgelehnt)"
+			return 1
+		fi
 	fi
 	sudo install -d "$FRS_PERSIST"
-	run sudo mount -o noatime "$fsdev" "$FRS_PERSIST" || { ui_msg "Persistenz" "Einhängen fehlgeschlagen, siehe Protokoll."; return 1; }
+	# Im Speicher liegen Programme und Verknüpfungen (~/.local/bin). Gerätedateien und
+	# Setuid-Bits braucht er nicht.
+	run sudo mount -o noatime,nodev,nosuid "$fsdev" "$FRS_PERSIST" || { ui_msg "Persistenz" "Einhängen fehlgeschlagen, siehe Protokoll."; return 1; }
 	persist_bind
 	log "Persistenz eingehängt: $dev"
 	log_init
@@ -54,8 +149,9 @@ persist_bind() {
 	# Eigene Konfiguration: /persist/config wird zu /etc/frs
 	sudo install -d /etc/frs
 	mountpoint -q /etc/frs || run sudo mount --bind "$FRS_PERSIST/config" /etc/frs
-	[[ -f /etc/frs/frs.conf ]] || cat >/etc/frs/frs.conf <<-'EOF'
+	[[ -f $PERSIST_CONFIG ]] || cat >"$PERSIST_CONFIG" <<-'EOF'
 		# Firestrike Rescue – eigene Einstellungen (liegt auf dem persistenten Speicher)
+		# Eine Einstellung pro Zeile, NAME=Wert. Die Datei wird als Liste gelesen, nicht als Skript.
 		# Firmen- bzw. Technikername für Berichte
 		#FRS_TECHNIKER="Vorname Nachname"
 		# Standard-Dateisystem beim Formatieren von Ziel-Disks: ext4 oder exfat
@@ -77,8 +173,11 @@ persist_bind() {
 
 		- Antworte auf Deutsch.
 	EOF
-	# shellcheck disable=SC1091
-	[[ -r /etc/frs/frs.conf ]] && . /etc/frs/frs.conf
+	# frs.conf wird gelesen, nicht ausgeführt.
+	if persist_config_load "$PERSIST_CONFIG" && [[ -n $PERSIST_CONFIG_REJECTED ]]; then
+		log "frs.conf: Zeilen nicht übernommen:$PERSIST_CONFIG_REJECTED"
+		ui_msg "frs.conf" "Diese Zeilen der frs.conf wurden nicht übernommen:$PERSIST_CONFIG_REJECTED\n\nDie Datei ist eine Liste von Einstellungen und wird nicht als Skript ausgeführt. Erlaubt sind, je eine pro Zeile:\n\n   FRS_TECHNIKER=\"Vorname Nachname\"\n   FRS_TARGET_FS=ext4 oder exfat\n   FRS_SSH_AUTOSTART=0 oder 1\n\nBearbeiten: Werkzeuge > Persistenter Speicher > frs.conf bearbeiten."
+	fi
 }
 
 persist_close() {
@@ -105,7 +204,11 @@ persist_free_bytes() {
 
 persist_create() {
 	local bd
-	bd=$(boot_disk) || { ui_msg "Persistenz" "Der Boot-Stick wurde nicht gefunden (Start aus dem RAM oder per Ventoy?)."; return 1; }
+	bd=$(boot_disk) || { ui_msg "Persistenz" "Der Boot-Stick ist nicht sicher zu erkennen (Start aus dem RAM oder per Ventoy, oder mehrere Disks tragen das Label der ISO)."; return 1; }
+	if [[ -n $(persist_candidates "$bd") ]]; then
+		ui_msg "Persistenz" "Auf dem Stick gibt es schon eine Partition mit dem Namen $PERSIST_LABEL. Eine zweite wird nicht angelegt.\n\nEntsperren: Werkzeuge > Persistenter Speicher > Entsperren und einhängen."
+		return 1
+	fi
 	sudo sgdisk -e "$bd" >/dev/null 2>&1 || true # Backup-GPT ans echte Ende
 	local free
 	free=$(persist_free_bytes "$bd")
@@ -154,7 +257,7 @@ persist_create() {
 	fi
 	run sudo mkfs.ext4 -q -L "$PERSIST_LABEL" "$fsdev" || return 1
 	sudo install -d "$FRS_PERSIST"
-	run sudo mount -o noatime "$fsdev" "$FRS_PERSIST" || return 1
+	run sudo mount -o noatime,nodev,nosuid "$fsdev" "$FRS_PERSIST" || return 1
 	persist_bind
 	log_init
 	ui_msg "Persistenz" "Persistenter Speicher ist eingerichtet ($(human "$(sudo blockdev --getsize64 "$part")")).\n\nDort liegen ab jetzt:\n - Claude-Login (CLI und Desktop) und ~/.claude/CLAUDE.md\n - /etc/frs/frs.conf und WLAN-Profile (/etc/frs/wifi/)\n - SSH-Schlüssel, rclone-Konfiguration\n - Protokolle (/persist/logs)"
@@ -162,8 +265,9 @@ persist_create() {
 
 # Beim Start: vorhandene Persistenz öffnen oder einmalig das Anlegen anbieten.
 persist_startup() {
+	persist_foreign_notice
 	if [[ -n $(persist_find) ]]; then
-		persist_open || true
+		persist_open startup || true
 		return 0
 	fi
 	[[ -f $FRS_RUN/persist-declined ]] && return 0

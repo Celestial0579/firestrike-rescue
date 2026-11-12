@@ -18,6 +18,29 @@ part_path() {
 
 part_num() { sed 's/.*[^0-9]//' <<<"$1"; }
 
+# Der Klon-Job und das sfdisk-Skript laufen als root und bestehen aus erzeugtem Text. Was die
+# Quell-Disk über sich meldet (Label, Partitionsname), kommt nur geprüft hinein. Was die Prüfung
+# nicht besteht, wird weggelassen oder der Job wird gar nicht erst erzeugt.
+
+# clone_path_ok PFAD   Gerätepfad, wie der Kernel ihn vergibt.
+clone_path_ok() {
+	local LC_ALL=C re='^/dev/[A-Za-z0-9][A-Za-z0-9._/-]*$'
+	[[ $1 =~ $re && $1 != *..* ]]
+}
+
+# clone_label_ok TEXT   Label, das in einem Befehl zwischen einfachen Anführungszeichen stehen darf.
+clone_label_ok() {
+	local LC_ALL=C re='^[A-Za-z0-9._+:=@ -]{1,32}$'
+	[[ $1 =~ $re ]]
+}
+
+# clone_name_ok TEXT   Partitionsname für das sfdisk-Skript. Dort endet ein Name am nächsten
+# Anführungszeichen, danach läse sfdisk den Rest als weitere Angaben zur Partition.
+clone_name_ok() {
+	local LC_ALL=C bad='[[:cntrl:]"\]'
+	[[ -n $1 && ${#1} -le 144 && ! $1 =~ $bad ]]
+}
+
 clone_wizard() {
 	ui_msg "Klonen" "Klont eine gesunde Disk auf eine andere, z. B. HDD -> SSD.\n\n - Nur belegte Bereiche werden kopiert (partclone), das geht schnell.\n - Ist das Ziel größer, wächst die Hauptpartition; die Wiederherstellungspartition rückt ans Ende.\n - Ist das Ziel kleiner, wird geprüft, ob die Daten passen, und die Hauptpartition verkleinert.\n - Die Quelle wird dabei nie verändert.\n\nBei Disks mit SMART-Warnungen besser 'Datenrettung' nehmen."
 	local sid sj sdev st
@@ -203,7 +226,7 @@ clone_min_size() {
 }
 
 clone_write_table() {
-	local tdev=$1 keep=$2 n=${#CLONE_PARTS[@]} i p script
+	local tdev=$1 keep=$2 n=${#CLONE_PARTS[@]} i p script name attrs
 	script=$(mktemp)
 	{
 		echo "label: $CLONE_LABEL"
@@ -219,8 +242,18 @@ clone_write_table() {
 			line="$(part_path "$tdev" "$num") : start=${CLONE_NEW_START[i]}, size=${CLONE_NEW_SIZE[i]}, type=$(jq -r .type <<<"$p")"
 			if [[ $CLONE_LABEL == gpt ]]; then
 				[[ $keep == replace ]] && line+=", uuid=$(jq -r .uuid <<<"$p")"
-				[[ $(jq -r '.name // ""' <<<"$p") != "" ]] && line+=", name=\"$(jq -r .name <<<"$p")\""
-				[[ $(jq -r '.attrs // ""' <<<"$p") != "" ]] && line+=", attrs=\"$(jq -r .attrs <<<"$p")\""
+				# Der Name stammt von der Quell-Disk. Passt er nicht in das Skript, bleibt die
+				# Partition auf dem Ziel ohne Namen.
+				name=$(jq -r '.name // ""' <<<"$p")
+				attrs=$(jq -r '.attrs // ""' <<<"$p")
+				if [[ -n $name ]]; then
+					if clone_name_ok "$name"; then
+						line+=", name=\"$name\""
+					else
+						log "Partitionsname von $(jq -r .node <<<"$p") nicht übernommen (Anführungszeichen, Backslash oder Steuerzeichen)"
+					fi
+				fi
+				[[ -n $attrs ]] && clone_name_ok "$attrs" && line+=", attrs=\"$attrs\""
 			else
 				[[ $(jq -r '.bootable // false' <<<"$p") == true ]] && line+=", bootable"
 			fi
@@ -245,7 +278,21 @@ clone_copy() {
 	local sdev=$1 tdev=$2 n=${#CLONE_PARTS[@]} i job status
 	job="$FRS_RUN/clone-job.sh"
 	status="$FRS_RUN/clone-status"
-	rm -f "$status"
+	rm -f "$status" "$job"
+	# Jeder Baustein wird geprüft, bevor der Job entsteht: Gerätepfade, Partitionsnummer und der
+	# Name des Dateisystems. Besteht einer die Prüfung nicht, gibt es keinen Job.
+	local token='^[A-Za-z0-9_.+-]*$'
+	for ((i = 0; i < n; i++)); do
+		local node pnum
+		node=$(jq -r .node <<<"${CLONE_PARTS[i]}")
+		pnum=$(part_num "$node")
+		if ! clone_path_ok "$node" || ! clone_path_ok "$(part_path "$tdev" "$pnum")" ||
+			[[ ! $pnum =~ ^[0-9]+$ || ! ${CLONE_FS[i]} =~ $token ]]; then
+			log "Klon-Job nicht erzeugt: Partition $((i + 1)) der Quelle meldet Angaben, die in keinem Befehl stehen dürfen"
+			die "Der Klon wird nicht gestartet: Partition $((i + 1)) der Quelle meldet Angaben, die in keinem Befehl stehen dürfen. Es wurde nichts kopiert."
+			return 1
+		fi
+	done
 	{
 		echo '#!/usr/bin/env bash'
 		echo 'set -u'
@@ -296,6 +343,15 @@ clone_cmd_copy() {
 		local uuid label
 		uuid=$(sudo blkid -o value -s UUID "$src")
 		label=$(sudo blkid -o value -s LABEL "$src")
+		# UUID und Label kommen von der Quell-Disk und stehen gleich in einem Befehl, der als
+		# root läuft. Ein Label wie ';reboot;' wäre dort ein Befehl. Was nicht dem Muster
+		# entspricht, wird weggelassen: Die neue Swap-Partition bekommt dann kein Label.
+		local uuid_re='^[0-9a-fA-F-]{36}$'
+		[[ $uuid =~ $uuid_re ]] || uuid=""
+		if [[ -n $label ]] && ! clone_label_ok "$label"; then
+			log "Swap-Label von $src nicht übernommen (enthält Zeichen, die in keinem Befehl stehen dürfen)"
+			label=""
+		fi
 		echo "mkswap ${uuid:+-U $uuid} ${label:+-L '$label'} '$dst' || fail 'mkswap $dst'"
 		return
 		;;

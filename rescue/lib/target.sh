@@ -36,40 +36,21 @@ target_mount_ntfs3g() {
 	run sudo ntfs-3g -o "nodev,nosuid,noexec,uid=$(id -u),gid=$(id -g)" "$1" "$FRS_TARGET_MNT"
 }
 
-# Gelten am Einhängepunkt wirklich alle Schutzoptionen? Gefragt wird der Kernel (findmnt),
-# nicht der eigene Aufruf.
-target_mount_has_opts() {
-	local line opt n=0
-	while IFS= read -r line; do
-		n=$((n + 1))
-		for opt in "${TARGET_MOUNT_OPTS[@]}"; do
-			[[ ",$line," == *",$opt,"* ]] || return 1
-		done
-	done < <(findmnt -n -o VFS-OPTIONS -M "$FRS_TARGET_MNT" 2>/dev/null)
-	((n > 0))
-}
+# Gelten am Einhängepunkt des Ziels wirklich alle Schutzoptionen (mount_has_opts in common.sh)?
+target_mount_has_opts() { mount_has_opts "$FRS_TARGET_MNT" "${TARGET_MOUNT_OPTS[@]}"; }
 
-# Setzt fehlende Schutzoptionen am Einhängepunkt nach. Gelten danach nicht alle, wird das Ziel
-# wieder ausgehängt: lieber kein Ziel als eines ohne Schutz.
-# "remount,bind" ändert nur die Optionen des Einhängepunkts, nicht das Dateisystem. Mit -i ruft
-# mount dafür kein Hilfsprogramm des Dateisystems auf (ntfs-3g kann nicht neu einhängen).
-target_mount_secure() {
-	target_mount_has_opts && return 0
-	run sudo mount -i -o "remount,bind,$(target_mount_optstring)" "$FRS_TARGET_MNT"
-	target_mount_has_opts && return 0
-	log "Ziel abgelehnt: Die Schutzoptionen $(target_mount_optstring) gelten nicht. Vorhanden: $(findmnt -n -o VFS-OPTIONS -M "$FRS_TARGET_MNT" 2>/dev/null | tr '\n' ' ')"
-	run sudo umount "$FRS_TARGET_MNT"
-	return 1
-}
+# Setzt fehlende Schutzoptionen nach. Gelten danach nicht alle, wird das Ziel wieder ausgehängt:
+# lieber kein Ziel als eines ohne Schutz (mount_enforce in common.sh).
+target_mount_secure() { mount_enforce "$FRS_TARGET_MNT" "${TARGET_MOUNT_OPTS[@]}"; }
 
 target_mount_part() {
 	local part=$1 fs
 	fs=$(lsblk -no FSTYPE "$part")
 	sudo install -d "$FRS_TARGET_MNT"
 	if mountpoint -q "$FRS_TARGET_MNT"; then
-		# Hängt genau diese Partition schon geschützt dort, bleibt sie eingehängt. Ein Kopierlauf
-		# im Hintergrund, der das Ziel gerade benutzt, stört so nicht.
-		if [[ $(findmnt -n -o SOURCE -M "$FRS_TARGET_MNT" 2>/dev/null) == "$part" ]] && target_mount_has_opts; then
+		# Hängt genau diese Partition schon geschützt und beschreibbar dort, bleibt sie
+		# eingehängt. Ein Kopierlauf im Hintergrund, der das Ziel gerade benutzt, stört so nicht.
+		if [[ $(findmnt -n -o SOURCE -M "$FRS_TARGET_MNT" 2>/dev/null) == "$part" ]] && target_mount_has_opts && mount_has_opts "$FRS_TARGET_MNT" rw; then
 			return 0
 		fi
 		# Zwei Dateisysteme übereinander am selben Punkt gibt es nicht: Dann ließe sich nicht
@@ -79,8 +60,17 @@ target_mount_part() {
 			return 1
 		fi
 	fi
+	# Ein Schreibschutz, den eine abgebrochene Suche zurückgelassen hat, endet hier.
+	target_search_unlock
 	target_mount_raw "$part" "$fs" || return 1
 	target_mount_secure || return 1
+	# Ein Ziel muss beschreibbar sein. Hängt es nur lesend (Gerät schreibgeschützt, Windows im
+	# Ruhezustand), wird es gleich abgelehnt und nicht erst beim Schreiben.
+	if ! mount_has_opts "$FRS_TARGET_MNT" rw; then
+		log "Ziel abgelehnt: $part ließ sich nur lesend einhängen."
+		run sudo umount "$FRS_TARGET_MNT"
+		return 1
+	fi
 	case $fs in
 	ntfs | exfat) ;;
 	*) run sudo chown "$(id -u):$(id -g)" "$FRS_TARGET_MNT" ;;
@@ -149,19 +139,132 @@ target_prepare() {
 	log "Ziel bereit: $FRS_TARGET_MNT ($(target_fs), $(human "$free") frei)"
 }
 
-# Sucht auf einer Ziel-Disk nach Rettungsfällen (FRS/*/case.env) und hängt die Partition ein.
+# ---------------------------------------------------------------------------
+# Suche nach Rettungsfällen ("Unterbrochene Rettung fortsetzen")
+# ---------------------------------------------------------------------------
+# Die Suche schreibt nicht. Solange nicht feststeht, dass die gewählte Disk ein Ziel mit einem
+# Rettungsfall ist, wird jede ihrer Partitionen behandelt wie eine Quelle: schreibgeschützt auf
+# Kernelebene und nur lesend eingehängt, ohne dass der Treiber ein Journal nachspielt. Wer in
+# "Fortsetzen" versehentlich die defekte Disk wählt, verändert sie so nicht. Beschreibbar wird
+# erst die Partition, deren Rettungsfall der Techniker gewählt hat (target_case_writable).
+
+TARGET_SEARCH_OPTS=(ro nodev nosuid noexec nosymfollow)
+TARGET_CASE_PART=""   # Partition, auf der die Suche Rettungsfälle gefunden hat
+TARGET_CASE_ACTIVE=0  # 1: Sie hing schon als Ziel dieser Sitzung beschreibbar dort und bleibt so
+
+# Dateisystem-Option, mit der der Treiber beim Einhängen nichts nachspielt und nichts schreibt.
+target_search_fsopt() {
+	case $1 in
+	ext2 | ext3 | ext4) echo noload ;;
+	xfs) echo norecovery ;;
+	btrfs) echo rescue=nologreplay ;;
+	esac
+}
+
+# target_search_lock PARTITION   Schreibschutz auf Kernelebene für die Dauer der Suche. Rückgabe 0,
+# wenn die Partition danach schreibgeschützt ist. Welche Partition die Suche selbst gesperrt
+# hat, steht in $FRS_RUN/search-lock: Nur diesen Schutz hebt target_search_unlock wieder auf,
+# auch nach einem Abbruch des Assistenten. Ein Schutz, der vorher schon galt (Quell-Disk),
+# bleibt unberührt.
+target_search_lock() {
+	local part=$1
+	[[ $(sudo blockdev --getro "$part" 2>/dev/null) == 1 ]] && return 0
+	run sudo blockdev --setro "$part" || return 1
+	echo "$part" >"$FRS_RUN/search-lock"
+}
+
+target_search_unlock() {
+	local part
+	[[ -s $FRS_RUN/search-lock ]] || return 0
+	part=$(head -n1 "$FRS_RUN/search-lock")
+	rm -f "$FRS_RUN/search-lock"
+	[[ $part == /dev/* ]] || return 0
+	run sudo blockdev --setrw "$part"
+}
+
+# target_mount_search PARTITION DATEISYSTEM   Hängt nur lesend und mit Schutzoptionen ein und
+# prüft am Einhängepunkt, ob sie gelten.
+target_mount_search() {
+	local part=$1 fs=$2 opts fsopt
+	opts=$(
+		IFS=,
+		echo "${TARGET_SEARCH_OPTS[*]}"
+	)
+	fsopt=$(target_search_fsopt "$fs")
+	case $fs in
+	ntfs) run sudo mount -t ntfs3 -o "$opts" "$part" "$FRS_TARGET_MNT" ||
+		run sudo ntfs-3g -o ro,norecover,nodev,nosuid,noexec "$part" "$FRS_TARGET_MNT" ;;
+	*) run sudo mount -o "$opts${fsopt:+,$fsopt}" "$part" "$FRS_TARGET_MNT" ;;
+	esac || return 1
+	mount_enforce "$FRS_TARGET_MNT" "${TARGET_SEARCH_OPTS[@]}"
+}
+
+# target_find_cases ZIEL-ID   Sucht auf einer Disk nach Rettungsfällen (FRS/*/case.env).
+# Rückgabe 0: gefunden. Die Partition hängt dann nur lesend unter $FRS_TARGET_MNT und steht in
+# TARGET_CASE_PART. Danach folgt genau eines: target_case_writable oder target_search_end.
 target_find_cases() {
-	local tid=$1 dev p path fs
+	local tid=$1 dev
 	dev=$(disk_resolve "$tid")
-	while IFS= read -r p; do
+	[[ -n $dev ]] || return 1
+	target_find_cases_on "$dev"
+}
+
+# target_find_cases_on GERÄT   Wie target_find_cases, für einen Gerätepfad.
+target_find_cases_on() {
+	local dev=$1 p path fs cur
+	TARGET_CASE_PART="" TARGET_CASE_ACTIVE=0
+	sudo install -d "$FRS_TARGET_MNT"
+	if mountpoint -q "$FRS_TARGET_MNT"; then
+		# Hängt eine Partition dieser Disk schon als Ziel dieser Sitzung dort (beschreibbar und
+		# geschützt, etwa weil im Hintergrund noch kopiert wird), bleibt sie, wie sie ist.
+		cur=$(findmnt -n -o SOURCE -M "$FRS_TARGET_MNT" 2>/dev/null)
+		if [[ -n $cur ]] && target_mount_has_opts && mount_has_opts "$FRS_TARGET_MNT" rw &&
+			lsblk -nr -o PATH "$dev" 2>/dev/null | grep -qxF -- "$cur" &&
+			compgen -G "$FRS_TARGET_MNT/FRS/*/case.env" >/dev/null; then
+			TARGET_CASE_PART=$cur TARGET_CASE_ACTIVE=1
+			return 0
+		fi
+		if ! run sudo umount "$FRS_TARGET_MNT"; then
+			log "Suche abgebrochen: $FRS_TARGET_MNT ist noch in Benutzung und lässt sich nicht aushängen."
+			return 1
+		fi
+	fi
+	target_search_unlock
+	while IFS= read -r p <&3; do
 		path=$(jq -r .path <<<"$p")
 		fs=$(jq -r '.fstype // ""' <<<"$p")
 		[[ " $TARGET_FS_OK " == *" $fs "* ]] || continue
-		target_mount_part "$path" || continue
-		if compgen -G "$FRS_TARGET_MNT/FRS/*/case.env" >/dev/null; then
-			return 0
+		# Erst der Schreibschutz, dann das Einhängen. Ohne Schreibschutz wird nicht eingehängt.
+		target_search_lock "$path" || continue
+		if target_mount_search "$path" "$fs"; then
+			if compgen -G "$FRS_TARGET_MNT/FRS/*/case.env" >/dev/null; then
+				TARGET_CASE_PART=$path
+				return 0
+			fi
+			run sudo umount "$FRS_TARGET_MNT"
 		fi
-		run sudo umount "$FRS_TARGET_MNT"
-	done < <(disk_parts "$dev")
+		target_search_unlock
+	done 3< <(disk_parts "$dev")
 	return 1
+}
+
+# target_search_end   Beendet eine Suche, deren Fund nicht verwendet wird: aushängen und den
+# eigenen Schreibschutz wieder aufheben. Ein schon aktives Ziel bleibt, wie es ist.
+target_search_end() {
+	if [[ -n $TARGET_CASE_PART ]] && ((!TARGET_CASE_ACTIVE)); then
+		mountpoint -q "$FRS_TARGET_MNT" && run sudo umount "$FRS_TARGET_MNT"
+		target_search_unlock
+	fi
+	TARGET_CASE_PART="" TARGET_CASE_ACTIVE=0
+}
+
+# target_case_writable   Hängt die Partition mit dem gewählten Rettungsfall beschreibbar ein.
+# Erst jetzt wird auf die Disk geschrieben: Der Techniker hat sie als Ziel genannt und einen
+# Rettungsfall auf ihr gewählt.
+target_case_writable() {
+	local part=$TARGET_CASE_PART active=$TARGET_CASE_ACTIVE
+	TARGET_CASE_PART="" TARGET_CASE_ACTIVE=0
+	[[ -n $part ]] || return 1
+	((active)) && return 0
+	target_mount_part "$part"
 }
