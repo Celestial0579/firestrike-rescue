@@ -56,12 +56,22 @@ rm -rf "$inst_home"
 
 log "Live-Benutzer und Autologin"
 # casper legt den Benutzer beim Boot an (sudo ohne Passwort).
+#
+# LIVEMEDIA_TIMEOUT: Das Live-System wird nur auf dem Medium gesucht, das das Bootmenü nennt
+# (live-media=). Ohne diese Zeile durchsucht casper alle Blockgeräte, sobald der Stick beim
+# ersten Versuch noch nicht da ist, und das ist bei USB-Sticks der Normalfall: Jede Partition
+# mit ext, xfs, btrfs, ntfs oder vfat wird dann mit "ro" eingehängt (bei ext und xfs spielt das
+# das Journal nach, schreibt also auf die Disk des Kunden), und das erste Dateisystem mit einem
+# Ordner casper würde als Live-System gestartet. casper versucht es 60 Sekunden lang. Die Suche
+# über alle Geräte beginnt frühestens nach der hier genannten Zahl von Sekunden, also nie.
+# Die Datei kommt über den Hook von casper in die initrd (update-initramfs weiter unten).
 cat >/etc/casper.conf <<'EOF'
 export USERNAME="rescue"
 export USERFULLNAME="Firestrike Rescue"
 export HOST="frs"
 export BUILD_SYSTEM="Ubuntu"
 export FLAVOUR="Ubuntu"
+export LIVEMEDIA_TIMEOUT=3600
 EOF
 
 log "Locale und Tastatur (Deutsch)"

@@ -48,6 +48,7 @@ jobs:
       # Sperre für Claude: Der Hook entscheidet, nicht das Modell. Mit der CLI der ISO prüft es
       # der Selbsttest im Boot-Test (selftest_claude).
       # Disks: nur über eine eindeutige Kennung, bestätigt wird das Gerät, das beschrieben wird.
+      # Boot: casper durchsucht keine fremden Disks.
       - name: Schutz-Tests
         run: |
           sudo apt-get install -y -qq jq whiptail
@@ -66,6 +67,7 @@ jobs:
           bash tests/dialog-disk-text.sh
           bash tests/unit-claude-guard.sh
           bash tests/unit-disk-identity.sh
+          bash tests/unit-boot-config.sh
       - name: Unit-Tests
         run: |
           sudo apt-get install -y -qq jq whiptail

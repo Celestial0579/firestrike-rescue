@@ -67,6 +67,7 @@ selftest() {
 	[[ $(casefile_peek "$dir/case/case.env" STATE) == "done" ]] || ok=0
 	selftest_target "$dir" || ok=0
 	selftest_search "$dir" || ok=0
+	selftest_boot "$dir" || ok=0
 	selftest_tmux "$dir" || ok=0
 	selftest_claude "$dir" || ok=0
 	# Werkzeuge vorhanden?
@@ -263,6 +264,38 @@ selftest_search() {
 	fi
 	losetup -d "$loop" 2>/dev/null
 	rm -f "$img"
+	((good))
+}
+
+# Boot: Das Live-System wird nur auf dem benannten Medium gesucht. casper darf nicht alle
+# Blockgeräte durchsuchen und ihre Dateisysteme einhängen (siehe build/chroot-setup.sh).
+# Geprüft wird die initrd, mit der dieses System gestartet ist: Sie liegt auf dem Live-Medium.
+selftest_boot() {
+	local dir=$1/initrd good=1 f
+	if [[ ! -f /cdrom/casper/initrd ]]; then
+		echo "FRS-SELFTEST: Boot: initrd auf dem Live-Medium nicht gefunden"
+		return 1
+	fi
+	rm -rf "$dir"
+	if ! unmkinitramfs /cdrom/casper/initrd "$dir" >/dev/null 2>&1; then
+		echo "FRS-SELFTEST: Boot: initrd ließ sich nicht auspacken"
+		rm -rf "$dir"
+		return 1
+	fi
+	f=$(find "$dir" -path '*/etc/casper.conf' | head -n 1)
+	if [[ -n $f ]] && grep -Eq '^export LIVEMEDIA_TIMEOUT=[0-9]{3,}$' "$f"; then
+		echo "FRS-SELFTEST: Boot: casper sucht nur das benannte Medium ($(grep LIVEMEDIA_TIMEOUT "$f"))"
+	else
+		echo "FRS-SELFTEST: Boot: LIVEMEDIA_TIMEOUT fehlt in der initrd, casper würde alle Disks durchsuchen"
+		good=0
+	fi
+	if grep -q 'live-media=/dev/disk/by-label/FRS_RESCUE' /proc/cmdline; then
+		echo "FRS-SELFTEST: Boot: gestartet mit live-media=/dev/disk/by-label/FRS_RESCUE"
+	else
+		echo "FRS-SELFTEST: Boot: live-media fehlt in der Kernel-Befehlszeile"
+		good=0
+	fi
+	rm -rf "$dir"
 	((good))
 }
 
