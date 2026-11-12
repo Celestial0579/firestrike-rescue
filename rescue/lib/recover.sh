@@ -44,8 +44,10 @@ recover_wizard() {
 # QUELL-GERÄT ist die Disk, die der Techniker in dieser Sitzung als Quelle gewählt hat.
 # frs-rescue-run liest nur von ihr und prüft sie selbst noch einmal gegen die Falldatei.
 recover_run() {
-	local case=$1 sdev=$2
-	tmux_run "frs-rettung" sudo frs-rescue-run "$case" "$sdev"
+	local case=$1 sdev=$2 opts=()
+	# Der Name aus der frs.conf steht im Bericht. Er ist ein eigenes Argument, nie Befehlstext.
+	[[ -n ${FRS_TECHNIKER:-} ]] && opts=("--techniker=$FRS_TECHNIKER")
+	tmux_run "frs-rettung" sudo frs-rescue-run "$case" "$sdev" "${opts[@]}"
 	# Läuft die Sitzung noch (Ansicht verlassen), zurück ins Hauptmenü.
 	if tmux has-session -t frs-rettung 2>/dev/null; then
 		ui_msg "Rettung läuft weiter" "Die Rettung läuft im Hintergrund weiter.\n\nZurück zur Ansicht: Hauptmenü > Laufende Rettung anzeigen\noder auf tty2 (Alt+F2): tmux attach -t frs-rettung"

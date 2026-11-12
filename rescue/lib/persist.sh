@@ -56,12 +56,13 @@ persist_foreign_notice() {
 	ui_msg "Persistenter Speicher" "Auf einer anderen Disk liegt eine Partition mit dem Namen $PERSIST_LABEL:\n\n   $list\n\nDer Speicher dieses Rettungssystems liegt nur auf dem Stick, von dem es gestartet wurde. Die Partition wird nicht verwendet und nicht eingehängt.\n\nStammt die Disk aus fremder Hand, ist Vorsicht angebracht. Ist es dein Speicher auf einem anderen Stick, starte von jenem Stick."
 }
 
-# Einstellungen, die frs.conf setzen darf, mit dem Muster ihres Wertes.
+# Einstellungen, die frs.conf setzen darf, mit dem Muster ihres Wertes. Hier steht nur, was der
+# Assistent auch benutzt: FRS_TECHNIKER im Rettungsbericht (recover_run), FRS_TARGET_FS als
+# Vorauswahl beim Formatieren (target_format). Nichts davon startet einen Dienst oder ein Programm.
 persist_config_pattern() {
 	case $1 in
 	FRS_TECHNIKER) echo '^[^[:cntrl:]"$`\]{0,100}$' ;;
 	FRS_TARGET_FS) echo '^(ext4|exfat)$' ;;
-	FRS_SSH_AUTOSTART) echo '^[01]$' ;;
 	*) return 1 ;;
 	esac
 }
@@ -152,12 +153,10 @@ persist_bind() {
 	[[ -f $PERSIST_CONFIG ]] || cat >"$PERSIST_CONFIG" <<-'EOF'
 		# Firestrike Rescue – eigene Einstellungen (liegt auf dem persistenten Speicher)
 		# Eine Einstellung pro Zeile, NAME=Wert. Die Datei wird als Liste gelesen, nicht als Skript.
-		# Firmen- bzw. Technikername für Berichte
+		# Firmen- bzw. Technikername, steht im Rettungsbericht (report.txt)
 		#FRS_TECHNIKER="Vorname Nachname"
-		# Standard-Dateisystem beim Formatieren von Ziel-Disks: ext4 oder exfat
+		# Vorauswahl beim Formatieren von Ziel-Disks: ext4 oder exfat
 		#FRS_TARGET_FS=ext4
-		# SSH beim Start automatisch einschalten (nur mit hinterlegtem Schlüssel in ~/.ssh/authorized_keys)
-		#FRS_SSH_AUTOSTART=0
 	EOF
 	# WLAN-Profile übernehmen
 	if compgen -G "/etc/frs/wifi/*.nmconnection" >/dev/null; then
@@ -176,7 +175,7 @@ persist_bind() {
 	# frs.conf wird gelesen, nicht ausgeführt.
 	if persist_config_load "$PERSIST_CONFIG" && [[ -n $PERSIST_CONFIG_REJECTED ]]; then
 		log "frs.conf: Zeilen nicht übernommen:$PERSIST_CONFIG_REJECTED"
-		ui_msg "frs.conf" "Diese Zeilen der frs.conf wurden nicht übernommen:$PERSIST_CONFIG_REJECTED\n\nDie Datei ist eine Liste von Einstellungen und wird nicht als Skript ausgeführt. Erlaubt sind, je eine pro Zeile:\n\n   FRS_TECHNIKER=\"Vorname Nachname\"\n   FRS_TARGET_FS=ext4 oder exfat\n   FRS_SSH_AUTOSTART=0 oder 1\n\nBearbeiten: Werkzeuge > Persistenter Speicher > frs.conf bearbeiten."
+		ui_msg "frs.conf" "Diese Zeilen der frs.conf wurden nicht übernommen:$PERSIST_CONFIG_REJECTED\n\nDie Datei ist eine Liste von Einstellungen und wird nicht als Skript ausgeführt. Erlaubt sind, je eine pro Zeile:\n\n   FRS_TECHNIKER=\"Vorname Nachname\"\n   FRS_TARGET_FS=ext4 oder exfat\n\nBearbeiten: Werkzeuge > Persistenter Speicher > frs.conf bearbeiten."
 	fi
 }
 

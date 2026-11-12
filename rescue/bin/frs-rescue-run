@@ -2,10 +2,11 @@
 # Führt die ddrescue-Phasen für einen Rettungsfall aus. Läuft als root, meist in tmux.
 # Wird ein Lauf unterbrochen, setzt ein erneuter Aufruf anhand von image.map fort.
 #
-#   frs-rescue-run CASE_DIR QUELLE [--no-pause]
+#   frs-rescue-run CASE_DIR QUELLE [--no-pause] [--techniker=NAME]
 #
 # CASE_DIR enthält case.env mit SRC_ID (Seriennummer/WWN/Pfad) und SRC_SIZE.
 # QUELLE ist der Gerätepfad der Disk, die der Techniker als Quelle gewählt hat.
+# NAME steht im Bericht. Der Assistent übergibt FRS_TECHNIKER aus der frs.conf.
 #
 # Der Fallordner liegt auf der Ziel-Disk, also auf einem Datenträger, den jemand angeschlossen
 # hat. case.env wird deshalb als Daten gelesen und geprüft, nie als Shell-Code (lib/casefile.sh).
@@ -15,12 +16,17 @@
 set -uo pipefail
 
 PAUSE=1
+TECH=""
 ARGS=()
 for a in "$@"; do
-	if [[ $a == --no-pause ]]; then PAUSE=0; else ARGS+=("$a"); fi
+	case $a in
+	--no-pause) PAUSE=0 ;;
+	--techniker=*) TECH=${a#--techniker=} ;;
+	*) ARGS+=("$a") ;;
+	esac
 done
 if ((${#ARGS[@]} != 2)); then
-	echo "Aufruf: frs-rescue-run CASE_DIR QUELLE [--no-pause]" >&2
+	echo "Aufruf: frs-rescue-run CASE_DIR QUELLE [--no-pause] [--techniker=NAME]" >&2
 	echo "QUELLE ist der Gerätepfad der Quell-Disk, zum Beispiel /dev/sdb. Ohne sie wird nichts gelesen." >&2
 	exit 2
 fi
@@ -40,6 +46,10 @@ LIB=$HERE/../lib/frs
 [[ -r $LIB/casefile.sh ]] || { echo "frs-rescue-run: $LIB/casefile.sh fehlt." >&2; exit 2; }
 # shellcheck disable=SC1090
 . "$LIB/casefile.sh"
+
+# Der Name steht nur im Bericht, als Text: höchstens 100 Zeichen, Steuerzeichen und die Zeichen
+# " $ ` \ werden zu "_". Dieselben Grenzen gelten für FRS_TECHNIKER in der frs.conf.
+[[ -n $TECH ]] && TECH=$(casefile_clean_text "${TECH:0:100}")
 
 say() { printf '\n\033[1;33m%s\033[0m\n' "$*" | tee -a "$LOG"; }
 finish() {
@@ -168,6 +178,7 @@ setv STATE "done"
 	echo "Begonnen:    $(casefile_get STARTED)"
 	echo "Beendet:     $(date -Is)"
 	echo "System:      Firestrike Rescue $(. /etc/frs-release 2>/dev/null; echo "${FRS_VERSION:-dev}")"
+	[[ -n $TECH ]] && echo "Techniker:   $TECH"
 	echo
 	echo "Ergebnis (ddrescuelog -t):"
 	ddrescuelog -t "$MAP"

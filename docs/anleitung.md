@@ -13,7 +13,7 @@ Start
 
 Beim ersten Start mit freiem Platz auf dem Stick fragt der Assistent, ob er einen **persistenten Speicher** anlegen soll. Empfohlen sind 2 GiB mit Verschlüsselung. Dort liegen künftig Claude-Login, `~/.claude/CLAUDE.md`, `/etc/frs/frs.conf`, WLAN-Profile, SSH-Schlüssel und Protokolle. Bei jedem Start fragt der Assistent nach der Passphrase.
 
-Als Speicher gilt nur die Partition `FRS-DATA` auf dem Stick, von dem du gestartet hast. Eine gleichnamige Partition auf einer anderen Disk verwendet der Assistent nie, er weist nur auf sie hin. Einen unverschlüsselten Speicher bindet er erst nach einer Rückfrage ein. `/etc/frs/frs.conf` ist eine Liste von Einstellungen (`NAME=Wert`, eine pro Zeile) und wird nicht als Skript ausgeführt.
+Als Speicher gilt nur die Partition `FRS-DATA` auf dem Stick, von dem du gestartet hast. Eine gleichnamige Partition auf einer anderen Disk verwendet der Assistent nie, er weist nur auf sie hin. Einen unverschlüsselten Speicher bindet er erst nach einer Rückfrage ein. `/etc/frs/frs.conf` ist eine Liste von Einstellungen (`NAME=Wert`, eine pro Zeile) und wird nicht als Skript ausgeführt. Es gibt zwei: `FRS_TECHNIKER="Vorname Nachname"` steht im Rettungsbericht, `FRS_TARGET_FS=ext4` oder `exfat` ist die Vorauswahl beim Formatieren einer Ziel-Disk. Keine Einstellung schaltet einen Dienst ein, SSH startest du unter Werkzeuge.
 
 Datenrettung
 ------------

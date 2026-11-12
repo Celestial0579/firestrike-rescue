@@ -262,13 +262,14 @@ FRS_TECHNIKER="Tim Beispiel"
 
   FRS_TARGET_FS=exfat
 touch $T/MARKE-zeile
-FRS_SSH_AUTOSTART=\$(touch $T/MARKE-ersetzung)
+FRS_TARGET_FS=\$(touch $T/MARKE-ersetzung)
 PATH=$T/fremd:/usr/bin
 FRS_TECHNIKER="a"; touch $T/MARKE-semikolon
 export FRS_TARGET_FS=ext4
 FRS_TECHNIKER=\`touch $T/MARKE-backtick\`
 FRS_TARGET_FS=ntfs
-FRS_SSH_AUTOSTART=1 # ein
+FRS_TARGET_FS=ext4 # Kommentar hinter dem Wert
+FRS_SSH_AUTOSTART=1
 . $T/fremd.sh
 EOF
 echo "touch $T/MARKE-eingebunden" >"$T/fremd.sh"
@@ -278,8 +279,8 @@ persist_config_load "$PERSIST_CONFIG"
 rc=$?
 check "gelesen" '[[ $rc == 0 ]]'
 check "gültige Zeilen setzen ihre Einstellung" '[[ ${FRS_TECHNIKER:-} == "Tim Beispiel" && ${FRS_TARGET_FS:-} == exfat ]]'
-check "ungültige Werte setzen nichts" '[[ -z ${FRS_SSH_AUTOSTART:-} ]]'
-check "jede andere Zeile ist als nicht übernommen vermerkt" '[[ ${PERSIST_CONFIG_REJECTED-} == " 5 6 7 8 9 10 11 12 13" ]]'
+check "ein Name, den der Assistent nicht kennt, setzt nichts" '[[ -z ${FRS_SSH_AUTOSTART:-} ]]'
+check "jede andere Zeile ist als nicht übernommen vermerkt" '[[ ${PERSIST_CONFIG_REJECTED-} == " 5 6 7 8 9 10 11 12 13 14" ]]'
 check "PATH bleibt, wie er war" '[[ $PATH == "$old_path" ]]'
 check "nichts wurde ausgeführt: keine Markerdatei" '! markers'
 
@@ -293,16 +294,16 @@ persist_bind
 result
 check "persist_bind: Einstellungen übernommen" '[[ ${FRS_TECHNIKER:-} == "Tim Beispiel" && ${FRS_TARGET_FS:-} == exfat ]]'
 check "persist_bind: nichts ausgeführt" '! markers && [[ $PATH == "$old_path" ]]'
-check "persist_bind: der Techniker erfährt, welche Zeilen nicht übernommen wurden" '[[ $MSG == "frs.conf|"*"nicht übernommen: 5 6 7 8 9 10 11 12 13"* ]]'
+check "persist_bind: der Techniker erfährt, welche Zeilen nicht übernommen wurden" '[[ $MSG == "frs.conf|"*"nicht übernommen: 5 6 7 8 9 10 11 12 13 14"* ]]'
 rm -f "$PERSIST_CONFIG"
 fresh
 persist_bind
 result
 check "fehlt die Datei, legt persist_bind die Vorlage an, und sie ist gültig" '[[ -s $PERSIST_CONFIG && -z $MSG ]] && persist_config_load "$PERSIST_CONFIG" && [[ -z ${PERSIST_CONFIG_REJECTED-} ]]'
-printf 'FRS_TARGET_FS=ext4\r\nFRS_SSH_AUTOSTART="1"\r\n' >"$PERSIST_CONFIG"
-unset FRS_TARGET_FS FRS_SSH_AUTOSTART
+printf 'FRS_TARGET_FS=ext4\r\nFRS_TECHNIKER="Erika Muster"\r\n' >"$PERSIST_CONFIG"
+unset FRS_TARGET_FS FRS_TECHNIKER
 persist_config_load "$PERSIST_CONFIG"
-check "Zeilenenden von Windows, Wert mit und ohne Anführungszeichen" '[[ ${FRS_TARGET_FS:-} == ext4 && ${FRS_SSH_AUTOSTART:-} == 1 && -z $PERSIST_CONFIG_REJECTED ]]'
+check "Zeilenenden von Windows, Wert mit und ohne Anführungszeichen" '[[ ${FRS_TARGET_FS:-} == ext4 && ${FRS_TECHNIKER:-} == "Erika Muster" && -z $PERSIST_CONFIG_REJECTED ]]'
 rm -f "$PERSIST_CONFIG"
 echo 'FRS_TARGET_FS=exfat' >"$T/woanders.conf"
 ln -s "$T/woanders.conf" "$PERSIST_CONFIG"
