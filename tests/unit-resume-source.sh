@@ -149,6 +149,9 @@ zielfall fertig DEFEKT-0001 1000204886016 "done"
 log() { :; }
 tmux() { return 1; }              # keine Rettung im Hintergrund
 target_find_cases() { return 0; } # das Ziel gilt als eingehängt
+target_search_end() { echo ende >>"$T/suche"; }
+safety_check_target() { return 0; }
+target_case_writable() { echo beschreibbar >>"$T/suche"; }
 # Erster Aufruf: Ziel-Disk. Zweiter Aufruf: Quelle. Läuft in $(…), deshalb in Dateien.
 disk_pick() {
 	printf '%s\n' "$*" >>"$T/pick"

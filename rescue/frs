@@ -66,6 +66,7 @@ selftest() {
 	fi
 	[[ $(casefile_peek "$dir/case/case.env" STATE) == "done" ]] || ok=0
 	selftest_target "$dir" || ok=0
+	selftest_search "$dir" || ok=0
 	# Werkzeuge vorhanden?
 	local t
 	for t in ddrescue partclone.ntfs partclone.extfs ntfsresize smartctl nvme sgdisk sfdisk cryptsetup dislocker \
@@ -198,6 +199,68 @@ selftest_image() {
 	fi
 	umount "$mp"
 	((good)) && echo "FRS-SELFTEST: Image-Partition: nur lesend, Schutzoptionen wirken"
+	((good))
+}
+
+# Suche nach Rettungsfällen im gebooteten System: Sie darf die Disk nicht verändern. Eine
+# gedachte Disk (Abbild mit zwei Partitionen) trägt auf der zweiten einen Rettungsfall. Geprüft
+# wird Byte für Byte, dass die Suche nichts schreibt, und dass die Partition erst nach der Wahl
+# des Rettungsfalls beschreibbar ist.
+selftest_search() {
+	local dir=$1 img="$1/suche.raw" loop good=1 before after i
+	truncate -s 96M "$img"
+	sgdisk -n 1:0:+32M -n 2:0:0 "$img" >/dev/null 2>&1
+	loop=$(losetup --find --show -P "$img")
+	udevadm settle
+	mkfs.ext4 -q -F "${loop}p1"
+	mkfs.ext4 -q -F "${loop}p2"
+	mkdir -p "$dir/roh"
+	mount "${loop}p2" "$dir/roh"
+	mkdir -p "$dir/roh/FRS/20261112-0900_Selbsttest"
+	casefile_create "$dir/roh/FRS/20261112-0900_Selbsttest/case.env" "SRC_ID=ABC" "SRC_SIZE=1" "STATE=done"
+	umount "$dir/roh"
+	for i in 1 2 3 4 5 6 7 8 9 10; do
+		udevadm settle
+		[[ $(lsblk -no FSTYPE "${loop}p1") == ext4 && $(lsblk -no FSTYPE "${loop}p2") == ext4 ]] && break
+		sleep 1
+	done
+	before=$(md5sum <"$loop")
+	if target_find_cases_on "$loop"; then
+		echo "FRS-SELFTEST: Suche: Rettungsfall auf $TARGET_CASE_PART, eingehängt als $(findmnt -n -o FSTYPE,VFS-OPTIONS -M "$FRS_TARGET_MNT" | tr -s ' \n' ' ')"
+		[[ $TARGET_CASE_PART == "${loop}p2" ]] || { echo "FRS-SELFTEST: Suche: falsche Partition"; good=0; }
+		mount_has_opts "$FRS_TARGET_MNT" "${TARGET_SEARCH_OPTS[@]}" || { echo "FRS-SELFTEST: Suche: nicht nur lesend oder ohne Schutzoptionen eingehängt"; good=0; }
+		[[ $(blockdev --getro "${loop}p2") == 1 ]] || { echo "FRS-SELFTEST: Suche: Partition ist nicht schreibgeschützt"; good=0; }
+		[[ $(blockdev --getro "${loop}p1") == 0 ]] || { echo "FRS-SELFTEST: Suche: Schreibschutz der Partition ohne Rettungsfall blieb zurück"; good=0; }
+		if { echo x >"$FRS_TARGET_MNT/schreibprobe"; } 2>/dev/null; then
+			echo "FRS-SELFTEST: Suche: Schreiben war möglich"
+			good=0
+		fi
+		target_search_end
+		after=$(md5sum <"$loop")
+		if [[ $before == "$after" ]]; then
+			echo "FRS-SELFTEST: Suche: Disk Byte für Byte unverändert"
+		else
+			echo "FRS-SELFTEST: Suche: Disk wurde verändert"
+			good=0
+		fi
+		[[ $(blockdev --getro "${loop}p2") == 0 ]] || { echo "FRS-SELFTEST: Suche: Schreibschutz blieb nach dem Abbruch zurück"; good=0; }
+		# Zweiter Durchlauf: Der Rettungsfall wird gewählt, jetzt muss Schreiben gehen.
+		if target_find_cases_on "$loop" && target_case_writable && { echo x >"$FRS_TARGET_MNT/schreibprobe"; } 2>/dev/null &&
+			target_mount_has_opts; then
+			echo "FRS-SELFTEST: Suche: nach der Wahl des Rettungsfalls beschreibbar, mit Schutzoptionen"
+		else
+			echo "FRS-SELFTEST: Suche: nach der Wahl des Rettungsfalls nicht beschreibbar. Protokoll:"
+			tail -n 8 "$FRS_LOG" | sed 's/^/FRS-SELFTEST:   /'
+			good=0
+		fi
+		mountpoint -q "$FRS_TARGET_MNT" && umount "$FRS_TARGET_MNT"
+	else
+		echo "FRS-SELFTEST: Suche: Rettungsfall nicht gefunden. Protokoll:"
+		tail -n 8 "$FRS_LOG" | sed 's/^/FRS-SELFTEST:   /'
+		good=0
+	fi
+	losetup -d "$loop" 2>/dev/null
+	rm -f "$img"
 	((good))
 }
 

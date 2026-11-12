@@ -82,9 +82,12 @@ recover_resume() {
 	# Namen, wie der Assistent ihn vergibt (casefile_dirname_ok). Jeder andere Name könnte als
 	# Option oder als Befehl gelesen werden, sobald er in einem Menü oder einer Befehlszeile
 	# steht. Solche Einträge werden gezählt, ihr Name wird nirgends ausgegeben.
+	# Bis hierher ist die Disk nur lesend eingehängt und auf Kernelebene schreibgeschützt
+	# (target_find_cases). Jeder Ausstieg vor der Wahl eines Falls endet mit target_search_end.
 	if [[ -L $FRS_TARGET_MNT/FRS ]]; then
 		log "Fortsetzen abgelehnt: FRS auf der Ziel-Disk ist eine Verknüpfung"
 		ui_msg "Fortsetzen" "Der Ordner FRS auf dieser Disk ist eine Verknüpfung. Der Assistent legt FRS immer als Ordner an und verwendet diese Disk so nicht.\n\nStammt die Disk aus fremder Hand, ist Vorsicht angebracht."
+		target_search_end
 		return 0
 	fi
 	local items=() c name st skipped=0
@@ -109,11 +112,25 @@ recover_resume() {
 	fi
 	if ((${#items[@]} == 0)); then
 		ui_msg "Fortsetzen" "Auf dieser Disk liegt kein Rettungsfall, den der Assistent verwenden kann."
+		target_search_end
 		return 0
 	fi
 	local pick
-	pick=$(ui_menu "Fortsetzen" "Welcher Rettungsfall?" -- "${items[@]}") || return 0
-	casefile_dirname_ok "$pick" || return 0
+	if ! pick=$(ui_menu "Fortsetzen" "Welcher Rettungsfall?" -- "${items[@]}") || ! casefile_dirname_ok "$pick"; then
+		target_search_end
+		return 0
+	fi
+	# Der Techniker hat die Disk als Ziel genannt und einen Rettungsfall auf ihr gewählt. Erst
+	# jetzt wird sie beschreibbar eingehängt. Eine Disk, die in dieser Sitzung als Quelle
+	# geschützt wurde, bleibt geschützt.
+	if ! safety_check_target "$tid"; then
+		target_search_end
+		return 0
+	fi
+	if ! target_case_writable; then
+		die "Die Partition mit dem Rettungsfall ließ sich nicht beschreibbar einhängen. Details im Protokoll."
+		return 0
+	fi
 	c="$FRS_TARGET_MNT/FRS/$pick"
 	if ! casefile_load "$c/case.env"; then
 		recover_case_invalid "$c"
