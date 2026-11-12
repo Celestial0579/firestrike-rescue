@@ -18,9 +18,12 @@ on:
 permissions:
   contents: read
 
+# Abgebrochen werden nur Läufe von Pull Requests, wenn ein neuerer Stand kommt. Läufe auf main,
+# nach Zeitplan und für Tags laufen zu Ende und stehen je in einer eigenen Gruppe: Sonst bricht
+# ein Push auf main den geplanten Release-Lauf ab, und der nächste kommt erst einen Monat später.
 concurrency:
-  group: build-${{ github.ref }}
-  cancel-in-progress: true
+  group: build-${{ github.ref }}-${{ github.event_name }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   lint:
@@ -162,6 +165,11 @@ jobs:
         run: |
           # Solange das Projekt in der Beta ist: Tag mit -beta, Release als Vorabversion
           if [[ $GITHUB_REF == refs/tags/v* ]]; then tag="$GITHUB_REF_NAME"; else tag="v$VERSION-beta"; fi
+          # Die Version trägt das Datum. Ein zweiter Lauf am selben Tag ergäbe denselben Tag.
+          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "::error::Das Release $tag gibt es schon. Für ein weiteres Release am selben Tag ein eigenes Tag v… setzen."
+            exit 1
+          fi
           gh release create "$tag" out/*.iso out/SHA256SUMS out/*.manifest \
             --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --prerelease \
             --title "Firestrike Rescue $VERSION (Beta)" \
