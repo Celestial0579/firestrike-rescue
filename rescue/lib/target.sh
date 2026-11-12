@@ -66,11 +66,18 @@ target_mount_part() {
 	local part=$1 fs
 	fs=$(lsblk -no FSTYPE "$part")
 	sudo install -d "$FRS_TARGET_MNT"
-	# Zwei Dateisysteme übereinander am selben Punkt gibt es nicht: Dann ließe sich nicht mehr
-	# sagen, für welches die geprüften Optionen gelten.
-	if mountpoint -q "$FRS_TARGET_MNT" && ! run sudo umount "$FRS_TARGET_MNT"; then
-		log "Ziel abgelehnt: $FRS_TARGET_MNT ist noch in Benutzung und lässt sich nicht aushängen."
-		return 1
+	if mountpoint -q "$FRS_TARGET_MNT"; then
+		# Hängt genau diese Partition schon geschützt dort, bleibt sie eingehängt. Ein Kopierlauf
+		# im Hintergrund, der das Ziel gerade benutzt, stört so nicht.
+		if [[ $(findmnt -n -o SOURCE -M "$FRS_TARGET_MNT" 2>/dev/null) == "$part" ]] && target_mount_has_opts; then
+			return 0
+		fi
+		# Zwei Dateisysteme übereinander am selben Punkt gibt es nicht: Dann ließe sich nicht
+		# mehr sagen, für welches die geprüften Optionen gelten.
+		if ! run sudo umount "$FRS_TARGET_MNT"; then
+			log "Ziel abgelehnt: $FRS_TARGET_MNT ist noch in Benutzung und lässt sich nicht aushängen."
+			return 1
+		fi
 	fi
 	target_mount_raw "$part" "$fs" || return 1
 	target_mount_secure || return 1

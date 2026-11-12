@@ -23,8 +23,12 @@ run() { "$@"; }
 id() { echo 1000; }
 lsblk() { echo "$FS"; }
 # $T/mounted: Optionen, die am Einhängepunkt gelten. Leer oder fehlend: nichts eingehängt.
+# $T/source: das Gerät, das dort eingehängt ist.
 mountpoint() { [[ -s $T/mounted ]]; }
-findmnt() { [[ -s $T/mounted ]] && cat "$T/mounted"; }
+findmnt() {
+	[[ -s $T/mounted ]] || return 1
+	if [[ " $* " == *" SOURCE "* ]]; then cat "$T/source"; else cat "$T/mounted"; fi
+}
 sudo() {
 	printf '%s\n' "$*" >>"$T/sudo"
 	case $1 in
@@ -37,12 +41,13 @@ sudo() {
 }
 # Der gedachte Kernel. Er übernimmt von den verlangten Schutzoptionen alle außer $IGNORED.
 kernel_mount() {
-	local tool=$1 type="" opts="" have="rw,relatime" o
+	local tool=$1 type="" opts="" have="rw,relatime" o dev=""
 	shift
 	while (($#)); do
 		case $1 in
 		-t) type=$2; shift ;;
 		-o) opts=$2; shift ;;
+		/dev/*) dev=$1 ;;
 		esac
 		shift
 	done
@@ -56,6 +61,7 @@ kernel_mount() {
 		[[ ",$opts," == *",$o,"* && " $IGNORED " != *" $o "* ]] && have+=",$o"
 	done
 	echo "$have" >"$T/mounted"
+	[[ -z $dev ]] || echo "$dev" >"$T/source"
 }
 
 # mount_part DATEISYSTEM   Ruft target_mount_part auf. Ergebnis: RC, CALLS (Aufrufe hinter
@@ -73,6 +79,7 @@ mount_part() {
 reset() {
 	NTFS3_OK=1 REMOUNT_OK=1 UMOUNT_OK=1 IGNORED=""
 	: >"$T/mounted"
+	rm -f "$T/source"
 }
 safe() { [[ ",$OPTS," == *,nodev,* && ",$OPTS," == *,nosuid,* && ",$OPTS," == *,noexec,* && ",$OPTS," == *,nosymfollow,* ]]; }
 ALL="nodev,nosuid,noexec,nosymfollow"
@@ -137,6 +144,29 @@ echo "rw,relatime" >"$T/mounted"
 UMOUNT_OK=0
 mount_part ext4
 check "Aushängen scheitert: Abbruch, nichts wird darüber eingehängt" '[[ $RC != 0 && $CALLS != *"mount -"* && $LOG == *"noch in Benutzung"* ]]'
+
+echo "Dieselbe Partition hängt schon dort:"
+reset
+mount_part ext4
+UMOUNT_OK=0
+mount_part ext4
+check "geschützt eingehängt und in Benutzung: bleibt, kein Aushängen, kein Einhängen" '[[ $RC == 0 ]] && safe && [[ $CALLS != *mount* ]]'
+reset
+echo "rw,relatime" >"$T/mounted"
+echo /dev/sdz1 >"$T/source"
+mount_part ext4
+check "ohne Schutzoptionen eingehängt: wird nicht übernommen, sondern neu eingehängt" '[[ $RC == 0 ]] && safe && [[ $CALLS == *"umount /mnt/frs-target"*"mount -o $ALL /dev/sdz1"* ]]'
+reset
+echo "rw,relatime,$ALL" >"$T/mounted"
+echo /dev/sdy1 >"$T/source"
+mount_part ext4
+check "eine andere Partition hängt dort: wird ausgehängt, die gewählte eingehängt" '[[ $RC == 0 && $(cat "$T/source") == /dev/sdz1 && $CALLS == *"umount /mnt/frs-target"*"mount -o $ALL /dev/sdz1"* ]]'
+reset
+echo "rw,relatime,$ALL" >"$T/mounted"
+echo /dev/sdy1 >"$T/source"
+UMOUNT_OK=0
+mount_part ext4
+check "eine andere Partition hängt dort und ist in Benutzung: Abbruch" '[[ $RC != 0 && $CALLS != *"mount -"* ]]'
 
 echo "Über alle Fälle:"
 reset
