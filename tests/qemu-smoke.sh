@@ -37,8 +37,12 @@ bios)
 selftest)
 	work=$(mktemp -d)
 	xorriso -osirrox on -indev "$ISO" -extract /casper/vmlinuz "$work/vmlinuz" -extract /casper/initrd "$work/initrd" >/dev/null 2>&1
+	# Der Selbsttest schreibt auf die serielle Konsole. Der Login-Prompt dort (serial-getty,
+	# Type=idle mit TTYVHangup) startet spätestens 5 Sekunden nach dem Selbsttest und hängt die
+	# Leitung dabei auf: Was der Selbsttest danach ausgibt, ginge verloren, auch sein Ergebnis.
+	# Deshalb gibt es in diesem Lauf keinen Login-Prompt auf der seriellen Konsole.
 	QEMU+=(-machine q35 -kernel "$work/vmlinuz" -initrd "$work/initrd"
-		-append "boot=casper live-media=/dev/disk/by-label/FRS_RESCUE noswap systemd.swap=0 fsck.mode=skip noprompt console=ttyS0,115200 frs.selftest")
+		-append "boot=casper live-media=/dev/disk/by-label/FRS_RESCUE noswap systemd.swap=0 fsck.mode=skip noprompt console=ttyS0,115200 frs.selftest systemd.mask=serial-getty@ttyS0.service systemd.getty_auto=0")
 	EXPECT="FRS-SELFTEST: PASS"
 	;;
 *) echo "Unbekannter Modus: $MODE" >&2; exit 2 ;;

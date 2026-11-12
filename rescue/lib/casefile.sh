@@ -77,6 +77,17 @@ casefile_clean_text() {
 	printf '%s' "${s:-_}"
 }
 
+# casefile_dirname_ok NAME   Ist NAME ein Name, wie der Assistent ihn für Fallordner vergibt?
+# Der Name eines Fallordners kommt beim Fortsetzen von der Ziel-Disk und steht danach in Menüs
+# und in Befehlszeilen. Erlaubt sind deshalb nur Buchstaben, Ziffern, Punkt, Unterstrich und
+# Bindestrich, am Anfang ein Buchstabe oder eine Ziffer, höchstens 200 Zeichen. Damit kann ein
+# Name weder als Option gelesen werden (kein "-" am Anfang) noch als Befehl (keine Leerzeichen,
+# Anführungszeichen oder Steuerzeichen) noch aus FRS/ hinausführen (kein "/" und kein "..").
+casefile_dirname_ok() {
+	local LC_ALL=C
+	[[ $1 =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$ ]]
+}
+
 # casefile_load DATEI   Liest und prüft die Falldatei und füllt das Feld CASEFILE.
 # Rückgabe 1 bei jedem Verstoß; CASEFILE ist dann leer.
 casefile_load() {
@@ -134,6 +145,34 @@ casefile_get() {
 casefile_peek() (
 	casefile_load "$1" && casefile_get "$2"
 )
+
+# casefile_source_check SERIENNUMMER WWN GRÖSSE
+# Vergleicht eine Disk, die der Techniker als Quelle gewählt hat, mit dem geladenen Fall.
+# Die Falldatei wählt nie selbst eine Disk aus. Sie kann der Wahl des Technikers nur zustimmen
+# oder ihr widersprechen. Rückgabe:
+#   0  Seriennummer oder WWN stimmen mit SRC_ID überein und die Größe mit SRC_SIZE.
+#   3  Die Falldatei kennt für die Quelle nur einen Gerätepfad. Ein Pfad ist keine Kennung, er
+#      wechselt beim Umstecken. Übereinstimmend ist dann allein die Größe.
+#   1  Die Disk ist nicht die Quelle dieses Falls. Der Grund steht in CASEFILE_ERROR.
+casefile_source_check() {
+	local serial=$1 wwn=$2 size=$3 id
+	id=$(casefile_get SRC_ID)
+	CASEFILE_ERROR=""
+	if [[ -z $id ]]; then
+		CASEFILE_ERROR="es ist kein Rettungsfall geladen"
+		return 1
+	fi
+	if [[ $id != /dev/* && ! (-n $serial && $id == "$serial") && ! (-n $wwn && $id == "$wwn") ]]; then
+		CASEFILE_ERROR="Seriennummer und WWN der Disk stimmen nicht mit dem Rettungsfall überein"
+		return 1
+	fi
+	if [[ -z $size || $size != "$(casefile_get SRC_SIZE)" ]]; then
+		CASEFILE_ERROR="die Größe der Disk stimmt nicht mit dem Rettungsfall überein"
+		return 1
+	fi
+	[[ $id == /dev/* ]] && return 3
+	return 0
+}
 
 # casefile_save DATEI   Schreibt CASEFILE in eine neue Datei und ersetzt damit die alte.
 # Es wird nie in eine vorhandene Datei hineingeschrieben und nie durch eine Verknüpfung hindurch.

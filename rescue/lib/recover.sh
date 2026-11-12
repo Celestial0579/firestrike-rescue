@@ -19,9 +19,13 @@ recover_wizard() {
 	fi
 	target_prepare "$tid" "$size" || return 0
 
-	local model case
+	local model name case
 	model=$(jq -r '.model // "Disk"' <<<"$sj" | tr -c 'A-Za-z0-9._-' '_' | sed 's/_*$//')
-	case="$FRS_TARGET_MNT/FRS/$(date +%Y%m%d-%H%M)_${model}_${sid//[^A-Za-z0-9]/_}"
+	# "Fortsetzen" bietet später nur Ordner an, deren Name casefile_dirname_ok besteht.
+	name="$(date +%Y%m%d-%H%M)_${model}_${sid//[^A-Za-z0-9]/_}"
+	name=${name:0:200}
+	casefile_dirname_ok "$name" || name="$(date +%Y%m%d-%H%M)_Disk"
+	case="$FRS_TARGET_MNT/FRS/$name"
 	mkdir -p "$case" || { die "Kann $case nicht anlegen."; return 0; }
 	# Eine Kennung, die sich in der Falldatei nicht darstellen lässt, wird durch den Gerätepfad
 	# ersetzt. Die Disk wird darüber genauso gefunden, solange sie nicht umgesteckt wird.
@@ -33,12 +37,15 @@ recover_wizard() {
 		return 0
 	fi
 	log "Neuer Rettungsfall: $case"
-	recover_run "$case"
+	recover_run "$case" "$sdev"
 }
 
+# recover_run FALLORDNER QUELL-GERÄT
+# QUELL-GERÄT ist die Disk, die der Techniker in dieser Sitzung als Quelle gewählt hat.
+# frs-rescue-run liest nur von ihr und prüft sie selbst noch einmal gegen die Falldatei.
 recover_run() {
-	local case=$1
-	tmux_run "frs-rettung" sudo frs-rescue-run "$case"
+	local case=$1 sdev=$2
+	tmux_run "frs-rettung" sudo frs-rescue-run "$case" "$sdev"
 	# Läuft die Sitzung noch (Ansicht verlassen), zurück ins Hauptmenü.
 	if tmux has-session -t frs-rettung 2>/dev/null; then
 		ui_msg "Rettung läuft weiter" "Die Rettung läuft im Hintergrund weiter.\n\nZurück zur Ansicht: Hauptmenü > Laufende Rettung anzeigen\noder auf tty2 (Alt+F2): tmux attach -t frs-rettung"
@@ -71,14 +78,42 @@ recover_resume() {
 	local tid
 	tid=$(disk_pick "Fortsetzen" "Auf welcher Ziel-Disk liegt die unterbrochene Rettung?") || return 0
 	target_find_cases "$tid" || { ui_msg "Fortsetzen" "Auf dieser Disk wurde kein Rettungsfall (Ordner FRS/) gefunden."; return 0; }
-	local items=() c st
+	# Was unter FRS/ liegt, kommt von der Ziel-Disk. Angeboten werden nur echte Ordner mit einem
+	# Namen, wie der Assistent ihn vergibt (casefile_dirname_ok). Jeder andere Name könnte als
+	# Option oder als Befehl gelesen werden, sobald er in einem Menü oder einer Befehlszeile
+	# steht. Solche Einträge werden gezählt, ihr Name wird nirgends ausgegeben.
+	if [[ -L $FRS_TARGET_MNT/FRS ]]; then
+		log "Fortsetzen abgelehnt: FRS auf der Ziel-Disk ist eine Verknüpfung"
+		ui_msg "Fortsetzen" "Der Ordner FRS auf dieser Disk ist eine Verknüpfung. Der Assistent legt FRS immer als Ordner an und verwendet diese Disk so nicht.\n\nStammt die Disk aus fremder Hand, ist Vorsicht angebracht."
+		return 0
+	fi
+	local items=() c name st skipped=0
 	for c in "$FRS_TARGET_MNT"/FRS/*/; do
+		c=${c%/}
+		name=${c##*/}
+		if [[ -L $c ]]; then
+			skipped=$((skipped + 1))
+			continue
+		fi
+		if ! casefile_dirname_ok "$name"; then
+			[[ -e $c/case.env || -L $c/case.env ]] && skipped=$((skipped + 1))
+			continue
+		fi
 		[[ -f $c/case.env ]] || continue
 		st=$(casefile_peek "$c/case.env" STATE) || st="ungültig"
-		items+=("$(basename "$c")" "[$st]")
+		items+=("$name" "[$st]")
 	done
+	if ((skipped)); then
+		log "Fortsetzen: $skipped Einträge unter FRS/ nicht angeboten (unzulässiger Name oder Verknüpfung)"
+		ui_msg "Fortsetzen" "Nicht angebotene Einträge unter FRS/: $skipped\n\nIhr Name enthält andere Zeichen als Buchstaben, Ziffern, Punkt, Unterstrich und Bindestrich, beginnt nicht mit einem Buchstaben oder einer Ziffer, oder der Eintrag ist eine Verknüpfung. Der Assistent vergibt solche Namen nicht.\n\nStammt die Disk aus fremder Hand, ist Vorsicht angebracht. Hast du einen Fallordner selbst umbenannt, gib ihm einen Namen aus den erlaubten Zeichen."
+	fi
+	if ((${#items[@]} == 0)); then
+		ui_msg "Fortsetzen" "Auf dieser Disk liegt kein Rettungsfall, den der Assistent verwenden kann."
+		return 0
+	fi
 	local pick
 	pick=$(ui_menu "Fortsetzen" "Welcher Rettungsfall?" -- "${items[@]}") || return 0
+	casefile_dirname_ok "$pick" || return 0
 	c="$FRS_TARGET_MNT/FRS/$pick"
 	if ! casefile_load "$c/case.env"; then
 		recover_case_invalid "$c"
@@ -87,13 +122,30 @@ recover_resume() {
 	st=$(casefile_get STATE)
 	if [[ $st == "done" ]]; then
 		recover_after "$c"
-	else
-		local sid sdev
-		sid=$(casefile_get SRC_ID)
-		sdev=$(disk_resolve "$sid")
-		[[ -n $sdev ]] && safety_set_ro "$sdev"
-		recover_run "$c"
+		return 0
 	fi
+	# Die Quelle wählt der Techniker, nie die Falldatei. Die Datei liegt auf der Ziel-Disk; nennt
+	# sie eine andere Disk als die gewählte, etwa eine interne, wird nicht fortgesetzt. Was die
+	# Datei über die Quelle sagt, erscheint deshalb auch nicht in der Auswahl.
+	local sid sj sdev
+	sid=$(disk_pick "Fortsetzen: Quelle" "Welche Disk ist die Quelle dieses Rettungsfalls?\n\nVon ihr wird gelesen, ihr Inhalt kommt in das Image auf der Ziel-Disk.\nDer Assistent prüft danach, ob die Disk zu diesem Fall gehört." "$tid") || return 0
+	sj=$(disk_info "$sid")
+	sdev=$(jq -r '.path // ""' <<<"$sj")
+	[[ -n $sdev ]] || { die "Die Disk $sid ist nicht mehr zu finden."; return 0; }
+	casefile_source_check "$(jq -r '.serial // ""' <<<"$sj")" "$(jq -r '.wwn // ""' <<<"$sj")" "$(jq -r '.size // ""' <<<"$sj")"
+	case $? in
+	0) ;;
+	3)
+		ui_yesno "Quelle nur an der Größe erkennbar" "Dieser Rettungsfall kennt von seiner Quelle keine Seriennummer und keinen WWN. Ob die gewählte Disk die Quelle ist, lässt sich deshalb nur an der Größe prüfen. Die stimmt überein.\n\nGewählt: $(disk_label "$sj")\n\nIst das die Disk, deren Rettung unterbrochen wurde?" --defaultno || return 0
+		;;
+	*)
+		log "Fortsetzen abgelehnt: $sdev passt nicht zum Fall $(basename "$c"): $CASEFILE_ERROR"
+		ui_msg "Falsche Quelle" "Die gewählte Disk ist nicht die Quelle dieses Rettungsfalls:\n\n$(disk_label "$sj")\n\nGrund: $CASEFILE_ERROR.\n\nEs wurde nichts gelesen und nichts geschrieben.\n\nMeldet die Disk über einen anderen Adapter eine andere Seriennummer, schließe sie so an wie zu Beginn der Rettung. Hast du diesen Fall nicht selbst angelegt, ist Vorsicht angebracht: Der Fallordner liegt auf der Ziel-Disk."
+		return 0
+		;;
+	esac
+	safety_set_ro "$sdev"
+	recover_run "$c" "$sdev"
 }
 
 # ---------------------------------------------------------------------------
@@ -101,6 +153,12 @@ recover_resume() {
 # ---------------------------------------------------------------------------
 recover_after() {
 	local case=$1 img="$1/image.img" choice
+	# Der Pfad des Fallordners steht unten in Befehlszeilen. Ein Name, den der Assistent nicht
+	# vergibt, kommt dort nicht an.
+	if ! casefile_dirname_ok "$(basename "$case")"; then
+		die "Der Fallordner hat einen Namen, den der Assistent nicht vergibt. Er wird nicht verwendet."
+		return 0
+	fi
 	while true; do
 		choice=$(ui_menu "Image weiterverwenden" "Rettung abgeschlossen: $(basename "$case")\n\n$(ddrescuelog -t "$case/image.map" 2>/dev/null | grep -E 'rescued|bad' | head -n 3)\n\nWas soll mit dem Image passieren?" -- \
 			copy "Dateien aus dem Image kopieren" \

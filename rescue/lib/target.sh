@@ -4,16 +4,86 @@
 # Dateisysteme, auf denen Images > 4 GiB abgelegt werden können.
 TARGET_FS_OK="ext4 ext3 xfs btrfs exfat ntfs"
 
+# Schutzoptionen für jedes Ziel-Dateisystem. Was auf einer Ziel-Disk liegt, hat jemand anderes
+# dorthin gelegt. Der Assistent braucht dort nur gewöhnliche Dateien und Ordner:
+#   nodev        Gerätedateien auf dem Ziel öffnen kein Gerät (image.img als Gerätedatei).
+#   nosuid       Setuid- und Setgid-Bits auf dem Ziel wirken nicht.
+#   noexec       Vom Ziel wird nichts ausgeführt.
+#   nosymfollow  Verknüpfungen auf dem Ziel werden nicht verfolgt (FRS, Fallordner oder
+#                image.img als Verknüpfung auf eine andere Stelle oder eine andere Disk).
+TARGET_MOUNT_OPTS=(nodev nosuid noexec nosymfollow)
+
+target_mount_optstring() {
+	local IFS=,
+	echo "${TARGET_MOUNT_OPTS[*]}"
+}
+
+# Einhängen mit den Schutzoptionen, je nach Dateisystem. Rückgabe wie mount.
+target_mount_raw() {
+	local part=$1 fs=$2 opts own
+	opts=$(target_mount_optstring)
+	own="uid=$(id -u),gid=$(id -g)"
+	case $fs in
+	ntfs) run sudo mount -t ntfs3 -o "$opts,$own" "$part" "$FRS_TARGET_MNT" || target_mount_ntfs3g "$part" ;;
+	exfat) run sudo mount -o "$opts,$own" "$part" "$FRS_TARGET_MNT" ;;
+	*) run sudo mount -o "$opts" "$part" "$FRS_TARGET_MNT" ;;
+	esac
+}
+
+# Ersatzweg für NTFS, wenn der Kerneltreiber ntfs3 ablehnt. ntfs-3g (FUSE) kennt nosymfollow
+# nicht. Die Option setzt target_mount_secure danach am Einhängepunkt.
+target_mount_ntfs3g() {
+	run sudo ntfs-3g -o "nodev,nosuid,noexec,uid=$(id -u),gid=$(id -g)" "$1" "$FRS_TARGET_MNT"
+}
+
+# Gelten am Einhängepunkt wirklich alle Schutzoptionen? Gefragt wird der Kernel (findmnt),
+# nicht der eigene Aufruf.
+target_mount_has_opts() {
+	local line opt n=0
+	while IFS= read -r line; do
+		n=$((n + 1))
+		for opt in "${TARGET_MOUNT_OPTS[@]}"; do
+			[[ ",$line," == *",$opt,"* ]] || return 1
+		done
+	done < <(findmnt -n -o VFS-OPTIONS -M "$FRS_TARGET_MNT" 2>/dev/null)
+	((n > 0))
+}
+
+# Setzt fehlende Schutzoptionen am Einhängepunkt nach. Gelten danach nicht alle, wird das Ziel
+# wieder ausgehängt: lieber kein Ziel als eines ohne Schutz.
+# "remount,bind" ändert nur die Optionen des Einhängepunkts, nicht das Dateisystem. Mit -i ruft
+# mount dafür kein Hilfsprogramm des Dateisystems auf (ntfs-3g kann nicht neu einhängen).
+target_mount_secure() {
+	target_mount_has_opts && return 0
+	run sudo mount -i -o "remount,bind,$(target_mount_optstring)" "$FRS_TARGET_MNT"
+	target_mount_has_opts && return 0
+	log "Ziel abgelehnt: Die Schutzoptionen $(target_mount_optstring) gelten nicht. Vorhanden: $(findmnt -n -o VFS-OPTIONS -M "$FRS_TARGET_MNT" 2>/dev/null | tr '\n' ' ')"
+	run sudo umount "$FRS_TARGET_MNT"
+	return 1
+}
+
 target_mount_part() {
 	local part=$1 fs
 	fs=$(lsblk -no FSTYPE "$part")
 	sudo install -d "$FRS_TARGET_MNT"
-	mountpoint -q "$FRS_TARGET_MNT" && run sudo umount "$FRS_TARGET_MNT"
+	if mountpoint -q "$FRS_TARGET_MNT"; then
+		# Hängt genau diese Partition schon geschützt dort, bleibt sie eingehängt. Ein Kopierlauf
+		# im Hintergrund, der das Ziel gerade benutzt, stört so nicht.
+		if [[ $(findmnt -n -o SOURCE -M "$FRS_TARGET_MNT" 2>/dev/null) == "$part" ]] && target_mount_has_opts; then
+			return 0
+		fi
+		# Zwei Dateisysteme übereinander am selben Punkt gibt es nicht: Dann ließe sich nicht
+		# mehr sagen, für welches die geprüften Optionen gelten.
+		if ! run sudo umount "$FRS_TARGET_MNT"; then
+			log "Ziel abgelehnt: $FRS_TARGET_MNT ist noch in Benutzung und lässt sich nicht aushängen."
+			return 1
+		fi
+	fi
+	target_mount_raw "$part" "$fs" || return 1
+	target_mount_secure || return 1
 	case $fs in
-	ntfs) run sudo mount -t ntfs3 -o uid="$(id -u)",gid="$(id -g)" "$part" "$FRS_TARGET_MNT" ||
-		run sudo ntfs-3g -o uid="$(id -u)",gid="$(id -g)" "$part" "$FRS_TARGET_MNT" ;;
-	exfat) run sudo mount -o uid="$(id -u)",gid="$(id -g)" "$part" "$FRS_TARGET_MNT" ;;
-	*) run sudo mount "$part" "$FRS_TARGET_MNT" && run sudo chown "$(id -u):$(id -g)" "$FRS_TARGET_MNT" ;;
+	ntfs | exfat) ;;
+	*) run sudo chown "$(id -u):$(id -g)" "$FRS_TARGET_MNT" ;;
 	esac
 }
 

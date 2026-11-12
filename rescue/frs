@@ -20,7 +20,7 @@ done
 # ---------------------------------------------------------------------------
 selftest() {
 	set -e
-	local dir=/run/frs/selftest src loop map ok=1
+	local dir=/run/frs/selftest src loop map ok=1 other rc
 	echo "FRS-SELFTEST: start ($FRS_VERSION)"
 	rm -rf "$dir"
 	mkdir -p "$dir/case"
@@ -36,8 +36,21 @@ selftest() {
 	casefile_create "$dir/case/case.env" "SRC_ID=$src" "SRC_SIZE=$((64 * 1024 * 1024))" \
 		"SRC_LABEL=Selbsttest (dm-error)" "STATE=new"
 	set +e
-	frs-rescue-run "$dir/case" --no-pause
-	local rc=$?
+	# Gelesen wird nur von der Disk, die beim Aufruf als Quelle genannt ist. Eine Disk, die nicht
+	# zum Fall passt (hier: andere Größe), wird auch als root nicht angefasst.
+	head -c $((1024 * 1024)) /dev/zero >"$dir/fremd.raw"
+	other=$(losetup --find --show -r "$dir/fremd.raw")
+	frs-rescue-run "$dir/case" "$other" --no-pause
+	rc=$?
+	if [[ $rc == 2 && ! -e $dir/case/image.img ]]; then
+		echo "FRS-SELFTEST: fremde Disk als Quelle abgelehnt, nichts gelesen"
+	else
+		echo "FRS-SELFTEST: fremde Disk als Quelle nicht abgelehnt (rc=$rc)"
+		ok=0
+	fi
+	losetup -d "$other"
+	frs-rescue-run "$dir/case" "$src" --no-pause
+	rc=$?
 	map="$dir/case/image.map"
 	local bad
 	bad=$(ddrescuelog -l- -b512 "$map" 2>/dev/null | wc -l)
@@ -52,6 +65,7 @@ selftest() {
 		ok=0
 	fi
 	[[ $(casefile_peek "$dir/case/case.env" STATE) == "done" ]] || ok=0
+	selftest_target "$dir" || ok=0
 	# Werkzeuge vorhanden?
 	local t
 	for t in ddrescue partclone.ntfs partclone.extfs ntfsresize smartctl nvme sgdisk sfdisk cryptsetup dislocker \
@@ -63,6 +77,91 @@ selftest() {
 	losetup -d "$loop"
 	if ((ok)); then echo "FRS-SELFTEST: PASS"; else echo "FRS-SELFTEST: FAIL"; fi
 	((ok))
+}
+
+# Ziel-Dateisysteme im gebooteten System: Die Schutzoptionen müssen wirken, nicht nur im Aufruf
+# stehen. Je Dateisystem entsteht ein kleines Abbild, das mit den Funktionen des Assistenten
+# eingehängt wird. Das ext4-Abbild bekommt vorher den Inhalt einer präparierten Ziel-Disk:
+# eine Verknüpfung, eine Gerätedatei und ein Programm. "ntfs-3g" prüft den Ersatzweg für NTFS.
+selftest_target() {
+	local dir=$1 fs img loop good=1 i
+	for fs in ext4 exfat ntfs ntfs-3g; do
+		img="$dir/ziel-$fs.raw"
+		truncate -s 64M "$img"
+		loop=$(losetup --find --show "$img")
+		case $fs in
+		ext4) mkfs.ext4 -q -F "$loop" ;;
+		exfat) mkfs.exfat "$loop" >/dev/null ;;
+		ntfs*) mkfs.ntfs -Q -F "$loop" >/dev/null 2>&1 ;;
+		esac
+		# target_mount_part fragt lsblk nach dem Dateisystem. udev braucht dafür einen Moment.
+		for i in 1 2 3 4 5 6 7 8 9 10; do
+			udevadm settle
+			[[ $(lsblk -no FSTYPE "$loop") == "${fs%-3g}" ]] && break
+			sleep 1
+		done
+		if [[ $fs == ext4 ]]; then
+			mkdir -p "$dir/roh"
+			mount "$loop" "$dir/roh"
+			ln -s /etc/hostname "$dir/roh/verknuepfung"
+			mknod -m 666 "$dir/roh/geraet" c 1 3
+			printf '#!/bin/sh\nexit 0\n' >"$dir/roh/programm"
+			chmod 4755 "$dir/roh/programm"
+			# Gegenprobe: Ohne Schutzoptionen wirkt der Inhalt. Sonst bewiese der Test nichts.
+			if cat "$dir/roh/verknuepfung" >/dev/null 2>&1 && { echo x >"$dir/roh/geraet"; } 2>/dev/null && "$dir/roh/programm" 2>/dev/null; then
+				echo "FRS-SELFTEST: Ziel ext4 ohne Schutzoptionen: Verknüpfung, Gerätedatei und Programm wirken (Gegenprobe)"
+			else
+				echo "FRS-SELFTEST: Ziel ext4: Gegenprobe ohne Schutzoptionen gescheitert"
+				good=0
+			fi
+			umount "$dir/roh"
+		fi
+		if [[ $fs == ntfs-3g ]]; then
+			install -d "$FRS_TARGET_MNT"
+			target_mount_ntfs3g "$loop" && target_mount_secure
+		else
+			target_mount_part "$loop"
+		fi || {
+			echo "FRS-SELFTEST: Ziel $fs lässt sich nicht geschützt einhängen. Protokoll:"
+			tail -n 8 "$FRS_LOG" | sed 's/^/FRS-SELFTEST:   /'
+			good=0
+			losetup -d "$loop" 2>/dev/null
+			rm -f "$img"
+			continue
+		}
+		echo "FRS-SELFTEST: Ziel $fs eingehängt als $(findmnt -n -o FSTYPE,VFS-OPTIONS -M "$FRS_TARGET_MNT" | tr -s ' \n' ' ')"
+		target_mount_has_opts || { echo "FRS-SELFTEST: Ziel $fs: Schutzoptionen gelten nicht"; good=0; }
+		# Schreiben muss gehen, Ausführen nicht.
+		printf '#!/bin/sh\nexit 0\n' >"$FRS_TARGET_MNT/neu" || { echo "FRS-SELFTEST: Ziel $fs: nicht beschreibbar"; good=0; }
+		chmod 755 "$FRS_TARGET_MNT/neu" 2>/dev/null
+		if "$FRS_TARGET_MNT/neu" 2>/dev/null; then
+			echo "FRS-SELFTEST: Ziel $fs: Programm vom Ziel wurde ausgeführt"
+			good=0
+		fi
+		if [[ $fs == ext4 ]]; then
+			if cat "$FRS_TARGET_MNT/verknuepfung" >/dev/null 2>&1; then
+				echo "FRS-SELFTEST: Ziel ext4: Verknüpfung wurde verfolgt"
+				good=0
+			fi
+			if { echo x >"$FRS_TARGET_MNT/geraet"; } 2>/dev/null; then
+				echo "FRS-SELFTEST: Ziel ext4: Gerätedatei wurde geöffnet"
+				good=0
+			fi
+			if "$FRS_TARGET_MNT/programm" 2>/dev/null; then
+				echo "FRS-SELFTEST: Ziel ext4: mitgebrachtes Programm wurde ausgeführt"
+				good=0
+			fi
+		fi
+		umount "$FRS_TARGET_MNT"
+		losetup -d "$loop" 2>/dev/null
+		rm -f "$img"
+	done
+	if ((good)); then
+		echo "FRS-SELFTEST: Ziel-Dateisysteme: Schutzoptionen wirken (ext4, exfat, ntfs, ntfs-3g)"
+	else
+		echo "FRS-SELFTEST: Ziel-Dateisysteme: Schutzoptionen wirken nicht überall"
+	fi
+	((good))
 }
 
 # ---------------------------------------------------------------------------

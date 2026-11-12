@@ -2,19 +2,30 @@
 # Führt die ddrescue-Phasen für einen Rettungsfall aus. Läuft als root, meist in tmux.
 # Wird ein Lauf unterbrochen, setzt ein erneuter Aufruf anhand von image.map fort.
 #
-#   frs-rescue-run CASE_DIR [--no-pause]
+#   frs-rescue-run CASE_DIR QUELLE [--no-pause]
 #
 # CASE_DIR enthält case.env mit SRC_ID (Seriennummer/WWN/Pfad) und SRC_SIZE.
+# QUELLE ist der Gerätepfad der Disk, die der Techniker als Quelle gewählt hat.
 #
 # Der Fallordner liegt auf der Ziel-Disk, also auf einem Datenträger, den jemand angeschlossen
 # hat. case.env wird deshalb als Daten gelesen und geprüft, nie als Shell-Code (lib/casefile.sh).
+# Aus demselben Grund bestimmt die Falldatei nie, von welcher Disk gelesen wird: Die Quelle
+# kommt als Argument vom Aufrufer. Die Falldatei kann dieser Wahl nur widersprechen.
 
 set -uo pipefail
 
-CASE=${1:?Aufruf: frs-rescue-run CASE_DIR}
-CASE=${CASE%/}
 PAUSE=1
-[[ ${2:-} == --no-pause ]] && PAUSE=0
+ARGS=()
+for a in "$@"; do
+	if [[ $a == --no-pause ]]; then PAUSE=0; else ARGS+=("$a"); fi
+done
+if ((${#ARGS[@]} != 2)); then
+	echo "Aufruf: frs-rescue-run CASE_DIR QUELLE [--no-pause]" >&2
+	echo "QUELLE ist der Gerätepfad der Quell-Disk, zum Beispiel /dev/sdb. Ohne sie wird nichts gelesen." >&2
+	exit 2
+fi
+CASE=${ARGS[0]%/}
+SRC=${ARGS[1]}
 
 ENV="$CASE/case.env"
 IMG="$CASE/image.img"
@@ -70,17 +81,34 @@ SRC_ID=$(casefile_get SRC_ID)
 SRC_SIZE=$(casefile_get SRC_SIZE)
 SRC_LABEL=$(casefile_get SRC_LABEL "$SRC_ID")
 
-# Quelle über die Kennung auflösen; der Gerätepfad kann sich nach USB-Resets ändern.
-SRC=$(lsblk -J -b -d -o PATH,SERIAL,WWN | jq -r --arg id "$SRC_ID" \
-	'.blockdevices[] | select(((.serial // "") | gsub("^\\s+|\\s+$"; "")) == $id or .wwn == $id or .path == $id) | .path' | head -n1)
-# Ohne Seriennummer und WWN ist die Kennung der Gerätepfad selbst. Die Prüfung der Falldatei
-# lässt als Pfad nur /dev/… ohne ".." zu.
-[[ -z $SRC && $SRC_ID == /dev/* && -b $SRC_ID ]] && SRC=$SRC_ID
-if [[ -z $SRC ]]; then
-	say "Quell-Disk $SRC_ID ist nicht (mehr) angeschlossen. Der Stand ist gespeichert; nach dem Anschließen 'Unterbrochene Rettung fortsetzen' wählen."
+# Gelesen wird von der Disk, die der Techniker gewählt hat (QUELLE), nie von einer, die die
+# Falldatei nennt. Eine präparierte Falldatei könnte sonst eine interne Disk als Quelle angeben,
+# deren Abbild dann auf der fremden Ziel-Disk landet. Die Angaben der Falldatei dienen nur der
+# Gegenprobe: Passen Kennung oder Größe nicht zur gewählten Disk, wird nichts gelesen.
+if ! casefile_value_ok SRC_PATH "$SRC"; then
+	echo "Die Rettung wird nicht gestartet: $SRC ist kein Gerätepfad unter /dev." >&2
+	finish 2
+fi
+# lsblk sagt, ob das Gerät da ist, und liefert, was es über sich selbst meldet.
+INFO=$(lsblk -J -b -d -o PATH,SERIAL,WWN,SIZE "$SRC" 2>/dev/null | jq -c '.blockdevices[0] // empty' 2>/dev/null)
+if [[ -z $INFO ]]; then
+	say "Quell-Disk $SRC ist nicht (mehr) angeschlossen. Der Stand ist gespeichert; nach dem Anschließen 'Unterbrochene Rettung fortsetzen' wählen."
 	setv STATE interrupted
 	finish 1
 fi
+NOTE=""
+casefile_source_check "$(jq -r '(.serial // "") | gsub("^\\s+|\\s+$"; "")' <<<"$INFO")" \
+	"$(jq -r '.wwn // ""' <<<"$INFO")" "$(jq -r '.size // ""' <<<"$INFO")"
+case $? in
+0) ;;
+3) NOTE="Die Falldatei nennt für die Quelle nur einen Gerätepfad, keine Seriennummer und keinen WWN. Geprüft ist deshalb allein die Größe." ;;
+*)
+	echo "Die Rettung wird nicht gestartet: $SRC ist nicht die Quelle dieses Rettungsfalls." >&2
+	echo "  $CASEFILE_ERROR" >&2
+	echo "Es wurde nichts gelesen und nichts geschrieben." >&2
+	finish 2
+	;;
+esac
 blockdev --setro "$SRC" 2>/dev/null || true
 
 # Sparse schreiben, wo das Ziel-Dateisystem es kann
@@ -95,6 +123,7 @@ setv SRC_PATH "$SRC"
 [[ -f $CASE/smart-before.txt ]] || smartctl -x "$SRC" >"$CASE/smart-before.txt" 2>&1
 
 say "Firestrike Rescue · Datenrettung von $SRC ($SRC_ID) nach $IMG"
+[[ -n $NOTE ]] && say "Hinweis: $NOTE"
 echo "Mit Strg+B, D verlässt du die Ansicht; die Rettung läuft weiter." | tee -a "$LOG"
 
 PHASES=(
