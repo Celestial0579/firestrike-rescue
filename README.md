@@ -39,6 +39,7 @@ Diese Schutzregeln gelten immer:
 - Ziele werden über die Seriennummer bestätigt. Du gibst die letzten 4 Zeichen ein, nicht `/dev/sdX`.
 - Fremde Disks werden nie automatisch eingehängt. Auch Swap, RAID und LVM werden nicht automatisch aktiviert.
 - Reparaturen laufen nur auf einer Kopie des Images.
+- Von welcher Disk gelesen wird, bestimmst du. Beim Fortsetzen wählst du die Quelle neu. Die Falldatei auf der Ziel-Disk kann deiner Wahl nur widersprechen.
 
 Was ist drin
 ------------

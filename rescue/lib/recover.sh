@@ -33,12 +33,15 @@ recover_wizard() {
 		return 0
 	fi
 	log "Neuer Rettungsfall: $case"
-	recover_run "$case"
+	recover_run "$case" "$sdev"
 }
 
+# recover_run FALLORDNER QUELL-GERÄT
+# QUELL-GERÄT ist die Disk, die der Techniker in dieser Sitzung als Quelle gewählt hat.
+# frs-rescue-run liest nur von ihr und prüft sie selbst noch einmal gegen die Falldatei.
 recover_run() {
-	local case=$1
-	tmux_run "frs-rettung" sudo frs-rescue-run "$case"
+	local case=$1 sdev=$2
+	tmux_run "frs-rettung" sudo frs-rescue-run "$case" "$sdev"
 	# Läuft die Sitzung noch (Ansicht verlassen), zurück ins Hauptmenü.
 	if tmux has-session -t frs-rettung 2>/dev/null; then
 		ui_msg "Rettung läuft weiter" "Die Rettung läuft im Hintergrund weiter.\n\nZurück zur Ansicht: Hauptmenü > Laufende Rettung anzeigen\noder auf tty2 (Alt+F2): tmux attach -t frs-rettung"
@@ -87,13 +90,30 @@ recover_resume() {
 	st=$(casefile_get STATE)
 	if [[ $st == "done" ]]; then
 		recover_after "$c"
-	else
-		local sid sdev
-		sid=$(casefile_get SRC_ID)
-		sdev=$(disk_resolve "$sid")
-		[[ -n $sdev ]] && safety_set_ro "$sdev"
-		recover_run "$c"
+		return 0
 	fi
+	# Die Quelle wählt der Techniker, nie die Falldatei. Die Datei liegt auf der Ziel-Disk; nennt
+	# sie eine andere Disk als die gewählte, etwa eine interne, wird nicht fortgesetzt. Was die
+	# Datei über die Quelle sagt, erscheint deshalb auch nicht in der Auswahl.
+	local sid sj sdev
+	sid=$(disk_pick "Fortsetzen: Quelle" "Welche Disk ist die Quelle dieses Rettungsfalls?\n\nVon ihr wird gelesen, ihr Inhalt kommt in das Image auf der Ziel-Disk.\nDer Assistent prüft danach, ob die Disk zu diesem Fall gehört." "$tid") || return 0
+	sj=$(disk_info "$sid")
+	sdev=$(jq -r '.path // ""' <<<"$sj")
+	[[ -n $sdev ]] || { die "Die Disk $sid ist nicht mehr zu finden."; return 0; }
+	casefile_source_check "$(jq -r '.serial // ""' <<<"$sj")" "$(jq -r '.wwn // ""' <<<"$sj")" "$(jq -r '.size // ""' <<<"$sj")"
+	case $? in
+	0) ;;
+	3)
+		ui_yesno "Quelle nur an der Größe erkennbar" "Dieser Rettungsfall kennt von seiner Quelle keine Seriennummer und keinen WWN. Ob die gewählte Disk die Quelle ist, lässt sich deshalb nur an der Größe prüfen. Die stimmt überein.\n\nGewählt: $(disk_label "$sj")\n\nIst das die Disk, deren Rettung unterbrochen wurde?" --defaultno || return 0
+		;;
+	*)
+		log "Fortsetzen abgelehnt: $sdev passt nicht zum Fall $(basename "$c"): $CASEFILE_ERROR"
+		ui_msg "Falsche Quelle" "Die gewählte Disk ist nicht die Quelle dieses Rettungsfalls:\n\n$(disk_label "$sj")\n\nGrund: $CASEFILE_ERROR.\n\nEs wurde nichts gelesen und nichts geschrieben.\n\nMeldet die Disk über einen anderen Adapter eine andere Seriennummer, schließe sie so an wie zu Beginn der Rettung. Hast du diesen Fall nicht selbst angelegt, ist Vorsicht angebracht: Der Fallordner liegt auf der Ziel-Disk."
+		return 0
+		;;
+	esac
+	safety_set_ro "$sdev"
+	recover_run "$c" "$sdev"
 }
 
 # ---------------------------------------------------------------------------

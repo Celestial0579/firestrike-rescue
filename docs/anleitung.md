@@ -25,7 +25,7 @@ Du brauchst immer eine **Ziel-Disk**, die mindestens so groß ist wie die defekt
    2. rückwärts über die übersprungenen Stellen
    3. Fehlerstellen gezielt mit Wiederholungen
 
-   Mit **Strg+B, D** verlässt du die Ansicht, die Rettung läuft weiter. Bei Stromausfall, USB-Abbruch oder Neustart geht es über **„Unterbrochene Rettung fortsetzen“** genau dort weiter, wo der Lauf aufgehört hat.
+   Mit **Strg+B, D** verlässt du die Ansicht, die Rettung läuft weiter. Bei Stromausfall, USB-Abbruch oder Neustart geht es über **„Unterbrochene Rettung fortsetzen“** genau dort weiter, wo der Lauf aufgehört hat. Der Assistent fragt dabei noch einmal nach der Quell-Disk und setzt nur fort, wenn sie zum Rettungsfall gehört.
 4. **Mit dem Image weiterarbeiten:**
    - Dateien kopieren (rsync oder Midnight Commander). BitLocker geht mit dem Wiederherstellungsschlüssel.
    - Image auf eine neue Disk schreiben. Die Größe wird angepasst.

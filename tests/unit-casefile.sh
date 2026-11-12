@@ -258,8 +258,10 @@ check "Begründung nennt den fehlenden Schlüssel" '[[ $CASEFILE_ERROR == *"SRC_
 
 # ---------------------------------------------------------------------------
 # run NAME   Startet das echte Skript auf einem Fallordner. Ergebnis: RC, OUT.
+# Als Quelle ist ein Gerät genannt, das es nicht gibt: Gelesen wird in diesen Tests nie.
+NODISK=/dev/frs-test-gibt-es-nicht
 run() {
-	OUT=$(bash rescue/bin/frs-rescue-run "$T/$1" --no-pause 2>&1)
+	OUT=$(bash rescue/bin/frs-rescue-run "$T/$1" "$NODISK" --no-pause 2>&1)
 	RC=$?
 }
 
@@ -294,7 +296,7 @@ check "durch keine Verknüpfung wurde geschrieben" '! markers'
 echo "Gültige Falldatei mit dem echten frs-rescue-run (Quelle nicht angeschlossen):"
 good lauf
 run lauf
-check "Skript läuft bis zur Suche nach der Quelle" '[[ $RC == 1 && $OUT == *"GIBT-ES-NICHT-0815 ist nicht (mehr) angeschlossen"* ]]'
+check "Skript läuft bis zur Suche nach der Quelle" '[[ $RC == 1 && $OUT == *"$NODISK ist nicht (mehr) angeschlossen"* ]]'
 check "Zustand fortgeschrieben" '[[ $(casefile_peek "$T/lauf/case.env" STATE) == interrupted ]]'
 check "übrige Werte unverändert" '[[ $(casefile_peek "$T/lauf/case.env" SRC_SIZE) == 500107862016 && $(casefile_peek "$T/lauf/case.env" TARGET_ID) == WD-WCC6Y0ABCDEF ]]'
 run alt
@@ -302,10 +304,11 @@ check "alte Falldatei wird weiterverwendet" '[[ $RC == 1 && $(casefile_peek "$T/
 
 # ---------------------------------------------------------------------------
 # Ganzer Durchlauf ohne root und ohne Disk: lsblk, ddrescue und Co. sind Attrappen im PATH.
+# Die Quelle /dev/sdz nennt der Aufruf, wie der Assistent es tut (siehe unit-resume-source.sh).
 mkdir -p "$T/attrappen"
 cat >"$T/attrappen/lsblk" <<'EOF'
 #!/bin/sh
-echo '{"blockdevices":[{"path":"/dev/sdz","serial":"GIBT-ES-DOCH-4711","wwn":null}]}'
+echo '{"blockdevices":[{"path":"/dev/sdz","serial":"GIBT-ES-DOCH-4711","wwn":null,"size":500107862016}]}'
 EOF
 cat >"$T/attrappen/ddrescue" <<'EOF'
 #!/bin/sh
@@ -323,7 +326,7 @@ chmod +x "$T/attrappen"/*
 # full NAME   Startet das echte Skript mit den Attrappen. Ergebnis: RC, OUT, CALLS (ddrescue-Aufrufe).
 full() {
 	: >"$T/aufrufe"
-	OUT=$(PATH="$T/attrappen:$PATH" DDRESCUE_CALLS="$T/aufrufe" bash rescue/bin/frs-rescue-run "$T/$1" --no-pause 2>&1)
+	OUT=$(PATH="$T/attrappen:$PATH" DDRESCUE_CALLS="$T/aufrufe" bash rescue/bin/frs-rescue-run "$T/$1" /dev/sdz --no-pause 2>&1)
 	RC=$?
 	CALLS=$(wc -l <"$T/aufrufe")
 }
@@ -341,9 +344,9 @@ check "Bericht nennt Quelle und Beginn" '[[ $(cat "$T/ganz/report.txt") == *"Que
 check "keine Reste im Fallordner" '! compgen -G "$T/ganz/case.env.*" >/dev/null'
 
 mkdir -p "$T/abbruch"
-casefile_create "$T/abbruch/case.env" "SRC_ID=GIBT-ES-DOCH-4711" "SRC_SIZE=1" "STATE=new"
+casefile_create "$T/abbruch/case.env" "SRC_ID=GIBT-ES-DOCH-4711" "SRC_SIZE=500107862016" "STATE=new"
 : >"$T/aufrufe"
-OUT=$(PATH="$T/attrappen:$PATH" DDRESCUE_CALLS="$T/aufrufe" DDRESCUE_FAIL_AT=2 bash rescue/bin/frs-rescue-run "$T/abbruch" --no-pause 2>&1)
+OUT=$(PATH="$T/attrappen:$PATH" DDRESCUE_CALLS="$T/aufrufe" DDRESCUE_FAIL_AT=2 bash rescue/bin/frs-rescue-run "$T/abbruch" /dev/sdz --no-pause 2>&1)
 RC=$?
 check "Fehler in Phase 2: unterbrochen, Phase 1 vermerkt" '[[ $RC != 0 && $(field abbruch STATE) == interrupted && $(field abbruch PHASE_DONE) == 1 ]]'
 started=$(field abbruch STARTED)

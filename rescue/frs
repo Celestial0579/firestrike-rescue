@@ -20,7 +20,7 @@ done
 # ---------------------------------------------------------------------------
 selftest() {
 	set -e
-	local dir=/run/frs/selftest src loop map ok=1
+	local dir=/run/frs/selftest src loop map ok=1 other rc
 	echo "FRS-SELFTEST: start ($FRS_VERSION)"
 	rm -rf "$dir"
 	mkdir -p "$dir/case"
@@ -36,8 +36,21 @@ selftest() {
 	casefile_create "$dir/case/case.env" "SRC_ID=$src" "SRC_SIZE=$((64 * 1024 * 1024))" \
 		"SRC_LABEL=Selbsttest (dm-error)" "STATE=new"
 	set +e
-	frs-rescue-run "$dir/case" --no-pause
-	local rc=$?
+	# Gelesen wird nur von der Disk, die beim Aufruf als Quelle genannt ist. Eine Disk, die nicht
+	# zum Fall passt (hier: andere Größe), wird auch als root nicht angefasst.
+	head -c $((1024 * 1024)) /dev/zero >"$dir/fremd.raw"
+	other=$(losetup --find --show -r "$dir/fremd.raw")
+	frs-rescue-run "$dir/case" "$other" --no-pause
+	rc=$?
+	if [[ $rc == 2 && ! -e $dir/case/image.img ]]; then
+		echo "FRS-SELFTEST: fremde Disk als Quelle abgelehnt, nichts gelesen"
+	else
+		echo "FRS-SELFTEST: fremde Disk als Quelle nicht abgelehnt (rc=$rc)"
+		ok=0
+	fi
+	losetup -d "$other"
+	frs-rescue-run "$dir/case" "$src" --no-pause
+	rc=$?
 	map="$dir/case/image.map"
 	local bad
 	bad=$(ddrescuelog -l- -b512 "$map" 2>/dev/null | wc -l)
