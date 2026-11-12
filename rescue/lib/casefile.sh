@@ -138,25 +138,29 @@ casefile_peek() (
 # casefile_save DATEI   Schreibt CASEFILE in eine neue Datei und ersetzt damit die alte.
 # Es wird nie in eine vorhandene Datei hineingeschrieben und nie durch eine Verknüpfung hindurch.
 casefile_save() {
-	local file=$1 tmp key
+	local file=$1 tmp key content=""
 	if [[ -L $file || (-e $file && ! -f $file) ]]; then
 		CASEFILE_ERROR="$file ist keine gewöhnliche Datei"
 		return 1
 	fi
+	for key in "${CASEFILE_KEYS[@]}"; do
+		if [[ -v CASEFILE[$key] ]]; then
+			content+="$key=\"${CASEFILE[$key]}\""$'\n'
+		fi
+	done
 	if ! tmp=$(mktemp "$file.XXXXXX" 2>/dev/null); then
 		CASEFILE_ERROR="$file lässt sich nicht schreiben"
 		return 1
 	fi
-	for key in "${CASEFILE_KEYS[@]}"; do
-		if [[ -v CASEFILE[$key] ]]; then
-			printf '%s="%s"\n' "$key" "${CASEFILE[$key]}"
+	# Die alte Datei wird erst ersetzt, wenn die neue vollständig geschrieben und gegengelesen
+	# ist. Läuft die Ziel-Disk während der Rettung voll, bleibt so der letzte Stand stehen.
+	if printf '%s' "$content" 2>/dev/null >"$tmp" && [[ $(<"$tmp") == "${content%$'\n'}" ]]; then
+		# Der Assistent liest die Datei als Benutzer, geschrieben wird sie auch von root. Auf
+		# exFAT und NTFS gibt es keine Dateirechte, dort darf chmod scheitern.
+		chmod 644 "$tmp" 2>/dev/null || true
+		if mv -f "$tmp" "$file"; then
+			return 0
 		fi
-	done >"$tmp"
-	# Der Assistent liest die Datei als Benutzer, geschrieben wird sie auch von root. Auf exFAT
-	# und NTFS gibt es keine Dateirechte, dort darf chmod scheitern.
-	chmod 644 "$tmp" 2>/dev/null || true
-	if mv -f "$tmp" "$file"; then
-		return 0
 	fi
 	rm -f "$tmp"
 	CASEFILE_ERROR="$file lässt sich nicht schreiben"

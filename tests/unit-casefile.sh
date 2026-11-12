@@ -77,6 +77,16 @@ casefile_set "$T/neu/case.env" PHASE 7
 rc=$?
 check "Schreiben: Phase außerhalb 0–3 abgelehnt" '[[ $rc != 0 ]]'
 check "abgelehnte Werte ändern die Datei nicht" '[[ $(cat "$T/neu/case.env") == "$before" ]]'
+# Schreiben scheitert (hier: Dateigröße auf 0 begrenzt, wie eine volle Ziel-Disk).
+(
+	trap '' XFSZ
+	ulimit -f 0
+	casefile_load "$T/neu/case.env" && casefile_set "$T/neu/case.env" STATE interrupted
+) 2>/dev/null
+rc=$?
+check "Schreiben scheitert: Fehler gemeldet" '[[ $rc != 0 ]]'
+check "Schreiben scheitert: die alte Datei bleibt vollständig stehen" '[[ $(cat "$T/neu/case.env") == "$before" ]]'
+check "Schreiben scheitert: keine Reste im Fallordner" '[[ $(ls "$T/neu") == case.env ]]'
 dirty='A"B$(c)`d`\e'$'\t''f'
 clean=$(casefile_clean_text "$dirty")
 check "Text für den Bericht wird entschärft" '[[ $clean == "A_B_(c)_d__e_f" ]]'
