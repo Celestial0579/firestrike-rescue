@@ -1,0 +1,59 @@
+#!/bin/bash
+# Firestrike Rescue: Prüft eine Claude-Code-CLI, bevor sie im Rettungssystem startet.
+#
+#   frs-claude-check CLI                Ergebnis gemerkt je SHA-256 der Datei (Exit 0: bestanden)
+#   frs-claude-check --ohne-merken CLI  immer neu prüfen, nichts merken (Selbsttest der ISO)
+#
+# Der Selbsttest der ISO prüft die Sperre mit der CLI, die beim Bau in die ISO kam. Die CLI auf
+# dem persistenten Speicher (~/.local/bin/claude) aktualisiert sich aber. Ändert eine neue
+# Version ihr Verhalten bei Hooks oder verwalteten Einstellungen, merkte das im Feld niemand.
+# Deshalb laufen vor dem ersten Start jeder neuen Datei die Prüfungen aus claude-check.sh, die
+# ohne root gehen, gegen eine Attrappe der API: ohne Konto und ohne Netz, einige Sekunden.
+# Das Ergebnis steht in ~/.local/state/frs/claude-check/SHA256.ok oder .fail.
+set -u
+FRS_LIB="${FRS_LIB:-/usr/local/lib/frs}"
+[[ -d $FRS_LIB ]] || FRS_LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")/../lib" && pwd)"
+# shellcheck disable=SC1090,SC1091
+. "$FRS_LIB/claude-check.sh"
+
+merken=1
+[[ ${1:-} == --ohne-merken ]] && { merken=0; shift; }
+cli=${1:?CLI fehlt}
+real=$(readlink -f "$cli") && [[ -f $real && -x $real ]] || { echo "frs-claude-check: $cli ist keine ausführbare Datei" >&2; exit 2; }
+
+if ((merken)); then
+	state=${XDG_STATE_HOME:-$HOME/.local/state}/frs/claude-check
+	mkdir -p "$state" || exit 2
+	# Zwei Starts gleichzeitig prüfen nicht doppelt.
+	exec 9>"$state/.lock"
+	flock 9
+	sum=$(sha256sum "$real" | cut -d' ' -f1)
+	[[ $sum =~ ^[0-9a-f]{64}$ ]] || exit 2
+	[[ -e $state/$sum.ok ]] && exit 0
+	if [[ -e $state/$sum.fail ]]; then
+		echo "Diese Version von Claude Code hat die Prüfung der Sperre schon einmal nicht bestanden." >&2
+		exit 1
+	fi
+	echo "Neue Version von Claude Code ($("$real" --version 2>/dev/null | head -n 1 | tr -cd '[:alnum:] .()-')): Die Sperre des Rettungssystems wird geprüft, ohne Konto und ohne Netz …" >&2
+fi
+
+dir=$(mktemp -d "${TMPDIR:-/tmp}/frs-claude-check.XXXXXX") || exit 2
+trap 'rm -rf "$dir"' EXIT
+CLAUDE_CHECK_TIMEOUT=60
+if claude_check "$real" "$dir" >"$dir/ergebnis" 2>&1; then
+	rc=0
+else
+	rc=1
+fi
+if ((merken)); then
+	{ date '+%F %T'; echo "$real"; cat "$dir/ergebnis"; } >"$state/$sum.$([[ $rc == 0 ]] && echo ok || echo fail)"
+	if ((rc)); then
+		echo "Die Prüfung ist fehlgeschlagen:" >&2
+		grep -E '^(FEHLT|nicht prüfbar|  )' "$dir/ergebnis" | head -n 8 | sed 's/^/  /' >&2
+	else
+		echo "Bestanden." >&2
+	fi
+else
+	cat "$dir/ergebnis"
+fi
+exit "$rc"

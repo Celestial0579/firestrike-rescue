@@ -73,6 +73,7 @@ Claude
   - Hooks, Skills, Agenten und MCP-Server gelten nur aus dem Rettungssystem. Eigene aus `~/.claude` und solche aus einem Projektordner laufen nicht.
   - Eine `CLAUDE.md` unter `/mnt`, `/media` oder `/run/media` lädt Claude nicht. Dort hängen der Assistent und üblicherweise auch du fremde Datenträger ein.
   - Projekt-Einstellungen eines Ordners (`.claude/settings.json`, `CLAUDE.md`) lädt Claude im Rettungssystem nicht, auch nicht nach der Vertrauensabfrage: `claude` startet immer mit `--setting-sources user`. Ein Ordner auf einem fremden Datenträger kann so weder Umgebungsvariablen setzen noch ein Hilfsprogramm starten lassen. Starte Claude trotzdem besser nicht dort. Der Assistent startet Claude immer im eigenen Sitzungsverzeichnis.
+  - Mit persistentem Speicher hält sich Claude Code dort aktuell. Jede neue Version prüft das Rettungssystem vor ihrem ersten Start einmal gegen die Sperre (`frs-claude-check`, wenige Sekunden, ohne Konto und ohne Netz). Besteht sie nicht, startet stattdessen die geprüfte Version aus der ISO. Das Ergebnis steht in `~/.local/state/frs/claude-check`.
 - Eigene Ergänzungen zu den Regeln kommen in `~/.claude/CLAUDE.md` (Werkzeuge > Persistenter Speicher).
 
 Fernzugriff

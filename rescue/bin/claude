@@ -10,12 +10,20 @@
 #
 # Die CLI selbst liegt in /usr/local/lib/frs/claude-cli (aus der ISO) oder, aktualisiert, in
 # ~/.local/bin/claude auf dem persistenten Speicher. Beide stehen nicht vor diesem Skript im PATH.
+# Die aktualisierte startet nur, wenn sie die Prüfung der Sperre bestanden hat (frs-claude-check,
+# einmal je Version). Sonst startet die CLI der ISO, die der Selbsttest der ISO geprüft hat.
 set -u
-cli=/usr/local/lib/frs/claude-cli
-[[ -x ${HOME:-}/.local/bin/claude ]] && cli=$HOME/.local/bin/claude
 for a in "$@"; do
 	[[ $a == --setting-sources* ]] || continue
 	echo "claude: --setting-sources ist im Rettungssystem fest auf \"user\" gesetzt." >&2
 	exit 2
 done
+cli=/usr/local/lib/frs/claude-cli
+if [[ -x ${HOME:-}/.local/bin/claude ]]; then
+	if "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/frs-claude-check" "$HOME/.local/bin/claude"; then
+		cli=$HOME/.local/bin/claude
+	else
+		echo "Gestartet wird die geprüfte Claude-Code-CLI aus der ISO." >&2
+	fi
+fi
 exec "$cli" --setting-sources user "$@"

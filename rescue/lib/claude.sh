@@ -6,11 +6,12 @@
 CLAUDE_CMD=/usr/local/bin/claude
 CLAUDE_CLI_ISO=/usr/local/lib/frs/claude-cli
 
-# Hält die CLI auf der Persistenz aktuell (im Hintergrund, Fehler sind egal).
+# Hält die CLI auf der Persistenz aktuell (im Hintergrund, Fehler sind egal). Eine neue Version
+# wird gleich danach geprüft (frs-claude-check), dann wartet der Techniker beim Start nicht darauf.
 claude_update_bg() {
 	persist_is_open || return 0
 	is_online || return 0
-	("$CLAUDE_CLI_ISO" install stable >>"$FRS_LOG" 2>&1 &)
+	( ("$CLAUDE_CLI_ISO" install stable && frs-claude-check "$HOME/.local/bin/claude") >>"$FRS_LOG" 2>&1 &)
 }
 
 # Datei mit dem aktuellen Zustand im Sitzungsverzeichnis. Sie heißt bewusst nicht CLAUDE.md:
