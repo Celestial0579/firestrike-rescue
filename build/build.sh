@@ -22,6 +22,11 @@ OUT="${OUT:-$SRC/out}"
 FRS_VERSION="${FRS_VERSION:-26.04-$(date -u +%Y%m%d)}"
 ISO_LABEL="FRS_RESCUE"
 ISO_NAME="firestrike-rescue-${FRS_VERSION}-amd64.iso"
+# UUID des ISO-Dateisystems, für jeden Build neu. xorriso leitet sie aus dem Änderungsdatum ab
+# (--modification-date). Daran erkennen der Start-Stub auf der EFI-Partition (build/grub/esp.cfg)
+# und die initrd (casper-premount/frs_medium) das eigene Medium. Ein Label kann jede Disk tragen.
+ISO_DATE="$(date -u +%Y%m%d%H%M%S)00"
+ISO_UUID="${ISO_DATE:0:4}-${ISO_DATE:4:2}-${ISO_DATE:6:2}-${ISO_DATE:8:2}-${ISO_DATE:10:2}-${ISO_DATE:12:2}-${ISO_DATE:14:2}"
 
 CHROOT="$WORK/chroot"
 ISO="$WORK/iso"
@@ -61,7 +66,7 @@ host_deps() {
 	export DEBIAN_FRONTEND=noninteractive
 	apt-get update -qq
 	apt-get install -y -qq --no-install-recommends \
-		debootstrap squashfs-tools xorriso mtools dosfstools \
+		debootstrap squashfs-tools xorriso mtools cpio dosfstools \
 		grub-common fonts-dejavu-core tex-gyre python3 ca-certificates curl gnupg >/dev/null
 	# DejaVu Sans Mono liegt in neueren Releases im eigenen Paket
 	apt-get install -y -qq --no-install-recommends fonts-dejavu-mono >/dev/null 2>&1 || true
@@ -241,6 +246,12 @@ boot_files() {
 	mkfs.vfat -C -n FRS_EFI "$efi" 8192 >/dev/null
 	mmd -i "$efi" ::/EFI ::/EFI/boot
 	mcopy -i "$efi" "$ISO"/EFI/boot/* ::/EFI/boot/
+	# Start-Stub: Der signierte GRUB findet /boot/grub auf der EFI-Partition und durchsucht keine
+	# anderen Disks nach /.disk/info. Der Stub nimmt das ISO-Dateisystem nur von derselben Disk.
+	sed -e "s/@VERSION@/$FRS_VERSION/g" -e "s/@ISO_UUID@/$ISO_UUID/g" "$SRC/build/grub/esp.cfg" >"$WORK/esp.cfg"
+	mmd -i "$efi" ::/boot ::/boot/grub ::/boot/grub/x86_64-efi
+	mcopy -i "$efi" "$WORK/esp.cfg" ::/boot/grub/grub.cfg
+	mcopy -i "$efi" "$WORK/esp.cfg" ::/boot/grub/x86_64-efi/grub.cfg
 }
 
 # ---------------------------------------------------------------------------
@@ -256,6 +267,20 @@ squash() {
 		-comp zstd -Xcompression-level 19 -b 1M -noappend -no-progress \
 		-wildcards -e 'proc/*' 'sys/*' 'dev/*' 'run/*' 'tmp/*' 'boot/*' 'var/cache/apt/archives/*.deb'
 	du -sx --block-size=1 "$CHROOT" | cut -f1 >"$ISO/casper/filesystem.size"
+
+	# UUID der ISO und Prüfsumme des squashfs für die initrd (casper-premount/frs_medium). Die
+	# Summe gibt es erst jetzt. Sie kommt als eigenes, unkomprimiertes cpio-Archiv vor die initrd:
+	# Der Kernel packt alle Archive nacheinander aus, unmkinitramfs findet es als frühes Archiv.
+	log "UUID und Prüfsumme des squashfs in die initrd"
+	local sum conf="$WORK/frs-medium"
+	sum=$(sha256sum "$ISO/casper/filesystem.squashfs" | cut -d' ' -f1)
+	rm -rf "$conf"
+	install -d "$conf/conf"
+	printf 'FRS_ISO_UUID=%s\nFRS_SQUASHFS_SHA256=%s\n' "$ISO_UUID" "$sum" >"$conf/conf/frs-medium.conf"
+	(cd "$conf" && printf '%s\n' conf conf/frs-medium.conf | cpio -o -H newc --quiet) >"$WORK/frs-medium.cpio"
+	truncate -s %4 "$WORK/frs-medium.cpio"
+	cat "$WORK/frs-medium.cpio" "$ISO/casper/initrd" >"$WORK/initrd.neu"
+	mv "$WORK/initrd.neu" "$ISO/casper/initrd"
 }
 
 # ---------------------------------------------------------------------------
@@ -264,7 +289,7 @@ squash() {
 make_iso() {
 	log "Erzeuge $ISO_NAME"
 	(cd "$ISO" && find . -type f ! -name md5sum.txt -print0 | sort -z | xargs -0 md5sum >md5sum.txt)
-	xorriso -as mkisofs -r -V "$ISO_LABEL" -o "$OUT/$ISO_NAME" \
+	xorriso -as mkisofs -r -V "$ISO_LABEL" --modification-date="$ISO_DATE" -o "$OUT/$ISO_NAME" \
 		-J -joliet-long -l -iso-level 3 \
 		--grub2-mbr "$WORK/boot_hybrid.img" \
 		-partition_offset 16 --mbr-force-bootable \

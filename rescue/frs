@@ -289,10 +289,36 @@ selftest_boot() {
 		echo "FRS-SELFTEST: Boot: LIVEMEDIA_TIMEOUT fehlt in der initrd, casper würde alle Disks durchsuchen"
 		good=0
 	fi
-	if grep -q 'live-media=/dev/disk/by-label/FRS_RESCUE' /proc/cmdline; then
-		echo "FRS-SELFTEST: Boot: gestartet mit live-media=/dev/disk/by-label/FRS_RESCUE"
+	if grep -q 'live-media=/run/frs-medium' /proc/cmdline; then
+		echo "FRS-SELFTEST: Boot: gestartet mit live-media=/run/frs-medium"
 	else
-		echo "FRS-SELFTEST: Boot: live-media fehlt in der Kernel-Befehlszeile"
+		echo "FRS-SELFTEST: Boot: live-media=/run/frs-medium fehlt in der Kernel-Befehlszeile"
+		good=0
+	fi
+	# Das Medium wählt und prüft casper-premount/frs_medium, bevor casper es benutzt.
+	local order want got src
+	order=$(find "$dir" -path '*/scripts/casper-premount/ORDER' | head -n 1)
+	if [[ -n $order ]] && grep -q '/frs_medium' "$order"; then
+		echo "FRS-SELFTEST: Boot: frs_medium läuft vor der Suche von casper"
+	else
+		echo "FRS-SELFTEST: Boot: frs_medium fehlt unter casper-premount"
+		good=0
+	fi
+	f=$(find "$dir" -path '*/conf/frs-medium.conf' | head -n 1)
+	want=$(sed -n 's/^FRS_SQUASHFS_SHA256=\([0-9a-f]\{64\}\)$/\1/p' "$f" 2>/dev/null)
+	got=$(sha256sum /cdrom/casper/filesystem.squashfs 2>/dev/null | cut -d' ' -f1)
+	if [[ -n $want && $got == "$want" ]]; then
+		echo "FRS-SELFTEST: Boot: Die initrd kennt die Prüfsumme des squashfs"
+	else
+		echo "FRS-SELFTEST: Boot: Prüfsumme des squashfs fehlt in der initrd oder stimmt nicht"
+		good=0
+	fi
+	src=$(findmnt -n -o SOURCE /cdrom 2>/dev/null | head -n 1)
+	if [[ -n $want && -n $src ]] && grep -qx "FRS_BOOT_DEV=$src" /run/frs-boot.env 2>/dev/null &&
+		grep -qx "FRS_SQUASHFS_SHA256=$want" /run/frs-boot.env; then
+		echo "FRS-SELFTEST: Boot: Live-Medium geprüft ($src), Disks mit der UUID der ISO: $(sed -n 's/^FRS_BOOT_DISKS=//p' /run/frs-boot.env)"
+	else
+		echo "FRS-SELFTEST: Boot: Das Live-Medium ($src) hat frs_medium nicht geprüft"
 		good=0
 	fi
 	rm -rf "$dir"
