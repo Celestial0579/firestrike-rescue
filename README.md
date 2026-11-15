@@ -24,7 +24,7 @@ Der Stick startet per UEFI (auch mit Secure Boot) und per Legacy-BIOS.
 Bedienung
 ---------
 
-Nach dem Start erscheint der Assistent und zeigt alle Disks mit ihrem SMART-Zustand. Er schlägt dann den passenden Weg vor. Die ausführliche Anleitung steht in [docs/anleitung.md](docs/anleitung.md).
+Nach dem Start erscheint der Assistent und zeigt alle Disks mit ihrem SMART-Zustand. Er schlägt dann den passenden Weg vor. Die ausführliche Anleitung steht in [docs/anleitung.md](docs/anleitung.md). Was an echter Hardware noch zu prüfen ist, steht in [docs/hardware-pruefung.md](docs/hardware-pruefung.md).
 
 ```
 GERÄT     ZUSTAND  MODELL                       GRÖSSE     SERIENNUMMER         BUS
