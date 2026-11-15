@@ -394,10 +394,16 @@ selftest_owner() {
 selftest_p2v() {
 	local dir=$1 k=$1/p2v-knoten good=1 src img loop t sum1 sum2 job status out
 	mkdir -p "$k/bin" "$k/images" "$k/vms" "$dir/p2v-inhalt"
+	# /run/lf ist ohne Ausführrecht eingehängt (noexec), auch für root. Die Programme der
+	# Attrappe liegen deshalb in einem eigenen kleinen tmpfs.
+	if ! mount -t tmpfs -o size=4m,mode=755,nosuid,nodev lf-p2v-knoten "$k/bin"; then
+		echo "LF-SELFTEST: P2V: tmpfs für die Attrappe lässt sich nicht einhängen"
+		return 1
+	fi
 	ssh-keygen -q -t ed25519 -N '' -C attrappe -f "$k/hostkey"
 	ssh-keygen -q -t ed25519 -N '' -C attrappe -f "$k/client"
 	install -m 600 "$k/client.pub" "$k/authorized_keys"
-	cat >"$k/befehl" <<-EOF
+	cat >"$k/bin/befehl" <<-EOF
 		#!/bin/bash
 		export PATH=$k/bin:\$PATH
 		exec bash -c -- "\$SSH_ORIGINAL_COMMAND"
@@ -428,7 +434,7 @@ selftest_p2v() {
 		esac
 	EOF
 	printf '#!/bin/sh\necho "pve-manager/9.0.0/attrappe"\n' >"$k/bin/pveversion"
-	chmod 755 "$k/befehl" "$k"/bin/*
+	chmod 755 "$k"/bin/*
 	cat >"$k/sshd_config" <<-EOF
 		ListenAddress 127.0.0.1:2222
 		HostKey $k/hostkey
@@ -441,11 +447,12 @@ selftest_p2v() {
 		AllowTcpForwarding no
 		AllowStreamLocalForwarding yes
 		PidFile $k/sshd.pid
-		ForceCommand $k/befehl
+		ForceCommand $k/bin/befehl
 	EOF
 	install -d -m 755 /run/sshd
 	if ! /usr/sbin/sshd -f "$k/sshd_config" -E "$k/sshd.log"; then
 		echo "LF-SELFTEST: P2V: sshd der Attrappe startet nicht"
+		umount "$k/bin"
 		return 1
 	fi
 
@@ -463,7 +470,7 @@ selftest_p2v() {
 	sum1=$(sha256sum <"$loop")
 
 	P2V_HOST=127.0.0.1 P2V_PORT=2222 P2V_USER=root P2V_TEST_IDENTITY="$k/client"
-	P2V_NBD=() P2V_PIDS=() P2V_VOLS=() P2V_RDIR="" P2V_SSH=()
+	P2V_NBD=() P2V_PIDS=() P2V_VOLS=() P2V_RDIR="" P2V_SSH=() P2V_NODE=""
 	if ! p2v_hostkey_scan || [[ $P2V_FP != "$(ssh-keygen -l -E sha256 -f "$k/hostkey.pub" | awk '{print $2}')" ]]; then
 		echo "LF-SELFTEST: P2V: Schlüssel der Attrappe nicht oder falsch gelesen ($P2V_FP)"
 		good=0
@@ -532,6 +539,7 @@ selftest_p2v() {
 	compgen -G "/run/lf-p2v.*" >/dev/null && { echo "LF-SELFTEST: P2V: Socket-Ordner auf dem Knoten blieb zurück"; good=0; }
 	p2v_logout
 	kill "$(cat "$k/sshd.pid")" 2>/dev/null
+	umount "$k/bin" 2>/dev/null
 
 	sum2=$(sha256sum <"$loop")
 	[[ $sum1 == "$sum2" && $(blockdev --getro "$loop") == 1 ]] || { echo "LF-SELFTEST: P2V: Quelle verändert oder nicht mehr schreibgeschützt"; good=0; }
