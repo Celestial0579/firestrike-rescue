@@ -1,0 +1,13 @@
+version: 2
+updates:
+  # GitHub Actions in .github/workflows. Die Actions sind per Commit-SHA festgelegt; Dependabot
+  # schlägt neue Versionen als PR vor, die CI prüft sie wie jeden anderen PR.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ["*"]
+    commit-message:
+      prefix: "CI"

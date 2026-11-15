@@ -29,7 +29,7 @@ jobs:
   lint:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: shellcheck
         run: |
           sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
@@ -97,7 +97,7 @@ jobs:
     outputs:
       version: ${{ steps.ver.outputs.version }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Version bestimmen
         id: ver
         run: |
@@ -116,7 +116,7 @@ jobs:
             ubuntu:26.04 /src/build/build.sh
           sudo chown -R "$(id -u):$(id -g)" out
           ls -lh out
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: iso
           path: out/
@@ -132,8 +132,8 @@ jobs:
       matrix:
         mode: [selftest, uefi, uefi-usb, bios]
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: iso
           path: out
@@ -145,7 +145,7 @@ jobs:
       - name: Boot-Test ${{ matrix.mode }}
         run: tests/qemu-smoke.sh out/*.iso ${{ matrix.mode }}
       - if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: smoke-${{ matrix.mode }}
           path: smoke-*.log
@@ -159,13 +159,13 @@ jobs:
       id-token: write
       attestations: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: iso
           path: out
       - name: Prüfsummen
         run: cd out && sha256sum *.iso > SHA256SUMS && cat SHA256SUMS
-      - uses: actions/attest-build-provenance@v2
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-path: out/*.iso
       - name: Release veröffentlichen
