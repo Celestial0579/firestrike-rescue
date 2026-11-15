@@ -18,6 +18,12 @@ recover_wizard() {
 		ui_yesno "Ziel kleiner als Quelle" "Die Ziel-Disk ($(human "$(jq -r .size <<<"$tj")")) ist kleiner als die Quelle ($(human "$size")).\n\nDas geht nur, wenn große Teile der Quelle leer sind und das Ziel ext4 ist (sparse Image). Fortfahren?" --defaultno || return 0
 	fi
 	target_prepare "$tid" "$size" || return 0
+	# Modus hängende Disk (#54): kurze Timeouts, Abbruch statt Warten, danach hinter der
+	# Hängerstelle weiter. Den Neustart der Disk macht der Techniker.
+	local hang=()
+	if ui_yesno "Hängende Disk?" "Hängt die Disk nach kurzer Zeit oder verschwindet sie (typisch für defekte SSD-Controller)?\n\nDann liest die Rettung mit kurzen Timeouts (5 s) und bricht bei einem Hänger ab, statt zu warten. Danach liest sie hinter der Hängerstelle weiter, die Lücke holt sie später nach. Ist die Disk weg, wartet sie bis zu 30 Minuten auf genau diese Disk (Seriennummer oder WWN und Größe).\n\nNeu starten musst du die Disk selbst: Strom trennen, etwa 10 Sekunden warten, wieder anschließen." --defaultno; then
+		hang=("HANG_TIMEOUT=5")
+	fi
 
 	local model name case
 	model=$(jq -r '.model // "Disk"' <<<"$sj" | tr -c 'A-Za-z0-9._-' '_' | sed 's/_*$//')
@@ -32,7 +38,7 @@ recover_wizard() {
 	casefile_value_ok SRC_ID "$sid" || sid=$sdev
 	casefile_value_ok TARGET_ID "$tid" || tid=$(disk_resolve "$tid")
 	if ! casefile_create "$case/case.env" "SRC_ID=$sid" "SRC_SIZE=$size" \
-		"SRC_LABEL=$(casefile_clean_text "$(disk_label "$sj")")" "TARGET_ID=$tid" "STATE=new"; then
+		"SRC_LABEL=$(casefile_clean_text "$(disk_label "$sj")")" "TARGET_ID=$tid" "STATE=new" "${hang[@]}"; then
 		die "Der Rettungsfall konnte nicht angelegt werden: $CASEFILE_ERROR"
 		return 0
 	fi

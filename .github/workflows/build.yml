@@ -56,9 +56,10 @@ jobs:
       # lf.conf: Was die Vorlage nennt, wirkt. Der Name im Bericht ist Text, nie Befehl.
       # P2V: Werte nur geprüft und einzeln gequotet zum Knoten, nur der bestätigte SSH-Schlüssel,
       # Kopier-Job nur für schreibgeschützte Quellen. Echt (sshd, qemu-nbd) prüft es selftest_p2v.
+      # Hängende Disk: weiter nur mit genau derselben Disk, die Lücke wird nachgeholt (echtes ddrescue).
       - name: Schutz-Tests
         run: |
-          sudo apt-get install -y -qq jq whiptail
+          sudo apt-get update -qq && sudo apt-get install -y -qq jq whiptail gddrescue
           bash tests/unit-casefile.sh
           bash tests/unit-expert-confirm.sh
           bash tests/unit-resume-source.sh
@@ -84,6 +85,7 @@ jobs:
           bash tests/unit-runv.sh
           bash tests/unit-lf-conf.sh
           bash tests/unit-p2v.sh
+          bash tests/unit-hang.sh
       - name: Unit-Tests
         run: |
           sudo apt-get install -y -qq jq whiptail

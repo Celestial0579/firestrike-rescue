@@ -18,11 +18,13 @@
 #   lf-aufgabe pruefen PFAD [ORDNER]   die Kopie per Prüfsumme gegen PFAD prüfen, Ergebnis aufs Ziel
 #   lf-aufgabe timeout GERÄT SEKUNDEN  kurze Timeouts für eine schreibgeschützte Quelle (3 bis 120)
 #   lf-aufgabe ablegen FALL DATEI      Textdatei aus dem Home von Claude in den Rettungsfall legen
-#   lf-aufgabe retten GERÄT [--domain PARTITION]
+#   lf-aufgabe retten GERÄT [--domain PARTITION] [--haengt]
 #                                       Rettungsfall auf dem Ziel anlegen, ddrescue im Hintergrund.
-#                                       Mit --domain zuerst MFT und belegte Cluster dieser NTFS-Partition
+#                                       Mit --domain zuerst MFT und belegte Cluster dieser NTFS-Partition,
+#                                       mit --haengt im Modus hängende Disk (lib/hang.sh)
 #   lf-aufgabe domain FALL PARTITION   Domain für einen Fall, der noch nicht über Phase 1 hinaus ist
-#   lf-aufgabe fortsetzen FALL GERÄT   unterbrochene Rettung im Hintergrund fortsetzen
+#   lf-aufgabe fortsetzen FALL GERÄT [--haengt]
+#                                       unterbrochene Rettung im Hintergrund fortsetzen
 #   lf-aufgabe stand                   laufende Rettungen und letzte Aufgaben
 #   lf-aufgabe notiz TEXT              Eintrag ins Protokoll des Assistenten
 #
@@ -38,6 +40,8 @@ for f in common disks safety casefile target recover; do
 done
 
 AUFGABEN_LOG=$LF_RUN/claude-aufgaben.log
+# Timeout in Sekunden für den Modus hängende Disk (--haengt), wie im Assistenten
+HANG_TIMEOUT_DEFAULT=5
 LF_LOG=$AUFGABEN_LOG
 # Es gibt keine Oberfläche: Was eine Rückfrage bräuchte, geht nur über den Assistenten.
 log() { printf '%s %s\n' "$(date '+%F %T')" "$*" >>"$AUFGABEN_LOG"; }
@@ -259,12 +263,29 @@ ablegen)
 	echo "Abgelegt: $c/claude-$name"
 	;;
 retten)
-	[[ $# == 1 || ($# == 3 && $2 == --domain) ]] || fail "retten erwartet GERÄT [--domain PARTITION]"
+	(($# >= 1)) || fail "retten erwartet GERÄT [--domain PARTITION] [--haengt]"
+	sarg=$1
+	shift
+	parg="" hang=()
+	while (($#)); do
+		case $1 in
+		--domain)
+			[[ $# -ge 2 && -z $parg ]] || fail "retten erwartet GERÄT [--domain PARTITION] [--haengt]"
+			parg=$2
+			shift 2
+			;;
+		--haengt)
+			hang=("HANG_TIMEOUT=$HANG_TIMEOUT_DEFAULT")
+			shift
+			;;
+		*) fail "retten erwartet GERÄT [--domain PARTITION] [--haengt]" ;;
+		esac
+	done
 	target_ok
-	sdev=$(dev "$1") || exit 2
+	sdev=$(dev "$sarg") || exit 2
 	dpart=""
-	if (($# == 3)); then
-		dpart=$(dev "$3") || exit 2
+	if [[ -n $parg ]]; then
+		dpart=$(dev "$parg") || exit 2
 		[[ $(disk_of "$dpart") == "$sdev" && $dpart != "$sdev" ]] || fail "$dpart ist keine Partition von $sdev."
 	fi
 	[[ $(lsblk -dno TYPE "$sdev") == disk || $sdev == /dev/loop* ]] || fail "$sdev ist keine ganze Disk."
@@ -292,9 +313,10 @@ retten)
 	casefile_value_ok SRC_ID "$sid" || sid=$sdev
 	tid=$(target_disk)
 	casefile_create "$c/case.env" "SRC_ID=$sid" "SRC_SIZE=$size" \
-		"SRC_LABEL=$(casefile_clean_text "$(disk_label "$sj")")" "TARGET_ID=$tid" "STATE=new" ||
+		"SRC_LABEL=$(casefile_clean_text "$(disk_label "$sj")")" "TARGET_ID=$tid" "STATE=new" "${hang[@]}" ||
 		fail "Der Rettungsfall konnte nicht angelegt werden: $CASEFILE_ERROR"
 	echo "Neuer Rettungsfall: $name"
+	((${#hang[@]})) && echo "Modus hängende Disk: Timeout $HANG_TIMEOUT_DEFAULT s, nach einem Hänger weiter hinter der Hängerstelle."
 	[[ -n $dpart ]] && make_domain "$c" "$sdev" "$dpart"
 	start_rescue "$c" "$sdev"
 	;;
@@ -316,12 +338,19 @@ domain)
 	echo "Weiter mit: sudo lf-aufgabe fortsetzen $1 $disk"
 	;;
 fortsetzen)
-	(($# == 2)) || fail "fortsetzen erwartet FALL GERÄT"
+	(($# == 2)) || [[ $# == 3 && $3 == --haengt ]] || fail "fortsetzen erwartet FALL GERÄT [--haengt]"
 	target_ok
 	c=$(case_dir "$1") || exit 2
 	sdev=$(dev "$2") || exit 2
 	source_ok "$sdev"
 	safety_set_ro "$sdev"
+	if (($# == 3)); then
+		casefile_load "$c/case.env" || fail "Die Falldatei ist ungültig: $CASEFILE_ERROR"
+		if [[ -z $(casefile_get HANG_TIMEOUT) ]]; then
+			casefile_set "$c/case.env" HANG_TIMEOUT "$HANG_TIMEOUT_DEFAULT" || fail "Die Falldatei lässt sich nicht fortschreiben: $CASEFILE_ERROR"
+		fi
+		echo "Modus hängende Disk ist für diesen Fall an."
+	fi
 	# Ob die Disk zum Fall gehört, prüft lf-rescue-run selbst gegen die Falldatei.
 	start_rescue "$c" "$sdev"
 	;;

@@ -45,10 +45,12 @@ root darfst du nur die lf-Werkzeuge starten. Mit ihnen erledigst du die Rettungs
   seine Partitionen mit `einhaengen`
 - `sudo lf-aufgabe kopieren PFAD [ORDNER]`: Dateien aus `/mnt/lf-image` aufs Ziel nach
   `LF/claude/ORDNER`
-- `sudo lf-aufgabe retten GERÄT [--domain PARTITION]`: Rettungsfall auf dem Ziel anlegen, ddrescue
-  läuft im Hintergrund. Mit `--domain` (NTFS) zuerst die MFT und die belegten Cluster.
+- `sudo lf-aufgabe retten GERÄT [--domain PARTITION] [--haengt]`: Rettungsfall auf dem Ziel anlegen,
+  ddrescue läuft im Hintergrund. Mit `--domain` (NTFS) zuerst die MFT und die belegten Cluster, mit
+  `--haengt` im Modus hängende Disk (Skill `lf-haengende-disk`).
   `sudo lf-aufgabe domain FALL PARTITION` legt die Domain für einen Fall an, der noch nicht über
-  Phase 1 hinaus ist. `sudo lf-aufgabe fortsetzen FALL GERÄT` setzt eine unterbrochene Rettung fort.
+  Phase 1 hinaus ist. `sudo lf-aufgabe fortsetzen FALL GERÄT [--haengt]` setzt eine unterbrochene
+  Rettung fort, mit `--haengt` ab jetzt im Modus hängende Disk.
 - `sudo lf-aufgabe pruefen PFAD [ORDNER]`: die Kopie per Prüfsumme gegen die Quelle prüfen
 - `sudo lf-aufgabe timeout GERÄT SEKUNDEN`: kurze Timeouts für eine schreibgeschützte Quelle
 - `sudo lf-aufgabe ablegen FALL DATEI`: eine Textdatei aus deinem Home (etwa einen Bericht) in den
