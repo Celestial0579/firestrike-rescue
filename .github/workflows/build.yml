@@ -67,6 +67,7 @@ jobs:
           bash tests/unit-persist.sh
           bash tests/unit-clone-job.sh
           bash tests/unit-image-mount.sh
+          bash tests/unit-image-attach.sh
           bash tests/unit-target-search.sh
           bash tests/unit-dialog-text.sh
           bash tests/dialog-disk-text.sh
