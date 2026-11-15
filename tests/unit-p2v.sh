@@ -20,7 +20,7 @@ REPO=$PWD
 T=$(mktemp -d)
 LF_RUN="$T/run"
 LF_LOG="$T/log"
-LF_VERSION=test
+LF_VERSION="test"
 mkdir -p "$LF_RUN"
 # shellcheck disable=SC1091
 . rescue/lib/common.sh
@@ -155,10 +155,10 @@ check "ohne bestätigten Schlüssel kein ssh" '! p2v_ssh_set && ((${#P2V_SSH[@]}
 ssh-keyscan() { [[ $* == *ed25519* ]] && echo "pve.example $(cut -d' ' -f1,2 "$T/hostkey.pub")"; return 0; }
 p2v_hostkey_scan
 p2v_ssh_set
-opts=" ${P2V_SSH[*]} "
-check "ssh ohne Benutzer-Konfiguration" '[[ $opts == *" -F /dev/null "* ]]'
-check "ssh nur mit der eigenen known_hosts, streng, nur mit dem bestätigten Algorithmus" '[[ $opts == *"UserKnownHostsFile=$P2V_DIR/known_hosts"* && $opts == *"GlobalKnownHostsFile=/dev/null"* && $opts == *"StrictHostKeyChecking=yes"* && $opts == *"HostKeyAlgorithms=ssh-ed25519"* && $opts == *"UpdateHostKeys=no"* ]]'
-check "ssh ohne Agent und X11" '[[ $opts == *"ForwardAgent=no"* && $opts == *"ForwardX11=no"* ]]'
+sshopts=" ${P2V_SSH[*]} "
+check "ssh ohne Benutzer-Konfiguration" '[[ $sshopts == *" -F /dev/null "* ]]'
+check "ssh nur mit der eigenen known_hosts, streng, nur mit dem bestätigten Algorithmus" '[[ $sshopts == *"UserKnownHostsFile=$P2V_DIR/known_hosts"* && $sshopts == *"GlobalKnownHostsFile=/dev/null"* && $sshopts == *"StrictHostKeyChecking=yes"* && $sshopts == *"HostKeyAlgorithms=ssh-ed25519"* && $sshopts == *"UpdateHostKeys=no"* ]]'
+check "ssh ohne Agent und X11" '[[ $sshopts == *"ForwardAgent=no"* && $sshopts == *"ForwardX11=no"* ]]'
 
 # ---------------------------------------------------------------------------
 echo "Anmeldung:"

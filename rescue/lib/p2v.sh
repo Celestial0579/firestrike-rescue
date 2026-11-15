@@ -240,9 +240,9 @@ p2v_nbd_free() {
 # p2v_attach   Exportiert jedes Volume auf dem Knoten mit qemu-nbd an einem Unix-Socket und
 # bindet es hier als /dev/nbdN ein. Setzt P2V_NBD und P2V_PIDS.
 p2v_attach() {
-	local i vol path fmt=raw sock rsock dev n
+	local i vol path ifmt=raw sock rsock dev n
 	P2V_NBD=() P2V_PIDS=()
-	[[ " $P2V_STORAGE_QCOW2 " == *" $P2V_STYP "* ]] && fmt=qcow2
+	[[ " $P2V_STORAGE_QCOW2 " == *" $P2V_STYP "* ]] && ifmt=qcow2
 	sudo modprobe nbd max_part=16 2>/dev/null
 	# Ist das Modul schon ohne Partitionen geladen (Klonen mit Verkleinern), fehlten die
 	# Partitionen der Volumes. Dann wird nicht kopiert.
@@ -258,7 +258,7 @@ p2v_attach() {
 		rm -f "$sock"
 		# qemu-nbd endet, sobald nbd-client trennt. Damit endet auch diese Verbindung.
 		"${P2V_SSH[@]}" -o BatchMode=yes -o ExitOnForwardFailure=yes -o StreamLocalBindUnlink=yes \
-			-L "$sock:$rsock" "$P2V_HOST" "$(printf '%q ' exec qemu-nbd -f "$fmt" --cache=none --discard=unmap \
+			-L "$sock:$rsock" "$P2V_HOST" "$(printf '%q ' exec qemu-nbd -f "$ifmt" --cache=none --discard=unmap \
 				--detect-zeroes=unmap -k "$rsock" -x p2v -- "$path")" 2>>"$LF_LOG" &
 		P2V_PIDS+=("$!")
 		dev=$(p2v_nbd_free) || { log "P2V: kein freies NBD-Gerät"; return 1; }
