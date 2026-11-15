@@ -811,7 +811,8 @@ selftest_claude_aufgabe() {
 	# ddru_ntfsbitmap nimmt den Anfang der Disk (Partitionstabelle) mit auf. Kein Bereich darf über
 	# das Ende der Partition reichen, und belegte Bereiche müssen in ihr liegen: Dann bezieht sich
 	# die Domain auf die ganze Disk und nicht auf die Partition.
-	bad="" local inside=0 p l st
+	local inside=0 p l st
+	bad=""
 	while read -r p l st; do
 		[[ $p == 0x* && $l == 0x* && $st == "+" ]] || continue
 		((p + l > off + size)) && bad+="$p $l; "
