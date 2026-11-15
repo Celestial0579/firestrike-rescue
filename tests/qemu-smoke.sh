@@ -54,8 +54,9 @@ foreign() {
 	xorriso -as mkisofs -r -V FRS_RESCUE --modification-date="${uuid//-/}" -o "$work/fremd.iso" "$d" >/dev/null 2>&1
 	[[ $(blkid -o value -s UUID "$work/fremd.iso") == "$uuid" ]] || { echo "Die fremde Disk hat nicht die UUID der ISO" >&2; exit 2; }
 	# ide-hd nimmt kein schreibgeschütztes Laufwerk an. snapshot=on: Schreibzugriffe landen in
-	# einer temporären Ebene, das Abbild bleibt unverändert.
-	FOREIGN=(-drive "file=$work/fremd.iso,format=raw,if=none,id=fremd,snapshot=on" -device "ide-hd,drive=fremd")
+	# einer temporären Ebene, das Abbild bleibt unverändert. Auf q35 hat jeder IDE-Bus (AHCI-Port)
+	# nur ein Gerät: Die fremde Disk bekommt einen eigenen, die CD bleibt auf ide.0 (sr0).
+	FOREIGN=(-drive "file=$work/fremd.iso,format=raw,if=none,id=fremd,snapshot=on" -device "ide-hd,drive=fremd,bus=ide.2")
 }
 
 AFTER=()
