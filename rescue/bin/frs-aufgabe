@@ -15,6 +15,9 @@
 #   frs-aufgabe aushaengen NAME         /mnt/frs-image/NAME aushängen
 #   frs-aufgabe image FALL              image.img eines Rettungsfalls nur lesend einbinden
 #   frs-aufgabe kopieren PFAD [ORDNER]  aus /mnt/frs-image aufs Ziel nach FRS/claude/ORDNER kopieren
+#   frs-aufgabe pruefen PFAD [ORDNER]   die Kopie per Prüfsumme gegen PFAD prüfen, Ergebnis aufs Ziel
+#   frs-aufgabe timeout GERÄT SEKUNDEN  kurze Timeouts für eine schreibgeschützte Quelle (3 bis 120)
+#   frs-aufgabe ablegen FALL DATEI      Textdatei aus dem Home von Claude in den Rettungsfall legen
 #   frs-aufgabe retten GERÄT            Rettungsfall auf dem Ziel anlegen, ddrescue im Hintergrund
 #   frs-aufgabe fortsetzen FALL GERÄT   unterbrochene Rettung im Hintergrund fortsetzen
 #   frs-aufgabe stand                   laufende Rettungen und letzte Aufgaben
@@ -94,6 +97,21 @@ case_dir() {
 	printf '%s\n' "$c"
 }
 
+# image_src PFAD   PFAD liegt auf einer nur lesend eingehängten Quelle unter /mnt/frs-image.
+image_src() {
+	local src
+	src=$(realpath -e -- "$1" 2>/dev/null) || fail "gibt es nicht: $1"
+	[[ $src == "$FRS_IMAGE_MNT"/?* ]] || fail "Gelesen wird nur aus $FRS_IMAGE_MNT (nur lesend eingehängte Quellen)."
+	[[ ,$(findmnt -no OPTIONS -T "$src"), == *,ro,* ]] || fail "$src liegt nicht auf einem nur lesend eingehängten Dateisystem."
+	printf '%s\n' "$src"
+}
+
+# claude_dir NAME   Ordner unter FRS/claude auf dem Ziel, NAME ohne Pfad.
+claude_dir() {
+	[[ $1 =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$ ]] || fail "kein gültiger Ordnername: '$1'"
+	printf '%s\n' "$FRS_TARGET_MNT/FRS/claude/$1"
+}
+
 # start_rescue FALLORDNER QUELLE   frs-rescue-run im Hintergrund, als eigene systemd-Einheit.
 start_rescue() {
 	local unit
@@ -106,7 +124,7 @@ start_rescue() {
 	echo "Rettung läuft im Hintergrund ($unit). Stand: sudo frs-aufgabe stand"
 }
 
-[[ $# -ge 1 ]] || fail "Aktion fehlt (einhaengen, aushaengen, image, kopieren, retten, fortsetzen, stand, notiz)"
+[[ $# -ge 1 ]] || fail "Aktion fehlt (einhaengen, aushaengen, image, kopieren, pruefen, retten, fortsetzen, timeout, ablegen, stand, notiz)"
 action=$1
 shift
 log "Claude: $action $(printf '%q ' "$@")"
@@ -144,12 +162,8 @@ image)
 kopieren)
 	(($# == 1 || $# == 2)) || fail "kopieren erwartet PFAD [ORDNER]"
 	target_ok
-	src=$(realpath -e -- "$1" 2>/dev/null) || fail "gibt es nicht: $1"
-	[[ $src == "$FRS_IMAGE_MNT"/?* ]] || fail "Kopiert wird nur aus $FRS_IMAGE_MNT (nur lesend eingehängte Quellen)."
-	[[ ,$(findmnt -no OPTIONS -T "$src"), == *,ro,* ]] || fail "$src liegt nicht auf einem nur lesend eingehängten Dateisystem."
-	name=${2:-$(basename "$src")}
-	[[ $name =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$ ]] || fail "kein gültiger Ordnername: '$name'"
-	dst=$FRS_TARGET_MNT/FRS/claude/$name
+	src=$(image_src "$1") || exit 2
+	dst=$(claude_dir "${2:-$(basename "$src")}") || exit 2
 	install -d "$FRS_TARGET_MNT/FRS" "$FRS_TARGET_MNT/FRS/claude" "$dst" || fail "Kann $dst nicht anlegen."
 	ropts=(-aHAX --no-devices --no-specials)
 	case $(target_fs) in exfat | ntfs* | fuseblk) ropts=(-rt --modify-window=2) ;; esac
@@ -159,6 +173,63 @@ kopieren)
 	log "kopieren beendet: rc=$rc"
 	echo "Ziel: $dst (rsync rc=$rc)"
 	exit "$rc"
+	;;
+pruefen)
+	(($# == 1 || $# == 2)) || fail "pruefen erwartet PFAD [ORDNER]"
+	target_ok
+	src=$(image_src "$1") || exit 2
+	dst=$(claude_dir "${2:-$(basename "$src")}") || exit 2
+	[[ -d $dst && ! -L $dst ]] || fail "Es gibt keine Kopie unter $dst. Erst kopieren."
+	out="$dst.pruefung.txt"
+	# Dieselbe Auswahl wie beim Kopieren, nur als Trockenlauf mit Prüfsummen: Jede Datei, deren
+	# Inhalt abweicht oder fehlt, steht in der Ausgabe.
+	{
+		echo "Prüfung $(date '+%F %T'): $src gegen $dst"
+		echo "Dateien in der Quelle: $(find "$src" -type f | wc -l), in der Kopie: $(find "$dst/$(basename "$src")" -type f 2>/dev/null | wc -l)"
+		rsync -rcn --out-format='ABWEICHUNG: %n' -- "$src" "$dst/" 2>&1
+		echo "rsync rc=$?"
+	} >"$out"
+	n=$(grep -c '^ABWEICHUNG: ' "$out")
+	log "pruefen: $src gegen $dst, $n Abweichungen"
+	cat "$out"
+	((n == 0)) || exit 1
+	;;
+timeout)
+	(($# == 2)) || fail "timeout erwartet GERÄT SEKUNDEN"
+	d=$(dev "$1") || exit 2
+	[[ $(lsblk -dno TYPE "$d") == disk ]] || fail "$d ist keine ganze Disk."
+	[[ $2 =~ ^[0-9]{1,3}$ ]] && ((10#$2 >= 3 && 10#$2 <= 120)) || fail "SEKUNDEN 3 bis 120"
+	# Nur für Quellen: Sie sind schon schreibgeschützt. Ziel und Stick bleiben, wie sie sind.
+	source_ok "$d"
+	safety_is_ro "$d" || fail "$d ist nicht als Quelle schreibgeschützt. Erst einhaengen oder retten."
+	n=$(basename "$d")
+	[[ -w /sys/block/$n/device/timeout ]] || fail "$d hat keinen einstellbaren Timeout (kein SCSI/SATA/USB-Gerät)."
+	echo "$((10#$2))" >"/sys/block/$n/device/timeout" || fail "Timeout ließ sich nicht setzen."
+	[[ -w /sys/block/$n/device/eh_timeout ]] && echo "$((10#$2))" >"/sys/block/$n/device/eh_timeout"
+	log "timeout: $d auf $((10#$2)) s"
+	echo "$d: Timeout $((10#$2)) s (gilt bis zum Abziehen)."
+	;;
+ablegen)
+	(($# == 2)) || fail "ablegen erwartet FALL DATEI"
+	target_ok
+	c=$(case_dir "$1") || exit 2
+	home=$(getent passwd frs-claude | cut -d: -f6)
+	[[ -n $home ]] || fail "Benutzer frs-claude fehlt."
+	f=$(realpath -e -- "$2" 2>/dev/null) || fail "gibt es nicht: $2"
+	[[ $f == "$home"/?* && -f $f ]] || fail "Abgelegt werden nur Dateien aus $home."
+	name=$(basename "$f")
+	[[ $name =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$ ]] || fail "kein gültiger Dateiname: '$name'"
+	# Gelesen wird mit den Rechten von frs-claude, nie als root: Eine Verknüpfung, die nach der
+	# Prüfung an die Stelle der Datei tritt, kann so nur auf etwas zeigen, das Claude ohnehin lesen darf.
+	tmp=$(mktemp "$c/.claude-ablage.XXXXXX") || fail "Ablegen fehlgeschlagen."
+	runuser -u frs-claude -- head -c $((10 * 1024 * 1024 + 1)) -- "$f" >"$tmp" 2>/dev/null
+	if (($(stat -c %s "$tmp") > 10 * 1024 * 1024)) || ! grep -qI . "$tmp"; then
+		rm -f "$tmp"
+		fail "nur Textdateien bis 10 MB"
+	fi
+	chmod 0644 "$tmp" && mv -f "$tmp" "$c/claude-$name" || { rm -f "$tmp"; fail "Ablegen fehlgeschlagen."; }
+	log "ablegen: $f -> $c/claude-$name"
+	echo "Abgelegt: $c/claude-$name"
 	;;
 retten)
 	(($# == 1)) || fail "retten erwartet ein Gerät"

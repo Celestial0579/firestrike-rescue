@@ -83,6 +83,7 @@ Die ISO landet in `out/`.
 | `rescue/frs` | Assistent, Bibliotheken in `rescue/lib/` |
 | `rescue/claude/CLAUDE.md` | Regeln für Claude im Rettungssystem |
 | `rescue/claude/managed-settings.json`, `rescue/bin/frs-claude-guard` | Sperre für Claude: Was die Regeln verbieten, lehnt ein Hook ab. Kein Auto-Modus. Hooks, Erlaubnis-Regeln, Skills, Agenten und MCP-Server nur aus dem Rettungssystem, keine `CLAUDE.md` von einem Einhängepunkt. `rescue/bin/claude` startet die CLI ohne Projekt-Einstellungen (`--setting-sources user`), eine neue Version erst nach `rescue/bin/frs-claude-check`. CLI und Desktop laufen als Benutzer `frs-claude` und dürfen als root nur `rescue/bin/frs-lesen` und `rescue/bin/frs-aufgabe` starten, mehr nur zeitlich begrenzt über `rescue/bin/frs-freigabe` |
+| `rescue/claude/skills/` | Skills zur Datenrettung für Claude, verwaltet unter `/etc/claude-code/.claude/skills` |
 | `tests/qemu-smoke.sh` | Boot-Tests (UEFI, BIOS, Selbsttest mit simulierter defekter Disk) |
 
 Design
