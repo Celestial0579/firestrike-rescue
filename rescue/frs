@@ -355,12 +355,25 @@ selftest_tmux() {
 
 # Ein Loop-Gerät, das schreibgeschützt war und wiederverwendet wird, bindet image_attach
 # beschreibbar ein (#48). Die Gegenprobe zeigt, dass der Kernel den Schutz sonst behält.
+# selftest_loop_free BILD   Wartet, bis BILD an keinem Loop-Gerät mehr hängt. losetup -d löst
+#   verzögert, solange udev das Gerät noch offen hat.
+selftest_loop_free() {
+	local i
+	for ((i = 0; i < 50; i++)); do
+		udevadm settle
+		[[ -z $(losetup -j "$1") ]] && return 0
+		sleep 0.1
+	done
+	return 1
+}
+
 selftest_loop_rw() {
 	local dir=$1 img=$1/loop-rw.raw loop again good=1
 	truncate -s 8M "$img"
 	loop=$(losetup --find --show "$img")
 	blockdev --setro "$loop"
 	losetup -d "$loop"
+	selftest_loop_free "$img"
 	again=$(losetup --find --show "$img")
 	if [[ $again == "$loop" && $(blockdev --getro "$again") == 1 ]]; then
 		echo "FRS-SELFTEST: Loop-Gerät: Der Kernel behält den Schreibschutz beim Wiederverwenden (Gegenprobe)"
@@ -368,6 +381,7 @@ selftest_loop_rw() {
 		echo "FRS-SELFTEST: Loop-Gerät: Gegenprobe ohne Befund ($again, ro=$(blockdev --getro "$again"))"
 	fi
 	losetup -d "$again"
+	selftest_loop_free "$img" || { echo "FRS-SELFTEST: Loop-Gerät: $img hängt nach losetup -d noch an einem Gerät"; good=0; }
 	again=$(image_attach "$img" rw)
 	if [[ -n $again && $(blockdev --getro "$again") == 0 ]] && dd if=/dev/zero of="$again" bs=4k count=1 conv=notrunc status=none 2>/dev/null; then
 		echo "FRS-SELFTEST: Loop-Gerät: image_attach rw ist beschreibbar, auch nach altem Schreibschutz"
@@ -376,6 +390,7 @@ selftest_loop_rw() {
 		good=0
 	fi
 	losetup -d "$again" 2>/dev/null
+	selftest_loop_free "$img"
 	again=$(image_attach "$img" ro)
 	[[ $(blockdev --getro "$again") == 1 ]] || { echo "FRS-SELFTEST: Loop-Gerät: image_attach ro ist beschreibbar"; good=0; }
 	losetup -d "$again" 2>/dev/null
