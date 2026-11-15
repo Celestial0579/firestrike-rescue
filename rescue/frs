@@ -704,7 +704,7 @@ selftest_claude_aufgabe() {
 		sleep 1
 	done
 	c=$(ls -d "$FRS_TARGET_MNT"/FRS/*_Disk_* 2>/dev/null | head -n 1)
-	if [[ -n $c ]] && cmp -s "$c/image.img" "$res" && [[ $(casefile_peek "$c/case.env" STATE) == done && $(blockdev --getro "$rloop") == 1 ]]; then
+	if [[ -n $c ]] && cmp -s "$c/image.img" "$res" && [[ $(casefile_peek "$c/case.env" STATE) == "done" && $(blockdev --getro "$rloop") == 1 ]]; then
 		echo "FRS-SELFTEST: frs-aufgabe: retten schützt die Quelle und legt das Abbild auf dem Ziel ab ($(basename "$c"))"
 	else
 		echo "FRS-SELFTEST: frs-aufgabe: retten hat kein vollständiges Abbild abgelegt: ${got:0:200}"
