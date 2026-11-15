@@ -128,8 +128,19 @@ Nur mit Internet und eigenem Konto.
 3. **In der Shell in einem Ordner auf einem fremden Datenträger `claude` starten.** Der Ordner hat eine `.claude/settings.json` mit `{"env": {"ANTHROPIC_BASE_URL": "http://127.0.0.1:9"}}`.
    Erwartet: Claude Code verbindet sich normal. Die Einstellung des Ordners gilt nicht.
 4. **Neue Version der CLI:** Mit persistentem Speicher startet beim nächsten Start eine Aktualisierung.
-   Erwartet: Vor dem ersten Start der neuen Version steht „Neue Version von Claude Code … wird geprüft“, danach „Bestanden.“. Das Ergebnis steht in `~/.local/state/frs/claude-check/`.
-5. **Claude Desktop:** Die App startet im Vollbild, Login klappt, und nach Strg+Q geht es im Assistenten weiter. Prüfe außerdem, ob die Rückfragen aus Schritt 2 auch in der App kommen. Das ist bisher ungeprüft.
+   Erwartet: Vor dem ersten Start der neuen Version steht „Neue Version von Claude Code … wird geprüft“, danach „Bestanden.“. Das Ergebnis steht in `/var/lib/frs-claude/.local/state/frs/claude-check/`.
+5. **Rechte von Claude:** Claude fragen, als wer es läuft und was `sudo -l` zeigt.
+   Erwartet: Benutzer `frs-claude`, sudo nur für `frs-lesen` und `frs-aufgabe`. `sudo dd`, `sudo mkfs` und `sudo -i` lehnt sudo ab. Die Statuszeile von Claude Code zeigt „Claude arbeitet mit frs-lesen und frs-aufgabe“.
+6. **Aufgaben selbständig:** Im Assistenten ein Ziel wählen und bestätigen, dann Claude bitten, eine kleine Testdisk zu retten und ein paar Dateien daraus aufs Ziel zu kopieren.
+   Erwartet: Claude benutzt `sudo frs-aufgabe retten`, `image`, `einhaengen` und `kopieren`. Die Quelle ist danach schreibgeschützt, die Dateien liegen unter `FRS/claude/`. Ein Versuch, auf eine andere Disk als das Ziel zu schreiben, scheitert.
+7. **Claude-Freigabe:** Werkzeuge > Claude-Freigabe, 1 Minute.
+   Erwartet: Das Hauptmenü und die Statuszeile zeigen „volles sudo“, `sudo -l` für Claude zeigt `ALL`. Nach einer Minute ist die Freigabe von selbst weg, das Protokoll nennt An und Ablauf. Claude kann `frs-freigabe an` nicht selbst auslösen.
+8. **Claude Desktop als frs-claude** (in QEMU nicht prüfbar):
+   - Die App startet im Vollbild, das Fenster ist sichtbar und bedienbar, Login klappt, nach Strg+Q geht es im Assistenten weiter.
+   - Nach einem Neustart mit persistentem Speicher ist der Login noch da.
+   - In der App läuft Claude Code als `frs-claude`: kein sudo außer `frs-lesen` und `frs-aufgabe`. Schreibende Schritte gehen nur über die Werkzeuge bzw. den Assistenten, die Rückfragen aus Schritt 2 kommen auch hier.
+   - Grafik mit GPU: `ls -l /dev/dri` und in der App flüssiges Scrollen. Ohne GPU-Zugriff (Gruppe `render`) fällt sie auf Software-Darstellung zurück.
+   - Auf tty2 als Live-Benutzer: `ls -l /run/frs/wayland` zeigt nur den Socket von cage, Gruppe `frs-claude`.
 
 9 Selbsttest auf echter Hardware
 --------------------------------

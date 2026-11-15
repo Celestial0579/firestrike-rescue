@@ -1,0 +1,78 @@
+#!/bin/bash
+# Firestrike Rescue: lesende Werkzeuge für Claude (Benutzer frs-claude).
+#
+# Claude läuft als eigener Benutzer ohne Zugriff auf Blockgeräte und ohne sudo. Erlaubt ist ihm
+# nur dieses Programm (/etc/sudoers.d/frs-claude). Es kennt eine feste Liste von Aktionen, die
+# nur lesen, prüft jedes Argument selbst und reicht keine Optionen an die Werkzeuge durch.
+# Schreibendes (Rettung, Klonen, Partitionieren, Kopieren aufs Ziel) gibt es nur im Assistenten.
+#
+#   frs-lesen disks                      Disks und Partitionen (lsblk)
+#   frs-lesen smart GERÄT                SMART-Werte und Fehlerprotokoll (smartctl -x)
+#   frs-lesen partitionen GERÄT          Partitionstabelle (sfdisk -d)
+#   frs-lesen dateisystem GERÄT          Typ, Label und UUID des Dateisystems (blkid -p)
+#   frs-lesen sektoren GERÄT START [N]   N Sektoren zu 512 Byte ab START als Hexdump (N ≤ 64)
+#   frs-lesen kernel                     die letzten 200 Kernel-Meldungen
+#
+# GERÄT ist /dev/NAME einer Disk oder Partition, die es laut /sys/class/block gibt.
+set -u
+PATH=/usr/sbin:/usr/bin:/sbin:/bin
+export LC_ALL=C.UTF-8
+umask 077
+
+die() {
+	echo "frs-lesen: $*" >&2
+	exit 2
+}
+
+# dev GERÄT   Prüft GERÄT und gibt es aus. Nur Namen aus Buchstaben und Ziffern, keine Optionen,
+#   keine Pfade außerhalb von /dev, nur Blockgeräte, die der Kernel kennt.
+dev() {
+	[[ ${1:-} =~ ^/dev/([a-z][a-z0-9]{0,31})$ ]] || die "kein Gerät: '${1:-}' (erwartet /dev/NAME)"
+	[[ -e /sys/class/block/${BASH_REMATCH[1]} && -b $1 && ! -L $1 ]] || die "kein Blockgerät: $1"
+	printf '%s\n' "$1"
+}
+
+num() {
+	[[ ${1:-} =~ ^[0-9]{1,15}$ ]] || die "keine Zahl: '${1:-}'"
+	printf '%d\n' "$((10#$1))"
+}
+
+[[ $# -ge 1 ]] || die "Aktion fehlt (disks, smart, partitionen, dateisystem, sektoren, kernel)"
+action=$1
+shift
+case $action in
+disks)
+	(($# == 0)) || die "disks erwartet keine Argumente"
+	lsblk -o NAME,SIZE,TYPE,FSTYPE,LABEL,MODEL,SERIAL,MOUNTPOINT,RO
+	;;
+smart)
+	(($# == 1)) || die "smart erwartet ein Gerät"
+	d=$(dev "$1") || exit 2
+	smartctl -x "$d"
+	;;
+partitionen)
+	(($# == 1)) || die "partitionen erwartet ein Gerät"
+	d=$(dev "$1") || exit 2
+	sfdisk -d "$d"
+	;;
+dateisystem)
+	(($# == 1)) || die "dateisystem erwartet ein Gerät"
+	d=$(dev "$1") || exit 2
+	blkid -p -o export "$d"
+	;;
+sektoren)
+	(($# == 2 || $# == 3)) || die "sektoren erwartet GERÄT START [ANZAHL]"
+	d=$(dev "$1") || exit 2
+	start=$(num "$2") || exit 2
+	n=$(num "${3:-1}") || exit 2
+	((n >= 1 && n <= 64)) || die "höchstens 64 Sektoren auf einmal"
+	dd if="$d" bs=512 skip="$start" count="$n" status=none | od -A x -t x1z -v
+	;;
+kernel)
+	(($# == 0)) || die "kernel erwartet keine Argumente"
+	dmesg --ctime | tail -n 200
+	;;
+*)
+	die "unbekannte Aktion: $action"
+	;;
+esac

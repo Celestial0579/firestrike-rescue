@@ -35,6 +35,8 @@ sudo() {
 	printf '%s\n' "$*" >>"$T/sudo"
 	case $1 in
 	mount | ntfs-3g) kernel_mount "$@" ;;
+	# Kann ein anderer Benutzer im Ziel schreiben? Bei ntfs3 je nach OTHERS_WRITE.
+	-u) [[ $* == "-u nobody -n test -w "* ]] && return $((1 - ${OTHERS_WRITE:-0})) ;;
 	umount)
 		((UMOUNT_OK)) || return 32
 		: >"$T/mounted"
@@ -103,19 +105,22 @@ done
 echo "exFAT:"
 reset
 mount_part exfat
-check "eingehängt mit Schutzoptionen und Besitzer" '[[ $RC == 0 ]] && safe && [[ $CALLS == *"mount -o $ALL,uid=1000,gid=1000 /dev/sdz1 /mnt/frs-target"* ]]'
+check "eingehängt mit Schutzoptionen und Besitzer" '[[ $RC == 0 ]] && safe && [[ $CALLS == *"mount -o $ALL,uid=1000,gid=1000,umask=022 /dev/sdz1 /mnt/frs-target"* ]]'
 
 echo "NTFS über den Kerneltreiber:"
 reset
 mount_part ntfs
-check "eingehängt mit Schutzoptionen und Besitzer" '[[ $RC == 0 ]] && safe && [[ $CALLS == *"mount -t ntfs3 -o $ALL,uid=1000,gid=1000 /dev/sdz1 /mnt/frs-target"* ]]'
+check "eingehängt mit Schutzoptionen und Besitzer" '[[ $RC == 0 ]] && safe && [[ $CALLS == *"mount -t ntfs3 -o $ALL,uid=1000,gid=1000,umask=022 /dev/sdz1 /mnt/frs-target"* ]]'
 check "ntfs-3g wird nicht gebraucht" '[[ $CALLS != *ntfs-3g* ]]'
+reset
+OTHERS_WRITE=1 mount_part ntfs
+check "kann ein anderer Benutzer unter ntfs3 schreiben, hängt ntfs-3g mit umask=022 ein" '[[ $RC == 0 ]] && [[ $CALLS == *"-u nobody -n test -w /mnt/frs-target"* && $CALLS == *"ntfs-3g -o nodev,nosuid,noexec,uid=1000,gid=1000,umask=022 /dev/sdz1 /mnt/frs-target"* ]]'
 
 echo "NTFS über ntfs-3g (Kerneltreiber lehnt ab):"
 reset
 NTFS3_OK=0
 mount_part ntfs
-check "ntfs-3g bekommt nodev, nosuid und noexec" '[[ $CALLS == *"ntfs-3g -o nodev,nosuid,noexec,uid=1000,gid=1000 /dev/sdz1 /mnt/frs-target"* ]]'
+check "ntfs-3g bekommt nodev, nosuid und noexec" '[[ $CALLS == *"ntfs-3g -o nodev,nosuid,noexec,uid=1000,gid=1000,umask=022 /dev/sdz1 /mnt/frs-target"* ]]'
 check "nosymfollow wird am Einhängepunkt nachgesetzt" '[[ $CALLS == *"mount -i -o remount,bind,$ALL /mnt/frs-target"* ]]'
 check "danach gelten alle Schutzoptionen" '[[ $RC == 0 ]] && safe'
 reset

@@ -33,6 +33,16 @@ fi
 CASE=${ARGS[0]%/}
 SRC=${ARGS[1]}
 
+# Je Fall läuft höchstens eine Rettung: Der Assistent und Claude (frs-aufgabe) können beide eine
+# starten. Zwei ddrescue auf derselben Mapfile würden sie zerstören.
+lock_dir=/run/frs
+[[ -d $lock_dir && -w $lock_dir ]] || lock_dir=${TMPDIR:-/tmp}
+exec 8>"$lock_dir/rettung-$(realpath -m -- "$CASE" | sha256sum | cut -c1-16).lock"
+if ! flock -n 8; then
+	echo "Für diesen Rettungsfall läuft schon eine Rettung. Es wurde nichts gestartet." >&2
+	exit 1
+fi
+
 ENV="$CASE/case.env"
 IMG="$CASE/image.img"
 MAP="$CASE/image.map"

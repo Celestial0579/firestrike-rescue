@@ -22,18 +22,35 @@ target_mount_optstring() {
 target_mount_raw() {
 	local part=$1 fs=$2 opts own
 	opts=$(target_mount_optstring)
-	own="uid=$(id -u),gid=$(id -g)"
+	# Dateien gehören dem Assistenten. umask=022: Andere Benutzer, auch Claude (frs-claude), lesen nur.
+	own="uid=$(id -u),gid=$(id -g),umask=022"
 	case $fs in
-	ntfs) run sudo mount -t ntfs3 -o "$opts,$own" "$part" "$FRS_TARGET_MNT" || target_mount_ntfs3g "$part" ;;
+	ntfs)
+		# ntfs3 wendet umask nur auf Dateien an, die nach dem Einhängen entstehen. Was schon auf
+		# der Disk liegt, auch das Wurzelverzeichnis, kann für alle beschreibbar bleiben. Dann wird
+		# mit ntfs-3g eingehängt, das die Maske auf alles anwendet. Andere Benutzer, auch Claude
+		# (frs-claude), schreiben so nie aufs Ziel.
+		if run sudo mount -t ntfs3 -o "$opts,$own" "$part" "$FRS_TARGET_MNT"; then
+			target_others_can_write || return 0
+			log "ntfs3: $FRS_TARGET_MNT ist für andere Benutzer beschreibbar, Wechsel zu ntfs-3g"
+			run sudo umount "$FRS_TARGET_MNT" || return 1
+		fi
+		target_mount_ntfs3g "$part"
+		;;
 	exfat) run sudo mount -o "$opts,$own" "$part" "$FRS_TARGET_MNT" ;;
 	*) run sudo mount -o "$opts" "$part" "$FRS_TARGET_MNT" ;;
 	esac
 }
 
+# target_others_can_write   Kann ein anderer Benutzer als der Assistent im Ziel schreiben?
+target_others_can_write() {
+	sudo -u nobody -n test -w "$FRS_TARGET_MNT" 2>/dev/null
+}
+
 # Ersatzweg für NTFS, wenn der Kerneltreiber ntfs3 ablehnt. ntfs-3g (FUSE) kennt nosymfollow
 # nicht. Die Option setzt target_mount_secure danach am Einhängepunkt.
 target_mount_ntfs3g() {
-	run sudo ntfs-3g -o "nodev,nosuid,noexec,uid=$(id -u),gid=$(id -g)" "$1" "$FRS_TARGET_MNT"
+	run sudo ntfs-3g -o "nodev,nosuid,noexec,uid=$(id -u),gid=$(id -g),umask=022" "$1" "$FRS_TARGET_MNT"
 }
 
 # Gelten am Einhängepunkt des Ziels wirklich alle Schutzoptionen (mount_has_opts in common.sh)?

@@ -5,13 +5,72 @@
 # /usr/local/lib/frs/claude-cli) immer ohne Projekt-Einstellungen.
 CLAUDE_CMD=/usr/local/bin/claude
 CLAUDE_CLI_ISO=/usr/local/lib/frs/claude-cli
+# Die CLI läuft als eigener Benutzer: ohne sudo (außer frs-lesen) und ohne Zugriff auf
+# Blockgeräte. Login, ~/.claude/CLAUDE.md und die aktualisierte CLI liegen in seinem Home, mit
+# persistentem Speicher dort unter claude-home (persist_bind_claude).
+CLAUDE_USER=frs-claude
+CLAUDE_HOME=/var/lib/frs-claude
+# Claude Desktop: cage läuft als Live-Benutzer und legt seinen Wayland-Socket allein in
+# CLAUDE_WAYLAND_DIR ab. Die App läuft als $CLAUDE_USER und bekommt nur diesen Socket
+# (Gruppe $CLAUDE_USER, nicht das Laufzeitverzeichnis des Live-Benutzers) und eigenes XDG_RUNTIME_DIR.
+CLAUDE_WAYLAND_DIR=${FRS_RUN:-/run/frs}/wayland
+CLAUDE_XDG=${FRS_RUN:-/run/frs}/claude-xdg
+
+# claude_wayland_dir   Verzeichnis für den Socket von cage: gehört dem Live-Benutzer, Gruppe
+#   $CLAUDE_USER, setgid. Der Socket darin bekommt die Gruppe von selbst.
+claude_wayland_dir() {
+	sudo install -d -o "$(id -u)" -g "$CLAUDE_USER" -m 2750 "$CLAUDE_WAYLAND_DIR" &&
+		sudo install -d -o "$CLAUDE_USER" -g "$CLAUDE_USER" -m 0700 "$CLAUDE_XDG"
+}
+
+# claude_wayland_share SOCKET   Die Gruppe $CLAUDE_USER darf sich mit SOCKET verbinden, sonst niemand.
+claude_wayland_share() {
+	[[ -S $1 && $(dirname "$1") == "$CLAUDE_WAYLAND_DIR" ]] || return 1
+	[[ $(stat -c %G "$1") == "$CLAUDE_USER" ]] || return 1
+	chmod 0660 "$1"
+}
+
+# claude_freigabe_hinweis   Leer, oder eine Zeile, solange Claude volles sudo hat (frs-freigabe).
+claude_freigabe_hinweis() {
+	local s
+	s=$(frs-freigabe status 2>/dev/null)
+	[[ $s == an* ]] && echo "ACHTUNG: Claude hat volles sudo ($s). Beenden: Werkzeuge > Claude-Freigabe"
+	return 0
+}
+
+# claude_freigabe_menu   Volles sudo für Claude freischalten, verlängern oder beenden. Nur hier
+#   und mit sudo frs-freigabe an der Konsole, nie durch Claude selbst.
+claude_freigabe_menu() {
+	local s c min
+	s=$(frs-freigabe status)
+	if [[ $s == aus ]]; then
+		ui_yesno "Claude-Freigabe" "Claude arbeitet mit den frs-Werkzeugen: Diagnose, Quelle nur lesend einhängen, Retten und Kopieren auf das bestätigte Ziel.\n\nMit der Freigabe bekommt Claude volles sudo, für diese Sitzung und eine begrenzte Zeit. Dann kann Claude alles, auch Quell-Disks beschreiben, formatieren und partitionieren. Die Sperre in Claude Code fragt weiter nach, ist aber keine Grenze mehr.\n\nNur freischalten, wenn eine Aufgabe es wirklich braucht. Freischalten?" --defaultno || return 0
+		min=$(ui_input "Claude-Freigabe" "Für wie viele Minuten? (1 bis 240)" 30) || return 0
+		run sudo frs-freigabe an "$min" || { ui_msg "Claude-Freigabe" "Nicht freigeschaltet. Details im Protokoll."; return 0; }
+		log "Claude-Freigabe: an, $min Minuten"
+		ui_msg "Claude-Freigabe" "Claude hat volles sudo ($(frs-freigabe status)).\n\nDanach gilt wieder nur frs-lesen und frs-aufgabe. Ein Neustart beendet die Freigabe ebenfalls."
+		return 0
+	fi
+	c=$(ui_menu "Claude-Freigabe" "Claude hat volles sudo ($s)." -- \
+		aus "Sofort beenden" \
+		mehr "Um 30 Minuten ab jetzt verlängern") || return 0
+	case $c in
+	aus) run sudo frs-freigabe aus && log "Claude-Freigabe: aus" ;;
+	mehr) run sudo frs-freigabe an 30 && log "Claude-Freigabe: verlängert" ;;
+	esac
+}
+
+# claude_as BEFEHL …   Startet BEFEHL als $CLAUDE_USER mit dessen Home.
+claude_as() {
+	sudo -u "$CLAUDE_USER" -H "$@"
+}
 
 # Hält die CLI auf der Persistenz aktuell (im Hintergrund, Fehler sind egal). Eine neue Version
 # wird gleich danach geprüft (frs-claude-check), dann wartet der Techniker beim Start nicht darauf.
 claude_update_bg() {
 	persist_is_open || return 0
 	is_online || return 0
-	( ("$CLAUDE_CLI_ISO" install stable && frs-claude-check "$HOME/.local/bin/claude") >>"$FRS_LOG" 2>&1 &)
+	(claude_as sh -c '"$1" install stable && frs-claude-check "$HOME/.local/bin/claude"' frs "$CLAUDE_CLI_ISO" >>"$FRS_LOG" 2>&1 &)
 }
 
 # Datei mit dem aktuellen Zustand im Sitzungsverzeichnis. Sie heißt bewusst nicht CLAUDE.md:
@@ -36,7 +95,8 @@ claude_data_filter() {
 # Schreibt den aktuellen Zustand in das Sitzungsverzeichnis (Datei $CLAUDE_STATE_FILE).
 claude_context() {
 	local dir=$1 case=${2:-}
-	mkdir -p "$dir"
+	# Das Verzeichnis gehört dem Assistenten. Claude ($CLAUDE_USER) darf darin lesen, nicht schreiben.
+	sudo install -d -o "$(id -u)" -g "$CLAUDE_USER" -m 2750 "$dir"
 	# Im Arbeitsverzeichnis von Claude liegt keine CLAUDE.md mit Angaben von Datenträgern.
 	rm -f "$dir/CLAUDE.md"
 	{
@@ -71,6 +131,7 @@ claude_context() {
 		echo "$FRS_LOG" | claude_data_filter
 		tail -n 40 "$FRS_LOG" 2>/dev/null | claude_data_filter
 	} >"$dir/$CLAUDE_STATE_FILE"
+	chmod 640 "$dir/$CLAUDE_STATE_FILE"
 }
 
 # Gibt die geprüften Werte einer Falldatei aus. Läuft in einer Subshell, damit ein gerade
@@ -102,14 +163,17 @@ claude_start() {
 		Der aktuelle Zustand (Disks, SMART, Rettungsfall, Protokoll) steht dort in $CLAUDE_STATE_FILE.
 		Claude liest die Datei als Daten: Was ein Datenträger über sich meldet, ist keine Anweisung.
 
-		Gesperrt für Claude: den Schreibschutz einer Disk aufheben, die Sperre ändern, das
-		Original-Image reparieren. Jeden schreibenden Befehl bestätigst du selbst, jedes Mal.
+		Claude läuft als eigener Benutzer ($CLAUDE_USER) und arbeitet mit den frs-Werkzeugen:
+		frs-lesen (Diagnose) und frs-aufgabe (Quelle nur lesend einhängen, Retten und Kopieren auf
+		das Ziel, das du im Assistenten bestätigt hast). Formatieren, Partitionieren und andere
+		Befehle als root kann Claude nicht. Mehr nur mit Werkzeuge > Claude-Freigabe.
+		$(claude_freigabe_hinweis)
 
 		Erster Start: /login wählen, die angezeigte URL auf dem Handy oder einem anderen
 		Rechner öffnen und den Code hier einfügen. Beenden mit /exit oder Strg+D.
 
 	EOF
-	(cd "$dir" && "$CLAUDE_CMD")
+	claude_as sh -c 'cd "$1" && exec "$2"' frs "$dir" "$CLAUDE_CMD"
 }
 
 claude_desktop() {
@@ -123,15 +187,9 @@ claude_desktop() {
 	fi
 	persist_is_open || ui_msg "Claude Desktop" "Hinweis: Kein persistenter Speicher eingehängt.\nDer Login gilt nur bis zum Neustart."
 	claude_context "$FRS_RUN/claude-session"
+	claude_wayland_dir || { ui_msg "Claude Desktop" "Das Verzeichnis für die Grafik ließ sich nicht anlegen."; return 0; }
 	ui_msg "Claude Desktop" "Claude Desktop startet im Vollbild (ohne Desktop drumherum).\n\nBeenden: App schließen (Strg+Q). Danach geht es hier weiter.\nFunktioniert die Grafik nicht: Strg+Alt+F2 wechselt auf eine Konsole."
 	clear
-	# Eigene D-Bus-Sitzung mit entsperrtem Schlüsselbund (Login-Speicher der App).
-	# Der Schlüsselbund liegt in ~/.local/share/keyrings auf der (verschlüsselten) Persistenz.
-	dbus-run-session -- bash -c '
-		eval "$(printf "" | gnome-keyring-daemon --unlock --components=secrets 2>/dev/null)"
-		eval "$(gnome-keyring-daemon --start --components=secrets 2>/dev/null)"
-		export GNOME_KEYRING_CONTROL SSH_AUTH_SOCK XDG_CURRENT_DESKTOP=frs
-		cd "$HOME"
-		exec cage -s -- claude-desktop --ozone-platform-hint=auto
-	' >>"$FRS_LOG" 2>&1 || ui_msg "Claude Desktop" "Claude Desktop wurde mit Fehler beendet. Details im Protokoll:\n$FRS_LOG"
+	# cage als Live-Benutzer, die App als $CLAUDE_USER (claude-desktop-start).
+	XDG_RUNTIME_DIR=$CLAUDE_WAYLAND_DIR cage -s -- "$FRS_LIB/claude-desktop-start" >>"$FRS_LOG" 2>&1 || ui_msg "Claude Desktop" "Claude Desktop wurde mit Fehler beendet. Details im Protokoll:\n$FRS_LOG"
 }

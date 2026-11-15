@@ -70,6 +70,7 @@ selftest() {
 	selftest_boot "$dir" || ok=0
 	selftest_tmux "$dir" || ok=0
 	selftest_claude "$dir" || ok=0
+	selftest_claude_user "$dir" || ok=0
 	# Werkzeuge vorhanden?
 	local t
 	for t in ddrescue partclone.ntfs partclone.extfs ntfsresize smartctl nvme sgdisk sfdisk cryptsetup dislocker \
@@ -135,6 +136,12 @@ selftest_target() {
 		}
 		echo "FRS-SELFTEST: Ziel $fs eingehängt als $(findmnt -n -o FSTYPE,VFS-OPTIONS -M "$FRS_TARGET_MNT" | tr -s ' \n' ' ')"
 		target_mount_has_opts || { echo "FRS-SELFTEST: Ziel $fs: Schutzoptionen gelten nicht"; good=0; }
+		# Claude (frs-claude) schreibt auf kein Ziel.
+		if sudo -u frs-claude -n touch "$FRS_TARGET_MNT/claude-probe" 2>/dev/null; then
+			echo "FRS-SELFTEST: Ziel $fs: frs-claude konnte schreiben"
+			rm -f "$FRS_TARGET_MNT/claude-probe"
+			good=0
+		fi
 		# Schreiben muss gehen, Ausführen nicht.
 		printf '#!/bin/sh\nexit 0\n' >"$FRS_TARGET_MNT/neu" || { echo "FRS-SELFTEST: Ziel $fs: nicht beschreibbar"; good=0; }
 		chmod 755 "$FRS_TARGET_MNT/neu" 2>/dev/null
@@ -531,13 +538,251 @@ selftest_claude() {
 	# (frs-claude-check). Mit der CLI der ISO müssen sie bestehen, sonst würde jede neue Version
 	# abgelehnt oder die Prüfung bewiese nichts.
 	local out
-	if out=$(frs-claude-check --ohne-merken /usr/local/lib/frs/claude-cli 2>&1); then
-		echo "FRS-SELFTEST: Claude-Sperre: frs-claude-check besteht mit der CLI der ISO"
+	# Als frs-claude, wie im Betrieb.
+	if out=$(sudo -u frs-claude -H frs-claude-check --ohne-merken /usr/local/lib/frs/claude-cli 2>&1 </dev/null); then
+		echo "FRS-SELFTEST: Claude-Sperre: frs-claude-check besteht mit der CLI der ISO, als frs-claude"
 	else
-		echo "FRS-SELFTEST: Claude-Sperre: frs-claude-check besteht mit der CLI der ISO nicht"
+		echo "FRS-SELFTEST: Claude-Sperre: frs-claude-check besteht mit der CLI der ISO nicht (als frs-claude)"
 		good=0
 	fi
 	sed 's/^/FRS-SELFTEST:   frs-claude-check: /' <<<"$out"
+	((good))
+}
+
+# selftest_as BEFEHL …   BEFEHL als frs-claude, ohne Eingabe und ohne Passwortabfrage.
+selftest_as() {
+	sudo -u frs-claude -H -n "$@" </dev/null
+}
+
+# Claude läuft als eigener Benutzer (frs-claude). Er liest Disks nur über frs-lesen und schreibt
+# gar nicht. Geprüft wird das Betriebssystem, nicht Claude Code: Die Befehle laufen direkt als
+# frs-claude, ohne Hook und ohne Rückfrage.
+selftest_claude_user() {
+	local dir=$1/benutzer good=1 loop want got a
+	mkdir -p "$dir"
+	head -c $((1024 * 1024)) /dev/urandom >"$dir/disk.raw"
+	loop=$(losetup --find --show "$dir/disk.raw")
+	blockdev --setro "$loop"
+
+	if [[ $(id -Gn frs-claude 2>/dev/null | tr ' ' '\n' | sort | tr '\n' ' ') == "frs-claude render " ]]; then
+		echo "FRS-SELFTEST: frs-claude: Gruppen frs-claude und render, sonst keine (kein sudo, disk, video, input)"
+	else
+		echo "FRS-SELFTEST: frs-claude: Gruppen '$(id -Gn frs-claude 2>&1)'"
+		good=0
+	fi
+	got=$(selftest_as sudo -n -l 2>&1)
+	if [[ $got == *"(root) NOPASSWD: /usr/local/bin/frs-lesen, /usr/local/bin/frs-aufgabe"* && $got != *"ALL) ALL"* &&
+		$got != *"NOPASSWD: ALL"* ]] && [[ $(grep -c 'NOPASSWD' <<<"$got") == 1 ]]; then
+		echo "FRS-SELFTEST: frs-claude: sudo nur für frs-lesen und frs-aufgabe"
+	else
+		echo "FRS-SELFTEST: frs-claude: sudo erlaubt mehr als frs-lesen und frs-aufgabe:"
+		sed 's/^/FRS-SELFTEST:   /' <<<"$got" | tail -n 6
+		good=0
+	fi
+
+	# Lesen über frs-lesen: genau die Bytes der Disk.
+	want=$(head -c 1024 "$dir/disk.raw" | od -A x -t x1z -v)
+	got=$(selftest_as sudo -n /usr/local/bin/frs-lesen sektoren "$loop" 0 2 2>&1)
+	if [[ -n $want && $got == "$want" ]]; then
+		echo "FRS-SELFTEST: frs-claude: frs-lesen sektoren liest die Disk"
+	else
+		echo "FRS-SELFTEST: frs-claude: frs-lesen sektoren liefert nicht den Inhalt der Disk: ${got:0:160}"
+		good=0
+	fi
+
+	# frs-lesen nimmt nur, was zur Aktion passt.
+	local -a args bad=(
+		"sektoren|$loop|0|65" "sektoren|/etc/shadow|0|1" "sektoren|$loop|-1" "sektoren|$loop|0x10"
+		"smart|$loop -s on" "smart|--scan" "smart|/dev/../etc/shadow" "partitionen|$loop|--delete"
+		"disks|--output-all" "kernel|-C" "lies|/etc/shadow"
+	)
+	for a in "${bad[@]}"; do
+		IFS='|' read -ra args <<<"$a"
+		got=$(selftest_as sudo -n /usr/local/bin/frs-lesen "${args[@]}" 2>/dev/null)
+		if [[ $? == 0 || -n $got ]]; then
+			echo "FRS-SELFTEST: frs-claude: frs-lesen nahm ${a//|/ } an"
+			good=0
+		fi
+	done
+	((good)) && echo "FRS-SELFTEST: frs-claude: frs-lesen lehnt Optionen, fremde Pfade und zu viele Sektoren ab"
+
+	# Ohne frs-lesen: kein Lesen der Disk, kein Aufheben des Schreibschutzes, kein anderes sudo.
+	if selftest_as dd if="$loop" of=/dev/null count=1 status=none 2>/dev/null; then
+		echo "FRS-SELFTEST: frs-claude: konnte das Blockgerät direkt lesen"
+		good=0
+	fi
+	selftest_as sudo -n blockdev --setrw "$loop" 2>/dev/null
+	if [[ $(blockdev --getro "$loop") != 1 ]]; then
+		echo "FRS-SELFTEST: frs-claude: konnte den Schreibschutz aufheben"
+		good=0
+	fi
+	if selftest_as sudo -n dd if="$loop" of=/dev/null count=1 status=none 2>/dev/null ||
+		selftest_as sudo -n -u rescue true 2>/dev/null; then
+		echo "FRS-SELFTEST: frs-claude: sudo erlaubte einen anderen Befehl"
+		good=0
+	fi
+	((good)) && echo "FRS-SELFTEST: frs-claude: kein direkter Zugriff auf Blockgeräte, kein anderes sudo"
+
+	losetup -d "$loop" 2>/dev/null
+	rm -f "$dir/disk.raw"
+	selftest_claude_aufgabe "$dir" || good=0
+	selftest_claude_freigabe || good=0
+	selftest_claude_wayland "$dir" || good=0
+	((good))
+}
+
+# selftest_claude_aufgabe VERZEICHNIS   frs-aufgabe als frs-claude: Quelle nur lesend einhängen,
+#   Kopieren und Retten nur auf das bestätigte Ziel, alles andere abgelehnt.
+selftest_claude_aufgabe() {
+	local dir=$1 good=1 src tgt res sloop tloop rloop mp got c i bd a
+	local -a args bad
+	src=$dir/quelle.raw tgt=$dir/ziel.raw res=$dir/retten.raw
+	truncate -s 32M "$src" "$tgt"
+	head -c $((1024 * 1024)) /dev/urandom >"$res"
+	# Inhalt der Quelle ohne Einhängen (mkfs -d): Ein Loop-Gerät, das ein früherer Test
+	# schreibgeschützt hat, behält das beim nächsten Einbinden.
+	mkdir -p "$dir/inhalt"
+	echo "PROBE-$RANDOM" >"$dir/inhalt/probe.txt"
+	cp "$dir/inhalt/probe.txt" "$dir/probe.txt"
+	mkfs.ext4 -q -F -d "$dir/inhalt" "$src"
+	mkfs.ext4 -q -F "$tgt"
+	sloop=$(losetup --find --show "$src")
+	tloop=$(losetup --find --show "$tgt")
+	rloop=$(losetup --find --show "$res")
+	blockdev --setrw "$sloop" "$tloop" "$rloop"
+	for i in 1 2 3 4 5 6 7 8 9 10; do
+		udevadm settle
+		[[ $(lsblk -no FSTYPE "$tloop") == ext4 ]] && break
+		sleep 1
+	done
+
+	# Ohne bestätigtes Ziel wird nichts kopiert und nichts gerettet.
+	mountpoint -q "$FRS_TARGET_MNT" && umount "$FRS_TARGET_MNT"
+	if selftest_as sudo -n frs-aufgabe retten "$rloop" >/dev/null 2>&1; then
+		echo "FRS-SELFTEST: frs-aufgabe: retten lief ohne bestätigtes Ziel"
+		good=0
+	fi
+
+	# Quelle einhängen: erst schreibgeschützt, dann nur lesend.
+	mp="$FRS_IMAGE_MNT/$(basename "$sloop")"
+	got=$(selftest_as sudo -n frs-aufgabe einhaengen "$sloop" 2>&1)
+	if [[ $(blockdev --getro "$sloop") == 1 ]] && mount_has_opts "$mp" "${IMAGE_MOUNT_OPTS[@]}" && cmp -s "$mp/probe.txt" "$dir/probe.txt"; then
+		echo "FRS-SELFTEST: frs-aufgabe: einhaengen schützt die Quelle und hängt sie nur lesend ein"
+	else
+		echo "FRS-SELFTEST: frs-aufgabe: einhaengen ohne Schreibschutz oder Schutzoptionen: ${got:0:160}"
+		good=0
+	fi
+
+	# Das Ziel bestätigt der Techniker im Assistenten. Hier hängt es der Selbsttest ein, wie der Assistent.
+	install -d "$FRS_TARGET_MNT"
+	target_mount_part "$tloop" || { echo "FRS-SELFTEST: frs-aufgabe: Testziel ließ sich nicht einhängen"; good=0; }
+	got=$(selftest_as sudo -n frs-aufgabe kopieren "$mp/probe.txt" selbsttest 2>&1)
+	if cmp -s "$FRS_TARGET_MNT/FRS/claude/selbsttest/probe.txt" "$dir/probe.txt"; then
+		echo "FRS-SELFTEST: frs-aufgabe: kopieren schreibt die Datei aufs bestätigte Ziel"
+	else
+		echo "FRS-SELFTEST: frs-aufgabe: kopieren hat nicht aufs Ziel geschrieben: ${got:0:160}"
+		good=0
+	fi
+
+	# Abgelehnt: fremde Quellen, Ordnernamen mit Pfad, das Ziel oder der Stick als Quelle.
+	bd=$(boot_disk 2>/dev/null || true)
+	bad=("kopieren|/etc/hostname|x" "kopieren|$mp/probe.txt|../x" "kopieren|$mp/probe.txt|a/b"
+		"kopieren|$FRS_TARGET_MNT/FRS|x" "einhaengen|$tloop" "retten|$tloop" "einhaengen|/etc/shadow"
+		"retten|$sloop -x" "fortsetzen|../x|$rloop" "aushaengen|../x" "image|../../etc" "loeschen|$tloop")
+	[[ -n $bd ]] && bad+=("einhaengen|$bd" "retten|$bd")
+	for a in "${bad[@]}"; do
+		IFS='|' read -ra args <<<"$a"
+		if selftest_as sudo -n frs-aufgabe "${args[@]}" >/dev/null 2>&1; then
+			echo "FRS-SELFTEST: frs-aufgabe: nahm ${a//|/ } an"
+			good=0
+		fi
+	done
+	[[ -e $FRS_TARGET_MNT/x || -e $FRS_TARGET_MNT/FRS/x ]] && { echo "FRS-SELFTEST: frs-aufgabe: schrieb außerhalb von FRS/claude"; good=0; }
+	[[ $(blockdev --getro "$tloop") == 0 ]] || { echo "FRS-SELFTEST: frs-aufgabe: Ziel wurde schreibgeschützt"; good=0; }
+
+	# Retten: Rettungsfall auf dem Ziel, ddrescue im Hintergrund, Abbild gleich der Quelle.
+	got=$(selftest_as sudo -n frs-aufgabe retten "$rloop" 2>&1)
+	for ((i = 0; i < 90; i++)); do
+		systemctl list-units --plain --no-legend --state=active,activating 'frs-claude-rettung-*' 2>/dev/null | grep -q . || break
+		sleep 1
+	done
+	c=$(ls -d "$FRS_TARGET_MNT"/FRS/*_Disk_* 2>/dev/null | head -n 1)
+	if [[ -n $c ]] && cmp -s "$c/image.img" "$res" && [[ $(casefile_peek "$c/case.env" STATE) == "done" && $(blockdev --getro "$rloop") == 1 ]]; then
+		echo "FRS-SELFTEST: frs-aufgabe: retten schützt die Quelle und legt das Abbild auf dem Ziel ab ($(basename "$c"))"
+	else
+		echo "FRS-SELFTEST: frs-aufgabe: retten hat kein vollständiges Abbild abgelegt: ${got:0:200}"
+		good=0
+	fi
+	got=$(selftest_as sudo -n frs-aufgabe stand 2>&1)
+	[[ $got == *"Letzte Aufgaben"* ]] || { echo "FRS-SELFTEST: frs-aufgabe: stand ohne Ausgabe"; good=0; }
+
+	selftest_as sudo -n frs-aufgabe aushaengen "$(basename "$sloop")" >/dev/null 2>&1
+	mountpoint -q "$mp" && { echo "FRS-SELFTEST: frs-aufgabe: aushaengen hat nicht ausgehängt"; good=0; umount "$mp"; }
+	umount "$FRS_TARGET_MNT" 2>/dev/null
+	losetup -d "$sloop" "$tloop" "$rloop" 2>/dev/null
+	rm -f "$src" "$tgt" "$res"
+	((good)) && echo "FRS-SELFTEST: frs-aufgabe: lehnt fremde Quellen, Pfade im Ordnernamen und das Ziel als Quelle ab"
+	((good))
+}
+
+# selftest_claude_freigabe   Volles sudo nur nach Freischalten durch den Techniker, mit Ablauf.
+selftest_claude_freigabe() {
+	local good=1
+	frs-freigabe aus >/dev/null 2>&1
+	if selftest_as sudo -n frs-freigabe an 30 >/dev/null 2>&1 || SUDO_USER=frs-claude frs-freigabe an 30 >/dev/null 2>&1 ||
+		[[ $(frs-freigabe status) != aus ]]; then
+		echo "FRS-SELFTEST: Freigabe: frs-claude konnte sich selbst freischalten"
+		good=0
+	fi
+	SUDO_USER=rescue frs-freigabe an 1 >/dev/null 2>&1
+	if [[ $(frs-freigabe status) == "an bis "* ]] && selftest_as sudo -n true 2>/dev/null &&
+		systemctl is-active -q frs-claude-freigabe-ende.timer && [[ $(frs-freigabe zeile </dev/null) == ACHTUNG* ]]; then
+		echo "FRS-SELFTEST: Freigabe: nach dem Freischalten hat frs-claude volles sudo, der Ablauf ist gesetzt, die Statuszeile zeigt es"
+	else
+		echo "FRS-SELFTEST: Freigabe: Freischalten wirkt nicht ($(frs-freigabe status))"
+		good=0
+	fi
+	# Ablauf wie nach der gesetzten Zeit: Der Timer startet diesen Dienst.
+	systemctl start frs-claude-freigabe-ende.service
+	if [[ $(frs-freigabe status) == aus ]] && ! selftest_as sudo -n true 2>/dev/null && [[ ! -e /etc/sudoers.d/frs-claude-freigabe ]]; then
+		echo "FRS-SELFTEST: Freigabe: nach Ablauf gilt wieder nur frs-lesen und frs-aufgabe"
+	else
+		echo "FRS-SELFTEST: Freigabe: nach Ablauf hat frs-claude weiter volles sudo"
+		frs-freigabe aus >/dev/null 2>&1
+		good=0
+	fi
+	grep -q "abgelaufen" /run/frs/claude-aufgaben.log 2>/dev/null || { echo "FRS-SELFTEST: Freigabe: Ablauf steht nicht im Protokoll"; good=0; }
+	((good))
+}
+
+# selftest_claude_wayland VERZEICHNIS   Claude Desktop (frs-claude) bekommt nur den Socket von cage.
+selftest_claude_wayland() {
+	local good=1 sock srv i
+	claude_wayland_dir || { echo "FRS-SELFTEST: Wayland: Verzeichnis ließ sich nicht anlegen"; return 1; }
+	sock=$CLAUDE_WAYLAND_DIR/wayland-selbsttest
+	rm -f "$sock"
+	python3 -I -c 'import socket, sys, time
+s = socket.socket(socket.AF_UNIX); s.bind(sys.argv[1]); s.listen(4); time.sleep(30)' "$sock" &
+	srv=$!
+	for ((i = 0; i < 50; i++)); do [[ -S $sock ]] && break; sleep 0.1; done
+	local conn='import socket, sys; s = socket.socket(socket.AF_UNIX); s.connect(sys.argv[1])'
+	if selftest_as python3 -I -c "$conn" "$sock" 2>/dev/null; then
+		echo "FRS-SELFTEST: Wayland: frs-claude erreichte den Socket vor der Freigabe"
+		good=0
+	fi
+	claude_wayland_share "$sock" || { echo "FRS-SELFTEST: Wayland: claude_wayland_share schlug fehl"; good=0; }
+	if ! selftest_as python3 -I -c "$conn" "$sock" 2>/dev/null; then
+		echo "FRS-SELFTEST: Wayland: frs-claude erreicht den freigegebenen Socket nicht"
+		good=0
+	fi
+	if sudo -u nobody -n python3 -I -c "$conn" "$sock" </dev/null 2>/dev/null; then
+		echo "FRS-SELFTEST: Wayland: ein anderer Benutzer erreichte den Socket"
+		good=0
+	fi
+	kill "$srv" 2>/dev/null
+	wait "$srv" 2>/dev/null
+	rm -f "$sock"
+	((good)) && echo "FRS-SELFTEST: Wayland: frs-claude erreicht nur den freigegebenen Socket von cage, andere Benutzer nicht"
 	((good))
 }
 
@@ -545,7 +790,7 @@ selftest_claude() {
 # Hauptmenü
 # ---------------------------------------------------------------------------
 main_menu() {
-	local overview default choice extra=()
+	local overview default choice hint extra=()
 	while true; do
 		ui_info "Firestrike Rescue" "Prüfe angeschlossene Disks (SMART) …"
 		overview=$(disks_overview)
@@ -553,7 +798,8 @@ main_menu() {
 		((DISKS_ANY_BAD)) && default=rescue
 		extra=()
 		tmux has-session -t frs-rettung 2>/dev/null && extra=(running "» Laufende Rettung anzeigen")
-		choice=$(ui_menu "Firestrike Rescue" "$overview\n\nEmpfehlung: $([[ $default == rescue ]] && echo "Datenrettung (auffällige Disk gefunden)" || echo "alle Disks unauffällig")" \
+		hint=$(claude_freigabe_hinweis)
+		choice=$(ui_menu "Firestrike Rescue" "${hint:+$hint\n\n}$overview\n\nEmpfehlung: $([[ $default == rescue ]] && echo "Datenrettung (auffällige Disk gefunden)" || echo "alle Disks unauffällig")" \
 			--default-item "$default" -- \
 			"${extra[@]}" \
 			rescue "Datenrettung von defekter Disk (Image auf Ziel-Disk)" \

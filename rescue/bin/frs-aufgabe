@@ -1,0 +1,233 @@
+#!/bin/bash
+# Firestrike Rescue: Rettungsaufgaben für Claude (Benutzer frs-claude).
+#
+# Claude läuft als eigener Benutzer ohne Zugriff auf Blockgeräte. sudo erlaubt ihm nur frs-lesen
+# (Diagnose) und dieses Programm (/etc/sudoers.d/frs-claude). Damit erledigt Claude die
+# Rettungsaufgaben selbständig, aber nur auf die Art, die auch der Assistent hat:
+#   - Eine Quelle wird vor allem anderen schreibgeschützt und nur lesend eingehängt.
+#   - Geschrieben wird nur auf das bestätigte Ziel: die Partition, die der Assistent nach der
+#     Bestätigung des Technikers unter /mnt/frs-target eingehängt hat. Claude kann dort nichts
+#     einhängen und kein anderes Ziel wählen.
+#   - Formatieren, Partitionieren und beliebige Befehle als root gibt es hier nicht.
+# Jedes Argument wird geprüft, bevor etwas geschieht. Jede Aufgabe steht im Protokoll.
+#
+#   frs-aufgabe einhaengen GERÄT        Partition nur lesend unter /mnt/frs-image/NAME einhängen
+#   frs-aufgabe aushaengen NAME         /mnt/frs-image/NAME aushängen
+#   frs-aufgabe image FALL              image.img eines Rettungsfalls nur lesend einbinden
+#   frs-aufgabe kopieren PFAD [ORDNER]  aus /mnt/frs-image aufs Ziel nach FRS/claude/ORDNER kopieren
+#   frs-aufgabe retten GERÄT            Rettungsfall auf dem Ziel anlegen, ddrescue im Hintergrund
+#   frs-aufgabe fortsetzen FALL GERÄT   unterbrochene Rettung im Hintergrund fortsetzen
+#   frs-aufgabe stand                   laufende Rettungen und letzte Aufgaben
+#   frs-aufgabe notiz TEXT              Eintrag ins Protokoll des Assistenten
+#
+# GERÄT ist /dev/NAME, FALL der Name eines Ordners unter <Ziel>/FRS/.
+set -u
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+export LC_ALL=C.UTF-8
+umask 022
+FRS_LIB=/usr/local/lib/frs
+for f in common disks safety casefile target recover; do
+	# shellcheck disable=SC1090
+	. "$FRS_LIB/$f.sh"
+done
+
+AUFGABEN_LOG=$FRS_RUN/claude-aufgaben.log
+FRS_LOG=$AUFGABEN_LOG
+# Es gibt keine Oberfläche: Was eine Rückfrage bräuchte, geht nur über den Assistenten.
+log() { printf '%s %s\n' "$(date '+%F %T')" "$*" >>"$AUFGABEN_LOG"; }
+ui_msg() { printf '%s: %b\n' "$1" "$2" >&2; }
+ui_info() { :; }
+ui_yesno() { return 1; }
+ui_input() { return 1; }
+ui_menu() { return 1; }
+
+fail() {
+	echo "frs-aufgabe: $*" >&2
+	log "abgelehnt: $*"
+	exit 2
+}
+
+# dev GERÄT   wie in frs-lesen: nur /dev/NAME eines Blockgeräts, das der Kernel kennt.
+dev() {
+	[[ ${1:-} =~ ^/dev/([a-z][a-z0-9]{0,31})$ ]] || fail "kein Gerät: '${1:-}' (erwartet /dev/NAME)"
+	[[ -e /sys/class/block/${BASH_REMATCH[1]} && -b $1 && ! -L $1 ]] || fail "kein Blockgerät: $1"
+	printf '%s\n' "$1"
+}
+
+# disk_of GERÄT   Die Disk, zu der GERÄT gehört (bei einer Disk: sie selbst).
+disk_of() {
+	local p
+	p=$(lsblk -dno PKNAME "$1" 2>/dev/null)
+	if [[ -n $p ]]; then echo "/dev/$p"; else echo "$1"; fi
+}
+
+# target_disk   Die Disk unter /mnt/frs-target, leer ohne bestätigtes Ziel.
+target_disk() {
+	local src
+	mountpoint -q "$FRS_TARGET_MNT" || return 0
+	src=$(findmnt -no SOURCE -M "$FRS_TARGET_MNT" 2>/dev/null)
+	[[ -b $src ]] && disk_of "$src"
+}
+
+# target_ok   Es gibt ein bestätigtes Ziel, und es ist mit den Schutzoptionen eingehängt.
+target_ok() {
+	[[ -n $(target_disk) ]] || fail "Kein Ziel eingehängt. Das Ziel wählt und bestätigt der Techniker im Assistenten."
+	target_mount_has_opts || fail "Das Ziel ist nicht mit den Schutzoptionen eingehängt."
+}
+
+# source_ok GERÄT   GERÄT darf Quelle sein: nicht der Stick, nicht das Ziel.
+source_ok() {
+	local d bd td
+	d=$(disk_of "$1")
+	bd=$(boot_disk 2>/dev/null || true)
+	td=$(target_disk)
+	[[ -n $bd && $d == "$bd" ]] && fail "$1 liegt auf dem Firestrike-Stick."
+	[[ -n $td && $d == "$td" ]] && fail "$1 liegt auf dem Ziel. Das Ziel ist keine Quelle."
+	return 0
+}
+
+# case_dir FALL   Ordner eines Rettungsfalls auf dem Ziel.
+case_dir() {
+	casefile_dirname_ok "${1:-}" || fail "kein gültiger Fallname: '${1:-}'"
+	local c=$FRS_TARGET_MNT/FRS/$1
+	[[ -d $c && ! -L $c && -f $c/case.env && ! -L $c/case.env ]] || fail "Rettungsfall $1 nicht gefunden"
+	printf '%s\n' "$c"
+}
+
+# start_rescue FALLORDNER QUELLE   frs-rescue-run im Hintergrund, als eigene systemd-Einheit.
+start_rescue() {
+	local unit
+	unit="frs-claude-rettung-$(printf '%s' "$1" | sha256sum | cut -c1-12)"
+	systemctl is-active -q "$unit" && fail "Für diesen Fall läuft schon eine Rettung ($unit)."
+	systemd-run --quiet --collect --unit="$unit" --description="Firestrike Rescue: Rettung $(basename "$1")" \
+		/usr/local/bin/frs-rescue-run "$1" "$2" --no-pause ${FRS_TECHNIKER:+"--techniker=$FRS_TECHNIKER"} ||
+		fail "Die Rettung ließ sich nicht starten."
+	log "Rettung gestartet: $1 von $2 ($unit)"
+	echo "Rettung läuft im Hintergrund ($unit). Stand: sudo frs-aufgabe stand"
+}
+
+[[ $# -ge 1 ]] || fail "Aktion fehlt (einhaengen, aushaengen, image, kopieren, retten, fortsetzen, stand, notiz)"
+action=$1
+shift
+log "Claude: $action $(printf '%q ' "$@")"
+case $action in
+einhaengen)
+	(($# == 1)) || fail "einhaengen erwartet ein Gerät"
+	part=$(dev "$1") || exit 2
+	source_ok "$part"
+	disk=$(disk_of "$part")
+	# Erst der Schreibschutz, dann das Einhängen. Ein nur lesend eingebundenes Image ist es schon.
+	safety_is_ro "$disk" || safety_set_ro "$disk"
+	safety_is_ro "$part" || fail "$part ließ sich nicht schreibschützen."
+	[[ $(sudo blkid -o value -s TYPE "$part") == BitLocker ]] && fail "BitLocker braucht den Wiederherstellungsschlüssel. Das macht der Techniker im Assistenten."
+	mp="$FRS_IMAGE_MNT/$(basename "$part")"
+	part_mount_ro "$part" "$mp" || fail "$part ließ sich nicht nur lesend einhängen. Protokoll: $AUFGABEN_LOG"
+	echo "$part ist nur lesend unter $mp eingehängt."
+	;;
+aushaengen)
+	(($# == 1)) || fail "aushaengen erwartet einen Namen"
+	[[ $1 =~ ^[a-z][a-z0-9]{0,31}$ ]] || fail "kein gültiger Name: '$1'"
+	mp=$FRS_IMAGE_MNT/$1
+	mountpoint -q "$mp" || fail "$mp ist nicht eingehängt"
+	umount "$mp" || fail "$mp ist noch in Benutzung"
+	echo "$mp ausgehängt."
+	;;
+image)
+	(($# == 1)) || fail "image erwartet einen Fallnamen"
+	target_ok
+	c=$(case_dir "$1") || exit 2
+	[[ -f $c/image.img && ! -L $c/image.img ]] || fail "Im Fall $1 gibt es kein image.img"
+	loop=$(image_attach "$c/image.img" ro)
+	[[ $(blockdev --getro "$loop") == 1 ]] || fail "Das Image ist nicht nur lesend eingebunden."
+	echo "$c/image.img ist nur lesend als $loop eingebunden. Partitionen: sudo frs-lesen disks"
+	;;
+kopieren)
+	(($# == 1 || $# == 2)) || fail "kopieren erwartet PFAD [ORDNER]"
+	target_ok
+	src=$(realpath -e -- "$1" 2>/dev/null) || fail "gibt es nicht: $1"
+	[[ $src == "$FRS_IMAGE_MNT"/?* ]] || fail "Kopiert wird nur aus $FRS_IMAGE_MNT (nur lesend eingehängte Quellen)."
+	[[ ,$(findmnt -no OPTIONS -T "$src"), == *,ro,* ]] || fail "$src liegt nicht auf einem nur lesend eingehängten Dateisystem."
+	name=${2:-$(basename "$src")}
+	[[ $name =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$ ]] || fail "kein gültiger Ordnername: '$name'"
+	dst=$FRS_TARGET_MNT/FRS/claude/$name
+	install -d "$FRS_TARGET_MNT/FRS" "$FRS_TARGET_MNT/FRS/claude" "$dst" || fail "Kann $dst nicht anlegen."
+	ropts=(-aHAX --no-devices --no-specials)
+	case $(target_fs) in exfat | ntfs* | fuseblk) ropts=(-rt --modify-window=2) ;; esac
+	log "kopieren: $src -> $dst"
+	rsync "${ropts[@]}" --info=stats1 --ignore-errors -- "$src" "$dst/" 2>&1 | tee -a "$AUFGABEN_LOG"
+	rc=${PIPESTATUS[0]}
+	log "kopieren beendet: rc=$rc"
+	echo "Ziel: $dst (rsync rc=$rc)"
+	exit "$rc"
+	;;
+retten)
+	(($# == 1)) || fail "retten erwartet ein Gerät"
+	target_ok
+	sdev=$(dev "$1") || exit 2
+	[[ $(lsblk -dno TYPE "$sdev") == disk || $sdev == /dev/loop* ]] || fail "$sdev ist keine ganze Disk."
+	source_ok "$sdev"
+	sj=$(lsblk -J -b -d -o PATH,SIZE,MODEL,SERIAL,WWN "$sdev" 2>/dev/null |
+		jq -c '.blockdevices[0] // empty | .serial = ((.serial // "") | gsub("^\\s+|\\s+$"; ""))')
+	[[ -n $sj ]] || fail "$sdev meldet keine Angaben."
+	size=$(jq -r .size <<<"$sj")
+	safety_set_ro "$sdev"
+	free=$(target_free)
+	if ((free < size)); then
+		case $(target_fs) in
+		ext4 | xfs | btrfs) echo "Hinweis: Auf dem Ziel sind nur $(human "$free") frei, die Quelle hat $(human "$size"). Das Image wird sparse geschrieben." ;;
+		*) fail "Auf dem Ziel sind nur $(human "$free") frei, benötigt werden $(human "$size")." ;;
+		esac
+	fi
+	sid=$(jq -r 'if (.serial // "") != "" then .serial elif (.wwn // "") != "" then .wwn else .path end' <<<"$sj")
+	model=$(jq -r '.model // "Disk"' <<<"$sj" | tr -c 'A-Za-z0-9._-' '_' | sed 's/_*$//')
+	name="$(date +%Y%m%d-%H%M)_${model}_${sid//[^A-Za-z0-9]/_}"
+	name=${name:0:200}
+	casefile_dirname_ok "$name" || name="$(date +%Y%m%d-%H%M)_Disk"
+	c="$FRS_TARGET_MNT/FRS/$name"
+	[[ -e $c ]] && fail "Den Fall $name gibt es schon."
+	install -d "$FRS_TARGET_MNT/FRS" "$c" || fail "Kann $c nicht anlegen."
+	casefile_value_ok SRC_ID "$sid" || sid=$sdev
+	tid=$(target_disk)
+	casefile_create "$c/case.env" "SRC_ID=$sid" "SRC_SIZE=$size" \
+		"SRC_LABEL=$(casefile_clean_text "$(disk_label "$sj")")" "TARGET_ID=$tid" "STATE=new" ||
+		fail "Der Rettungsfall konnte nicht angelegt werden: $CASEFILE_ERROR"
+	echo "Neuer Rettungsfall: $name"
+	start_rescue "$c" "$sdev"
+	;;
+fortsetzen)
+	(($# == 2)) || fail "fortsetzen erwartet FALL GERÄT"
+	target_ok
+	c=$(case_dir "$1") || exit 2
+	sdev=$(dev "$2") || exit 2
+	source_ok "$sdev"
+	safety_set_ro "$sdev"
+	# Ob die Disk zum Fall gehört, prüft frs-rescue-run selbst gegen die Falldatei.
+	start_rescue "$c" "$sdev"
+	;;
+stand)
+	(($# == 0)) || fail "stand erwartet keine Argumente"
+	echo "## Rettungen im Hintergrund"
+	systemctl list-units --all --plain --no-legend 'frs-claude-rettung-*' 2>/dev/null || true
+	if [[ -n $(target_disk) ]]; then
+		for m in "$FRS_TARGET_MNT"/FRS/*/image.map; do
+			[[ -f $m && ! -L $m ]] || continue
+			echo
+			echo "## $(basename "$(dirname "$m")")"
+			ddrescuelog -t "$m" 2>/dev/null | tail -n 12
+		done
+	fi
+	echo
+	echo "## Letzte Aufgaben"
+	tail -n 20 "$AUFGABEN_LOG"
+	;;
+notiz)
+	(($# == 1)) || fail "notiz erwartet einen Text (in Anführungszeichen)"
+	text=$(printf '%s' "$1" | jq -Rr --arg re "$TEXT_UNSAFE_RE" '.[0:300] | gsub($re; "?")')
+	main_log=$(ls -t "$FRS_PERSIST"/logs/frs-*.log "$FRS_RUN"/logs/frs-*.log 2>/dev/null | head -n 1)
+	[[ -n $main_log && ! -L $main_log ]] && printf '%s [Claude] %s\n' "$(date '+%F %T')" "$text" >>"$main_log"
+	echo "Notiert."
+	;;
+*)
+	fail "unbekannte Aktion: $action"
+	;;
+esac

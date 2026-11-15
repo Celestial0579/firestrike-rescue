@@ -10,6 +10,7 @@ tools_menu() {
 			net "Netzwerk / WLAN verbinden (nmtui)" \
 			ssh "Fernzugriff per SSH ein/aus" \
 			persist "Persistenter Speicher" \
+			freigabe "Claude-Freigabe (volles sudo, zeitlich begrenzt)" \
 			logs "Protokolle ansehen" \
 			hw "Hardware-Übersicht" \
 			mc "Dateimanager (Midnight Commander)" \
@@ -20,6 +21,7 @@ tools_menu() {
 		net) nmtui ;;
 		ssh) tools_ssh ;;
 		persist) persist_menu ;;
+		freigabe) claude_freigabe_menu ;;
 		logs) tools_logs ;;
 		hw) sudo lshw -short >"$FRS_RUN/hw.txt" 2>&1; ui_textfile "Hardware" "$FRS_RUN/hw.txt" ;;
 		mc) mc ;;
