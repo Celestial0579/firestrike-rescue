@@ -180,7 +180,23 @@ jobs:
             echo "::error::Das Release $tag gibt es schon. Für ein weiteres Release am selben Tag ein eigenes Tag v… setzen."
             exit 1
           fi
-          gh release create "$tag" out/*.iso out/SHA256SUMS out/*.manifest \
-            --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --prerelease \
-            --title "Firestrike Rescue $VERSION (Beta)" \
-            --notes "Ubuntu 26.04 LTS mit allen Updates bis $(date -u +%F). Mit Rufus (DD-Modus), balenaEtcher oder dd auf einen USB-Stick schreiben. Prüfsummen: SHA256SUMS. Herkunft prüfen: gh attestation verify <iso> --repo $GITHUB_REPOSITORY"
+          create() {
+            gh release create "$tag" out/*.iso out/SHA256SUMS out/*.manifest \
+              --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --prerelease \
+              --title "Firestrike Rescue $VERSION (Beta)" \
+              --notes "Ubuntu 26.04 LTS mit allen Updates bis $(date -u +%F). Mit Rufus (DD-Modus), balenaEtcher oder dd auf einen USB-Stick schreiben. Prüfsummen: SHA256SUMS. Herkunft prüfen: gh attestation verify <iso> --repo $GITHUB_REPOSITORY"
+          }
+          if ! create; then
+            # Diagnose (#52): Eine Anfrage ohne tag_name lehnt die API ab (422), ohne etwas anzulegen.
+            # Bei fehlenden Rechten antwortet sie 403 und nennt das verlangte Recht im Header.
+            echo "::warning::gh release create fehlgeschlagen. Diagnose, dann ein zweiter Versuch in 60 s."
+            gh api -i -X POST "repos/$GITHUB_REPOSITORY/releases" -f name=frs-diagnose 2>&1 |
+              grep -iE '^HTTP/|^x-accepted-github-permissions|^x-github-request-id|"message"' || true
+            sleep 60
+            # Ist beim ersten Versuch ein Release entstanden (etwa ohne alle Dateien), wird es nicht ersetzt.
+            if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+              echo "::error::Das Release $tag ist beim ersten Versuch entstanden, aber unvollständig. Bitte prüfen."
+              exit 1
+            fi
+            create
+          fi
