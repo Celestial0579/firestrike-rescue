@@ -66,7 +66,7 @@ Macht aus dem Rechner, der vom Stick gestartet ist, eine VM auf einem Knoten von
 Du brauchst:
 
 - **Netz** zum Knoten. Fehlt eine Adresse, richtest du sie im ersten Schritt mit nmtui ein.
-- **SSH als root** auf dem Knoten, mit Kennwort oder mit einem Schlüssel unter `~/.ssh` im persistenten Speicher.
+- **SSH als root** auf dem Knoten, mit Kennwort oder mit einem Schlüssel unter `~/.ssh` im persistenten Speicher. Der Knoten muss Weiterleitungen über SSH erlauben (`AllowTcpForwarding`, bei Proxmox VE voreingestellt), darüber laufen die Disks.
 - **Windows sauber heruntergefahren:** Schnellstart aus, kein Ruhezustand, BitLocker angehalten.
 
 Ablauf:

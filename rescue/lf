@@ -444,7 +444,7 @@ selftest_p2v() {
 		PermitRootLogin prohibit-password
 		UsePAM no
 		StrictModes no
-		AllowTcpForwarding no
+		AllowTcpForwarding local
 		AllowStreamLocalForwarding yes
 		PidFile $k/sshd.pid
 		ForceCommand $k/bin/befehl
