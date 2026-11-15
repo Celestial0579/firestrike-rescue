@@ -508,6 +508,41 @@ rc=$?
 check "ohne jq und andere Werkzeuge im PATH: kein Durchwinken" '[[ $rc != 0 ]]'
 
 # ---------------------------------------------------------------------------
+# Dieselbe Ausgabe bei jedem Lauf, auch mit ignoriertem SIGPIPE.
+# Die Runner von GitHub starten ihre Prozesse mit ignoriertem SIGPIPE. Verließ eine Schleife des
+# Hooks die Ausgabe einer Hilfsfunktion vorzeitig, schrieb die Hilfsfunktion in eine geschlossene
+# Leitung, und bash meldete "write error: Broken pipe" auf stderr, je nach Zeitablauf. So schlug
+# am 12.11.2026 der Lauf auf main fehl ("sudo sgdisk -p /dev/sdb; sudo sgdisk -Z /dev/sdc"). Die
+# Entscheidung blieb dabei gleich, die Ausgabe nicht. Ein langer Befehl macht aus dem Wettrennen
+# einen sicheren Fall: Die Leitung ist voll, bevor die Schleife aussteigt.
+echo "Dieselbe Ausgabe bei jedem Lauf, auch mit ignoriertem SIGPIPE:"
+trap '' PIPE
+lang=$(printf ' x%.0s' {1..40000})
+guard "sudo sgdisk -Z /dev/sdc$lang"
+check "langer Befehl, die Prüfung steigt bei -Z aus: Rückfrage, stderr leer" 'asked || { echo "       RC=$RC DECISION=$DECISION ERR=${ERR:0:120}"; false; }'
+guard "sudo fdisk -l /dev/sdb -n$lang"
+check "langer Befehl, fdisk mit unbekannter Option: Rückfrage, stderr leer" 'asked || { echo "       RC=$RC DECISION=$DECISION ERR=${ERR:0:120}"; false; }'
+guard "sudo hdparm -I /dev/sdb --x$lang"
+check "langer Befehl, hdparm mit unbekannter Option: Rückfrage, stderr leer" 'asked || { echo "       RC=$RC DECISION=$DECISION ERR=${ERR:0:120}"; false; }'
+# Der Fall aus dem Lauf auf main, oft wiederholt, auf einem Kern, wenn taskset da ist: So kommt
+# das Wettrennen am häufigsten vor. Gezählt wird jede Abweichung in Rückgabe, Entscheidung, stderr.
+pin=()
+command -v taskset >/dev/null && pin=(taskset -c 0)
+c='sudo sgdisk -p /dev/sdb; sudo sgdisk -Z /dev/sdc'
+in=$(jq -cn --arg c "$c" '{tool_name: "Bash", tool_input: {command: $c}}')
+odd=0
+for ((i = 0; i < ${FRS_TEST_REPEAT:-300}; i++)); do
+	printf '%s' "$in" | "${pin[@]}" "$GUARD" >"$T/out" 2>"$T/err"
+	r=$?
+	if [[ $r != 0 || -s $T/err || $(jq -r '.hookSpecificOutput.permissionDecision' <"$T/out" 2>/dev/null) != ask ]]; then
+		odd=$((odd + 1))
+		[[ $odd == 1 ]] && echo "       erste Abweichung: rc=$r stderr=$(head -c 120 "$T/err")"
+	fi
+done
+check "\"$c\" ${FRS_TEST_REPEAT:-300}-mal: jedes Mal Rückfrage, stderr leer" '[[ $odd == 0 ]]'
+trap - PIPE
+
+# ---------------------------------------------------------------------------
 echo "Verwaltete Einstellungen ($SETTINGS):"
 check "gültiges JSON" 'jq -e . "$SETTINGS" >/dev/null'
 check "der Hook gilt für jedes Werkzeug und ruft das Sperr-Skript unter seinem Pfad in der ISO auf" '[[ $(jq -r ".hooks.PreToolUse[] | select(.matcher == \"*\") | .hooks[0] | .type + \" \" + .command" "$SETTINGS") == "command /usr/local/bin/frs-claude-guard" ]]'
