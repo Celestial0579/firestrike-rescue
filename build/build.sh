@@ -106,10 +106,13 @@ bootstrap() {
 # ---------------------------------------------------------------------------
 configure() {
 	log "Kopiere Overlay und Assistent"
-	cp -a "$SRC/build/overlay/." "$CHROOT/"
+	# Alles, was ins System kommt, gehört root. Die Dateien im Arbeitsbaum gehören dem Benutzer
+	# der CI. Mit ihrem Eigentümer kopiert, könnte ein Benutzer mit derselben Nummer im System die
+	# Werkzeuge ändern, die root und lf-claude per sudo starten.
+	cp -a --no-preserve=ownership "$SRC/build/overlay/." "$CHROOT/"
 	install -d "$CHROOT/usr/local/lib/lf" "$CHROOT/usr/local/share/lf"
-	cp -a "$SRC/rescue/lib/." "$CHROOT/usr/local/lib/lf/"
-	cp -a "$SRC/rescue/theme" "$CHROOT/usr/local/share/lf/"
+	cp -a --no-preserve=ownership "$SRC/rescue/lib/." "$CHROOT/usr/local/lib/lf/"
+	cp -a --no-preserve=ownership "$SRC/rescue/theme" "$CHROOT/usr/local/share/lf/"
 	install -m 0755 "$SRC/rescue/lf" "$CHROOT/usr/local/bin/lf"
 	for f in "$SRC"/rescue/bin/*; do
 		install -m 0755 "$f" "$CHROOT/usr/local/bin/$(basename "$f")"

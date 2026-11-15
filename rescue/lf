@@ -9,7 +9,7 @@ set -u
 
 LF_LIB="${LF_LIB:-/usr/local/lib/lf}"
 [[ -d $LF_LIB ]] || LF_LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib"
-for f in common disks safety casefile target recover clone resize persist claude claude-check tools; do
+for f in common disks safety casefile target recover clone p2v resize persist claude claude-check tools; do
 	# shellcheck disable=SC1090
 	. "$LF_LIB/$f.sh"
 done
@@ -72,6 +72,8 @@ selftest() {
 	selftest_loop_rw "$dir" || ok=0
 	selftest_claude "$dir" || ok=0
 	selftest_claude_user "$dir" || ok=0
+	selftest_p2v "$dir" || ok=0
+	selftest_owner || ok=0
 	# Werkzeuge vorhanden?
 	local t
 	for t in ddrescue partclone.ntfs partclone.extfs ntfsresize smartctl nvme sgdisk sfdisk cryptsetup dislocker \
@@ -362,6 +364,181 @@ selftest_tmux() {
 		echo "LF-SELFTEST: tmux: Argumente kamen verändert an oder wurden ausgeführt"
 		return 1
 	fi
+}
+
+# selftest_owner   Was root und lf-claude per sudo starten, und was diese Werkzeuge laden, gehört
+#   root und ist für niemanden sonst beschreibbar. Die Dateien im Arbeitsbaum der CI gehören
+#   dem Benutzer der CI. Mit ihrem Eigentümer kopiert, könnte ein Benutzer mit derselben Nummer
+#   sie ändern (build.sh kopiert mit --no-preserve=ownership).
+selftest_owner() {
+	local bad
+	bad=$(find /usr/local/lib/lf /usr/local/share/lf /usr/local/bin /etc/claude-code /etc/sudoers.d \
+		/etc/systemd/system /etc/udev/rules.d /etc/initramfs-tools /etc/ssh/sshd_config.d \
+		\( ! -user root -o -perm /022 \) ! -type l -print 2>/dev/null | head -n 5)
+	if [[ -n $bad ]]; then
+		echo "LF-SELFTEST: Eigentümer: nicht root oder für andere beschreibbar:"
+		sed 's/^/LF-SELFTEST:   /' <<<"$bad"
+		return 1
+	fi
+	echo "LF-SELFTEST: Eigentümer: Werkzeuge, Bibliotheken und Einstellungen gehören root"
+}
+
+# selftest_p2v   Umzug in eine VM gegen die Attrappe eines Proxmox-Knotens: ein eigener sshd auf
+#   127.0.0.1, qm, pvesm und pvesh als Skripte, qemu-nbd echt. Die Quelle ist ein Loop-Gerät mit
+#   GPT, einer ext4-Partition und einer ohne Dateisystem. Geprüft wird:
+#   - ohne den bestätigten Schlüssel des Knotens keine Verbindung (Gegenprobe: fremder Schlüssel),
+#   - eine leere oder falsche Eingabe bestätigt den Schlüssel nicht,
+#   - ein Name mit Shell-Zeichen legt keine VM an, die Beschreibung kommt als ein Argument an,
+#   - die Volumes der VM tragen danach dieselben Partitionen und Daten, die Quelle bleibt
+#     schreibgeschützt und unverändert, auf dem Knoten bleibt kein Socket-Ordner zurück.
+selftest_p2v() {
+	local dir=$1 k=$1/p2v-knoten good=1 src img loop t sum1 sum2 job status out
+	mkdir -p "$k/bin" "$k/images" "$k/vms" "$dir/p2v-inhalt"
+	ssh-keygen -q -t ed25519 -N '' -C attrappe -f "$k/hostkey"
+	ssh-keygen -q -t ed25519 -N '' -C attrappe -f "$k/client"
+	install -m 600 "$k/client.pub" "$k/authorized_keys"
+	cat >"$k/befehl" <<-EOF
+		#!/bin/bash
+		export PATH=$k/bin:\$PATH
+		exec bash -c -- "\$SSH_ORIGINAL_COMMAND"
+	EOF
+	cat >"$k/bin/qm" <<-EOF
+		#!/bin/bash
+		printf '%s|' qm "\$@" >>$k/aufrufe; echo >>$k/aufrufe
+		[[ \$1 == create ]] && touch $k/vms/\$2
+		exit 0
+	EOF
+	cat >"$k/bin/pvesm" <<-EOF
+		#!/bin/bash
+		printf '%s|' pvesm "\$@" >>$k/aufrufe; echo >>$k/aufrufe
+		case \$1 in
+		status) printf 'Name Type Status Total Used Available %%\nattrappe lvmthin active 104857600 0 104857600 0.00%%\nweg dir disabled 0 0 0 0.00%%\n' ;;
+		alloc) [[ -e $k/images/\$4 ]] && { echo "volume exists" >&2; exit 1; }
+			truncate -s "\$5" "$k/images/\$4"; echo "successfully created 'attrappe:\$4'" ;;
+		path) echo "$k/images/\${2#attrappe:}" ;;
+		esac
+	EOF
+	cat >"$k/bin/pvesh" <<-EOF
+		#!/bin/bash
+		case "\$2 \${3:-} \${4:-}" in
+		"/cluster/nextid --vmid "*) [[ -e $k/vms/\$4 ]] && { echo "VM \$4 already exists" >&2; exit 1; }; echo \$4 ;;
+		"/cluster/nextid "*) echo 100 ;;
+		/nodes/*) echo '[{"iface":"vmbr0","type":"bridge"},{"iface":"x;reboot","type":"bridge"}]' ;;
+		/cluster/sdn/*) echo '[]' ;;
+		esac
+	EOF
+	printf '#!/bin/sh\necho "pve-manager/9.0.0/attrappe"\n' >"$k/bin/pveversion"
+	chmod 755 "$k/befehl" "$k"/bin/*
+	cat >"$k/sshd_config" <<-EOF
+		ListenAddress 127.0.0.1:2222
+		HostKey $k/hostkey
+		AuthorizedKeysFile $k/authorized_keys
+		PasswordAuthentication no
+		KbdInteractiveAuthentication no
+		PermitRootLogin prohibit-password
+		UsePAM no
+		StrictModes no
+		AllowTcpForwarding no
+		AllowStreamLocalForwarding yes
+		PidFile $k/sshd.pid
+		ForceCommand $k/befehl
+	EOF
+	install -d -m 755 /run/sshd
+	if ! /usr/sbin/sshd -f "$k/sshd_config" -E "$k/sshd.log"; then
+		echo "LF-SELFTEST: P2V: sshd der Attrappe startet nicht"
+		return 1
+	fi
+
+	# Quelle: GPT, Partition 1 ext4 mit einer Datei, Partition 2 ohne Dateisystem
+	img="$dir/p2v-quelle.raw"
+	head -c 300000 /dev/urandom >"$dir/p2v-inhalt/probe.bin"
+	truncate -s 48M "$img"
+	sgdisk -n 1:2048:+24M -t 1:8300 -n 2:0:+8M -t 2:0700 "$img" >/dev/null
+	loop=$(losetup --find --show -P "$img")
+	udevadm settle
+	mkfs.ext4 -q -d "$dir/p2v-inhalt" "${loop}p1"
+	head -c $((8 * 1024 * 1024)) /dev/urandom >"${loop}p2"
+	sync
+	safety_set_ro "$loop"
+	sum1=$(sha256sum <"$loop")
+
+	P2V_HOST=127.0.0.1 P2V_PORT=2222 P2V_USER=root P2V_TEST_IDENTITY="$k/client"
+	P2V_NBD=() P2V_PIDS=() P2V_VOLS=() P2V_RDIR="" P2V_SSH=()
+	if ! p2v_hostkey_scan || [[ $P2V_FP != "$(ssh-keygen -l -E sha256 -f "$k/hostkey.pub" | awk '{print $2}')" ]]; then
+		echo "LF-SELFTEST: P2V: Schlüssel der Attrappe nicht oder falsch gelesen ($P2V_FP)"
+		good=0
+	fi
+	if p2v_hostkey_accept "" || p2v_hostkey_accept "XXXX" || [[ -e $P2V_DIR/known_hosts ]]; then
+		echo "LF-SELFTEST: P2V: leere oder falsche Eingabe bestätigte den Schlüssel"
+		good=0
+	fi
+	# Gegenprobe: In known_hosts steht ein anderer Schlüssel als der des Knotens.
+	echo "[127.0.0.1]:2222 $(cut -d' ' -f1,2 "$k/client.pub")" >"$P2V_DIR/known_hosts"
+	if p2v_login; then
+		echo "LF-SELFTEST: P2V: Anmeldung trotz fremdem Schlüssel"
+		good=0
+	else
+		echo "LF-SELFTEST: P2V: mit fremdem Schlüssel keine Verbindung (Gegenprobe)"
+	fi
+	p2v_logout
+	if ! p2v_hostkey_scan || ! p2v_hostkey_accept "${P2V_FP: -4}" || ! p2v_login; then
+		echo "LF-SELFTEST: P2V: Anmeldung an der Attrappe fehlgeschlagen. sshd:"
+		tail -n 5 "$k/sshd.log" | sed 's/^/LF-SELFTEST:   /'
+		good=0
+	fi
+	out=$(p2v_storages)
+	[[ $out == "attrappe lvmthin 100" ]] || { echo "LF-SELFTEST: P2V: Speicherliste falsch: $out"; good=0; }
+	out=$(p2v_bridges)
+	[[ $out == vmbr0 ]] || { echo "LF-SELFTEST: P2V: Bridges: ungeprüfter Name übernommen: $out"; good=0; }
+
+	P2V_STOR=attrappe P2V_STYP=lvmthin P2V_VMID=100 P2V_BRIDGE=vmbr0 P2V_VLAN=""
+	P2V_MEM=1024 P2V_CORES=1 P2V_CPU=x86-64-v2-AES P2V_OSTYPE=l26 P2V_FIRMWARE=uefi P2V_TPM=0
+	P2V_SRC=("$loop") P2V_SYS=""
+	P2V_NAME="x;touch $dir/MARKE-p2v"
+	if p2v_create || [[ -e $k/aufrufe && $(cat "$k/aufrufe") == *"qm|create"* ]] || [[ -e $dir/MARKE-p2v ]]; then
+		echo "LF-SELFTEST: P2V: Name mit Shell-Zeichen legte eine VM an"
+		good=0
+	fi
+	P2V_NAME=p2v-selbsttest
+	if p2v_create && grep -q '^qm|create|100|--name|p2v-selbsttest|.*--description|P2V vom [^|]* mit Leuchtfeuer [^|]*|$' "$k/aufrufe" &&
+		grep -q '^qm|set|100|--sata0|attrappe:vm-100-disk-0,discard=on,ssd=1|$' "$k/aufrufe"; then
+		echo "LF-SELFTEST: P2V: VM und Volume auf der Attrappe angelegt, Argumente unverändert"
+	else
+		echo "LF-SELFTEST: P2V: VM nicht wie erwartet angelegt:"
+		sed 's/^/LF-SELFTEST:   /' "$k/aufrufe" | tail -n 6
+		good=0
+	fi
+	job="$P2V_DIR/kopie.sh" status="$P2V_DIR/kopie-status"
+	rm -f "$status"
+	if p2v_attach && p2v_job "$job" "$status"; then
+		[[ $(stat -c %a "$P2V_DIR") == 700 ]] || { echo "LF-SELFTEST: P2V: $P2V_DIR ist für andere offen"; good=0; }
+		bash "$job" </dev/null >/dev/null 2>&1
+	fi
+	p2v_detach
+	if [[ $(cat "$status" 2>/dev/null) != OK ]]; then
+		echo "LF-SELFTEST: P2V: Kopie fehlgeschlagen. Protokoll:"
+		tail -n 8 "$LF_LOG" | sed 's/^/LF-SELFTEST:   /'
+		good=0
+	fi
+	compgen -G "/run/lf-p2v.*" >/dev/null && { echo "LF-SELFTEST: P2V: Socket-Ordner auf dem Knoten blieb zurück"; good=0; }
+	p2v_logout
+	kill "$(cat "$k/sshd.pid")" 2>/dev/null
+
+	sum2=$(sha256sum <"$loop")
+	[[ $sum1 == "$sum2" && $(blockdev --getro "$loop") == 1 ]] || { echo "LF-SELFTEST: P2V: Quelle verändert oder nicht mehr schreibgeschützt"; good=0; }
+	t=$(losetup --find --show -P -r "$k/images/vm-100-disk-0")
+	udevadm settle
+	if [[ -b ${t}p1 ]] && debugfs -R "dump /probe.bin $dir/p2v-zurueck.bin" "${t}p1" >/dev/null 2>&1 &&
+		cmp -s "$dir/p2v-inhalt/probe.bin" "$dir/p2v-zurueck.bin" && cmp -s "${loop}p2" "${t}p2"; then
+		echo "LF-SELFTEST: P2V: Partitionen und Daten im Volume stimmen mit der Quelle überein"
+	else
+		echo "LF-SELFTEST: P2V: Volume weicht von der Quelle ab ($(lsblk -no NAME,SIZE,FSTYPE "$t" 2>/dev/null | tr '\n' ' '))"
+		good=0
+	fi
+	losetup -d "$t" "$loop"
+	selftest_loop_free "$img"
+	rm -rf "$k" "$img" "$dir/p2v-inhalt" "$dir/p2v-zurueck.bin"
+	((good))
 }
 
 # Ein Loop-Gerät, das schreibgeschützt war und wiederverwendet wird, bindet image_attach
@@ -989,6 +1166,7 @@ main_menu() {
 			rescue "Datenrettung von defekter Disk (Image auf Ziel-Disk)" \
 			clone "Disk klonen (z. B. HDD -> SSD, passt Größe an)" \
 			resize "Disk anpassen (Partitionen, GPT, sicher löschen)" \
+			p2v "Umzug in eine Proxmox-VM (P2V, über das Netz)" \
 			resume "Unterbrochene Rettung fortsetzen / Image weiterverwenden" \
 			claude "Claude fragen (CLI)" \
 			desktop "Claude Desktop (grafisch)" \
@@ -1002,6 +1180,7 @@ main_menu() {
 		rescue) recover_wizard ;;
 		clone) clone_wizard ;;
 		resize) resize_wizard ;;
+		p2v) p2v_wizard ;;
 		resume) recover_resume ;;
 		claude) claude_start ;;
 		desktop) claude_desktop ;;
