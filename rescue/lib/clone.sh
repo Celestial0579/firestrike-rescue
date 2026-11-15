@@ -77,8 +77,9 @@ clone_from_device() {
 	if [[ -z $pt ]]; then
 		# Keine Partitionstabelle: ganzes Gerät 1:1
 		((tsize >= ssize)) || { die "Quelle ohne Partitionstabelle und Ziel ist kleiner. Das geht nicht."; return 0; }
-		safety_confirm_target "$tid" "Ziel wird mit dem Inhalt von $sdev überschrieben." || return 0
-		tmux_run "frs-klon" bash -c "sudo dd if='$sdev' of='$tdev' bs=4M iflag=fullblock conv=fsync status=progress; echo; read -r -p 'Fertig. Enter … ' _"
+		safety_confirm_target "$tid" "Ziel wird mit dem Inhalt von $sdev überschrieben." "$tdev" || return 0
+		# Die Pfade sind eigene Argumente, nie Teil des Befehlstexts.
+		tmux_run "frs-klon" bash -c 'sudo dd if="$1" of="$2" bs=4M iflag=fullblock conv=fsync status=progress; echo; read -r -p "Fertig. Enter … " _' _ "$sdev" "$tdev"
 		return 0
 	fi
 
@@ -90,7 +91,7 @@ clone_from_device() {
 		both "Nein, beide bleiben im Rechner (neue IDs, sonst Konflikte)") || return 0
 
 	ui_text "Klon-Plan" "Quelle: $slabel\nZiel:   $(disk_label "$(disk_info "$tid")")\n\n$CLONE_SUMMARY"
-	safety_confirm_target "$tid" "Ziel wird komplett überschrieben (Klon von $sdev)." || return 0
+	safety_confirm_target "$tid" "Ziel wird komplett überschrieben (Klon von $sdev)." "$tdev" || return 0
 	safety_release "$tdev" || { die "Partitionen auf $tdev sind in Benutzung."; return 0; }
 
 	clone_write_table "$tdev" "$keep" || return 0
@@ -274,11 +275,28 @@ clone_write_table() {
 }
 
 # Kopiert alle Partitionen. Läuft als erzeugtes Skript in tmux, damit man zusehen kann.
+# clone_ident GERÄT   Fingerabdruck einer Disk: Seriennummer, WWN und Größe, als Hashwert.
+# Der Klon-Job läuft lange und öffnet Quelle und Ziel für jede Partition neu. /dev/sdX ist nur
+# ein Name: Nach einem Reset am USB-Hub kann er zu einer anderen Disk gehören. Der Job prüft
+# deshalb vor jedem Schritt, dass hinter beiden Namen noch die Disks vom Start stehen. Im Job
+# steht nur der Hashwert. Die Angaben selbst stammen vom Gerät und kommen dort nicht hinein.
+clone_ident() {
+	local id
+	id=$(lsblk -dnb -o SERIAL,WWN,SIZE "$1" 2>/dev/null)
+	[[ -n ${id// /} ]] || return 1
+	printf '%s' "$id" | sha256sum | cut -c1-64
+}
+
 clone_copy() {
-	local sdev=$1 tdev=$2 n=${#CLONE_PARTS[@]} i job status
+	local sdev=$1 tdev=$2 n=${#CLONE_PARTS[@]} i job status shash thash
 	job="$FRS_RUN/clone-job.sh"
 	status="$FRS_RUN/clone-status"
 	rm -f "$status" "$job"
+	if ! clone_path_ok "$sdev" || ! clone_path_ok "$tdev" || ! shash=$(clone_ident "$sdev") || ! thash=$(clone_ident "$tdev"); then
+		log "Klon-Job nicht erzeugt: Quelle $sdev oder Ziel $tdev ließ sich nicht feststellen"
+		die "Der Klon wird nicht gestartet: Quelle oder Ziel ist nicht mehr zu erkennen. Es wurde nichts kopiert."
+		return 1
+	fi
 	# Jeder Baustein wird geprüft, bevor der Job entsteht: Gerätepfade, Partitionsnummer und der
 	# Name des Dateisystems. Besteht einer die Prüfung nicht, gibt es keinen Job.
 	local token='^[A-Za-z0-9_.+-]*$'
@@ -299,12 +317,16 @@ clone_copy() {
 		echo "exec > >(tee -a '$FRS_LOG') 2>&1"
 		echo 'step() { printf "\n\033[1;33m==> %s\033[0m\n" "$*"; }'
 		echo 'fail() { echo "FEHLER: $*"; echo FAIL > '"'$status'"'; read -r -p "Enter … " _; exit 1; }'
+		echo 'ident() { local id; id=$(lsblk -dnb -o SERIAL,WWN,SIZE "$1" 2>/dev/null); [[ -n ${id// /} ]] || return 1; printf "%s" "$id" | sha256sum | cut -c1-64; }'
+		echo 'same() { [[ $(ident "$1") == "$2" ]] || fail "$1 ist nicht mehr die Disk vom Start des Klons (Gerätename neu vergeben oder Disk abgezogen). Es wird nicht weiter geschrieben."; }'
 		for ((i = 0; i < n; i++)); do
 			local num src dst fs
 			num=$(part_num "$(jq -r .node <<<"${CLONE_PARTS[i]}")")
 			src=$(jq -r .node <<<"${CLONE_PARTS[i]}")
 			dst=$(part_path "$tdev" "$num")
 			fs=${CLONE_FS[i]}
+			echo "same '$sdev' '$shash'"
+			echo "same '$tdev' '$thash'"
 			echo "step 'Partition $num ($fs): $src -> $dst'"
 			if ((i == CLONE_ELASTIC && CLONE_SHRINK)); then
 				clone_cmd_shrink "$src" "$dst" "$fs" "$((CLONE_NEW_SIZE[i] * CLONE_SS))"

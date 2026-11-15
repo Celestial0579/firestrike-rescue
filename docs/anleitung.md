@@ -13,7 +13,7 @@ Start
 
 Beim ersten Start mit freiem Platz auf dem Stick fragt der Assistent, ob er einen **persistenten Speicher** anlegen soll. Empfohlen sind 2 GiB mit Verschlüsselung. Dort liegen künftig Claude-Login, `~/.claude/CLAUDE.md`, `/etc/frs/frs.conf`, WLAN-Profile, SSH-Schlüssel und Protokolle. Bei jedem Start fragt der Assistent nach der Passphrase.
 
-Als Speicher gilt nur die Partition `FRS-DATA` auf dem Stick, von dem du gestartet hast. Eine gleichnamige Partition auf einer anderen Disk verwendet der Assistent nie, er weist nur auf sie hin. Einen unverschlüsselten Speicher bindet er erst nach einer Rückfrage ein. `/etc/frs/frs.conf` ist eine Liste von Einstellungen (`NAME=Wert`, eine pro Zeile) und wird nicht als Skript ausgeführt.
+Als Speicher gilt nur die Partition `FRS-DATA` auf dem Stick, von dem du gestartet hast. Eine gleichnamige Partition auf einer anderen Disk verwendet der Assistent nie, er weist nur auf sie hin. Einen unverschlüsselten Speicher bindet er erst nach einer Rückfrage ein. `/etc/frs/frs.conf` ist eine Liste von Einstellungen (`NAME=Wert`, eine pro Zeile) und wird nicht als Skript ausgeführt. Es gibt zwei: `FRS_TECHNIKER="Vorname Nachname"` steht im Rettungsbericht, `FRS_TARGET_FS=ext4` oder `exfat` ist die Vorauswahl beim Formatieren einer Ziel-Disk. Keine Einstellung schaltet einen Dienst ein, SSH startest du unter Werkzeuge.
 
 Datenrettung
 ------------
@@ -70,7 +70,9 @@ Claude
   - Jeden schreibenden Befehl (dd, mkfs, Partitionierer, fsck ohne `-n`, mount ohne `ro`, ddrescue und Ähnliches) musst du selbst bestätigen, jedes Mal. Die Rückfrage nennt den Grund. Die Prüfung liest den Text des Befehls und fragt im Zweifel einmal zu oft.
   - Claude Code läuft immer im Modus mit Rückfragen. Der Auto-Modus, in dem ein Klassifikator statt dir entscheidet, und der Modus ohne Rückfragen (`--dangerously-skip-permissions`) sind abgeschaltet.
   - Eine Rückfrage lässt sich nicht dauerhaft abschalten. Die Auswahl „nicht mehr fragen" gibt es im Rettungssystem nicht, und Erlaubnis-Regeln aus `~/.claude/settings.json`, aus einem Projektordner oder von der Kommandozeile (`--allowedTools`) gelten nicht. Befehle, die Claude Code selbst als nur lesend kennt (`ls`, `cat`, `grep`), laufen weiter ohne Rückfrage.
-  - Hooks gelten nur aus dem Rettungssystem. Eigene Hooks aus `~/.claude/settings.json` und Hooks aus einem Projektordner laufen nicht. Starte Claude trotzdem nicht in einem Ordner von einem fremden Datenträger: Eine `CLAUDE.md` dort liest Claude als Anweisung.
+  - Hooks, Skills, Agenten und MCP-Server gelten nur aus dem Rettungssystem. Eigene aus `~/.claude` und solche aus einem Projektordner laufen nicht.
+  - Eine `CLAUDE.md` unter `/mnt`, `/media` oder `/run/media` lädt Claude nicht. Dort hängen der Assistent und üblicherweise auch du fremde Datenträger ein.
+  - Starte Claude trotzdem nicht in einem Ordner von einem fremden Datenträger. Was dort in den Projekt-Einstellungen steht (Umgebungsvariablen, Hilfsprogramme), gilt, sobald du die Vertrauensabfrage von Claude Code bestätigst. Der Assistent startet Claude immer im eigenen Sitzungsverzeichnis.
 - Eigene Ergänzungen zu den Regeln kommen in `~/.claude/CLAUDE.md` (Werkzeuge > Persistenter Speicher).
 
 Fernzugriff

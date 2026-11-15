@@ -83,12 +83,19 @@ target_free() { df -B1 --output=avail "$FRS_TARGET_MNT" | tail -n1 | tr -d ' '; 
 
 # Ganze Disk neu einrichten: GPT, eine Partition, ext4 oder exFAT.
 target_format() {
-	local tid=$1 dev fs
+	local tid=$1 dev fs text="Welches Dateisystem soll das Ziel bekommen?" preset=()
 	dev=$(disk_resolve "$tid")
-	fs=$(ui_menu "Ziel formatieren" "Welches Dateisystem soll das Ziel bekommen?" -- \
+	# FRS_TARGET_FS aus der frs.conf wählt nur vor. Entschieden wird hier, und bestätigt danach.
+	case ${FRS_TARGET_FS:-} in
+	ext4 | exfat)
+		preset=(--default-item "$FRS_TARGET_FS")
+		text+="\nVorausgewählt ist $FRS_TARGET_FS (FRS_TARGET_FS in der frs.conf)."
+		;;
+	esac
+	fs=$(ui_menu "Ziel formatieren" "$text" "${preset[@]}" -- \
 		ext4 "Empfohlen. Schnell, große Dateien, Images können sparse sein." \
 		exfat "Auch unter Windows und macOS lesbar.") || return 1
-	safety_confirm_target "$tid" "Die GESAMTE Disk wird gelöscht und als $fs formatiert." || return 1
+	safety_confirm_target "$tid" "Die GESAMTE Disk wird gelöscht und als $fs formatiert." "$dev" || return 1
 	safety_release "$dev" || { die "Partitionen auf $dev sind noch in Benutzung."; return 1; }
 	ui_info "Ziel formatieren" "Formatiere $dev als $fs …"
 	run sudo wipefs -a "$dev" &&

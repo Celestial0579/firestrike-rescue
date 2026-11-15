@@ -37,13 +37,15 @@ Diese Schutzregeln gelten immer:
 
 - Quell-Disks werden sofort auf Kernelebene schreibgeschützt.
 - Ziele werden über die Seriennummer bestätigt. Du gibst die letzten 4 Zeichen ein, nicht `/dev/sdX`. Meldet eine Disk keine Seriennummer, nimmt der Assistent stattdessen die WWN. Fehlt auch die, verlangt er Gerätename und Größe. Eine leere Eingabe bestätigt nie.
-- Fremde Disks werden nie automatisch eingehängt. Auch Swap, RAID und LVM werden nicht automatisch aktiviert.
+- Eine Kennung zählt nur, wenn sie eindeutig ist. Melden zwei angeschlossene Disks dieselbe Seriennummer (baugleiche USB-Adapter tun das oft), stehen beide unter ihrem Gerätenamen und werden über Gerätename und Größe bestätigt.
+- Bestätigt wird genau das Gerät, auf das danach geschrieben wird. Ändert sich sein Name, solange der Dialog offen ist, bricht der Schritt ab. Der Klon prüft vor jeder Partition, dass Quelle und Ziel noch dieselben Disks sind.
+- Fremde Disks werden nie automatisch eingehängt, auch nicht beim Booten: Das Live-System wird nur auf dem Stick gesucht. Swap, RAID und LVM werden nicht automatisch aktiviert.
 - Reparaturen laufen nur auf einer Kopie des Images.
 - Von welcher Disk gelesen wird, bestimmst du. Beim Fortsetzen wählst du die Quelle neu. Die Falldatei auf der Ziel-Disk kann deiner Wahl nur widersprechen.
 - Ein Ziel wird ohne Geräte-, Setuid- und Programmrechte eingehängt (`nodev,nosuid,noexec`). Verknüpfungen darauf werden nicht verfolgt (`nosymfollow`). Für Partitionen aus einem Image gilt dasselbe, und sie sind nur lesend eingehängt.
 - Namen von Datenträgern bleiben Namen. Fallordner werden nur mit Namen aus Buchstaben, Ziffern, Punkt, Unterstrich und Bindestrich angeboten, und kein Menüeintrag wird als Option gelesen. Label und Partitionsnamen der Quelle kommen nur geprüft in den Klon-Job.
-- Texte von Datenträgern sind auch für Claude Daten, keine Anweisungen. Was die Geräte melden, steht in einer Datendatei (`zustand.txt`), nicht in einer `CLAUDE.md`.
-- Was ein Datenträger über sich meldet (Modell, Label, Partitionsname), steht in Dialogen nur gefiltert: sichtbare Zeichen, alles andere als `?`. Eine Seriennummer mit anderen Zeichen gilt nicht als Kennung.
+- Texte von Datenträgern sind auch für Claude Daten, keine Anweisungen. Was die Geräte melden, steht in einer Datendatei (`zustand.txt`), nicht in einer `CLAUDE.md`. Eine `CLAUDE.md`, Hooks, Skills oder ein MCP-Server von einem eingehängten Datenträger gelten nicht.
+- Was ein Datenträger über sich meldet (Modell, Label, Partitionsname), steht in Dialogen nur gefiltert: sichtbare Zeichen, alles andere als `?`. Eine Seriennummer mit anderen Zeichen gilt nicht als Kennung. Auch die Ausgabe von Werkzeugen wie fsck erreicht Bildschirm und Protokoll ohne Steuerzeichen.
 - Die Suche nach Rettungsfällen schreibt nicht. Die gewählte Disk ist dabei schreibgeschützt und nur lesend eingehängt, bis du einen Rettungsfall gewählt hast.
 - Der persistente Speicher ist nur die Partition `FRS-DATA` auf dem Stick, von dem gestartet wurde. Unverschlüsselt wird er erst nach einer Rückfrage eingebunden, und `frs.conf` wird gelesen, nicht ausgeführt.
 - Für Claude sind die wichtigsten Regeln gesperrt statt nur aufgeschrieben. Den Schreibschutz einer Disk aufheben, die Sperre anfassen oder das Original-Image reparieren kann Claude nicht. Jeden schreibenden Befehl bestätigst du selbst, und keine Rückfrage lässt sich dauerhaft abschalten. Auto-Modus und Modus ohne Rückfragen gibt es nicht.
@@ -80,7 +82,7 @@ Die ISO landet in `out/`.
 | `build/grub/` | Bootmenü und Theme |
 | `rescue/frs` | Assistent, Bibliotheken in `rescue/lib/` |
 | `rescue/claude/CLAUDE.md` | Regeln für Claude im Rettungssystem |
-| `rescue/claude/managed-settings.json`, `rescue/bin/frs-claude-guard` | Sperre für Claude: Was die Regeln verbieten, lehnt ein Hook ab. Kein Auto-Modus, Hooks und Erlaubnis-Regeln nur aus dem Rettungssystem |
+| `rescue/claude/managed-settings.json`, `rescue/bin/frs-claude-guard` | Sperre für Claude: Was die Regeln verbieten, lehnt ein Hook ab. Kein Auto-Modus. Hooks, Erlaubnis-Regeln, Skills, Agenten und MCP-Server nur aus dem Rettungssystem, keine `CLAUDE.md` von einem Einhängepunkt |
 | `tests/qemu-smoke.sh` | Boot-Tests (UEFI, BIOS, Selbsttest mit simulierter defekter Disk) |
 
 Design

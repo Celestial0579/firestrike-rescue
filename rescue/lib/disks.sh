@@ -39,6 +39,12 @@ boot_disk() {
 #     sie wird die Disk wiedergefunden. Sie gelten deshalb nur, wenn sie aus einem engen
 #     Zeichenvorrat bestehen, demselben wie in der Falldatei. Sonst gilt die Disk als eine ohne
 #     Seriennummer bzw. ohne WWN und wird über das nächste Merkmal erkannt (disk_id).
+#   - Eine Kennung gilt nur, wenn sie unter den angeschlossenen Disks eindeutig ist. Baugleiche
+#     USB-Adapter melden oft dieselbe feste Seriennummer, und ein präpariertes Gerät meldet, was
+#     es will, auch die WWN einer anderen Disk. Kommt eine Kennung mehrfach vor (als
+#     Seriennummer oder als WWN, gleich bei welcher Disk), verlieren alle beteiligten Disks sie
+#     und tragen "dup": true. Sie werden dann über das nächste Merkmal geführt und, wenn keines
+#     bleibt, über Gerätename und Größe bestätigt.
 disks_json() {
 	local bd
 	bd=$(boot_disk 2>/dev/null || true)
@@ -46,13 +52,18 @@ disks_json() {
 		jq -c --arg bd "$bd" --arg re "$TEXT_UNSAFE_RE" '
 			def trim: gsub("^\\s+|\\s+$"; "");
 			def id_or_empty: if test("^[A-Za-z0-9][A-Za-z0-9 #+.:=@_/%?,-]{0,199}$") then . else "" end;
-			.blockdevices[]
-			| select(.type == "disk")
-			| select(.name | test("^(loop|ram|zram|sr|dm-|md)") | not)
-			| select(.path != $bd)
-			| .model = ((.model // "") | trim | gsub($re; "?") | .[0:40])
-			| .serial = ((.serial // "") | trim | id_or_empty)
-			| .wwn = ((.wwn // "") | trim | id_or_empty | if . == "" then null else . end)'
+			[.blockdevices[]
+			 | select(.type == "disk")
+			 | select(.name | test("^(loop|ram|zram|sr|dm-|md)") | not)
+			 | select(.path != $bd)
+			 | .model = ((.model // "") | trim | gsub($re; "?") | .[0:40])
+			 | .serial = ((.serial // "") | trim | id_or_empty)
+			 | .wwn = ((.wwn // "") | trim | id_or_empty | if . == "" then null else . end)]
+			| ([.[] | .serial, (.wwn // "")] | map(select(. != ""))) as $ids
+			| def often($v): [$ids[] | select(. == $v)] | length;
+			  map((if .serial != "" and often(.serial) > 1 then .serial = "" | .dup = true else . end)
+			      | (if .wwn != null and often(.wwn) > 1 then .wwn = null | .dup = true else . end))
+			| .[]'
 }
 
 # Eindeutige, stabile Kennung einer Disk: Seriennummer, sonst WWN, sonst Pfad.
@@ -61,15 +72,18 @@ disk_id() {
 	jq -r 'if (.serial // "") != "" then .serial elif (.wwn // "") != "" then .wwn else .path end' <<<"$j"
 }
 
-# Kennung -> aktueller Gerätepfad (/dev/sdX kann sich nach Reset/Neustecken ändern).
-disk_resolve() {
-	local id=$1
-	disks_json | jq -r --arg id "$id" 'select(.serial == $id or .wwn == $id or .path == $id) | .path' | head -n1
-}
-
+# Kennung -> Angaben zur Disk. Nur bei genau einem Treffer: Passt die Kennung auf mehrere Disks
+# oder ist sie leer, gibt es keine Antwort. Welche von mehreren gemeint ist, rät der Assistent nie.
 disk_info() {
 	local id=$1
-	disks_json | jq -c --arg id "$id" 'select(.serial == $id or .wwn == $id or .path == $id)' | head -n1
+	[[ -n $id ]] || return 0
+	disks_json | jq -sc --arg id "$id" '[.[] | select(.serial == $id or .wwn == $id or .path == $id)]
+		| if length == 1 then .[0] else empty end'
+}
+
+# Kennung -> aktueller Gerätepfad (/dev/sdX kann sich nach Reset/Neustecken ändern).
+disk_resolve() {
+	disk_info "$1" | jq -r '.path'
 }
 
 # Eine Zeile zur Disk: Pfad · Modell · Größe · SN Seriennummer · Bus.
@@ -79,7 +93,7 @@ disk_label() {
 	printf '%s · %s · %s · SN %s · %s' "$(jq -r .path <<<"$j")" \
 		"$(jq -r 'if (.model // "") == "" then "?" else .model end' <<<"$j")" \
 		"$(human "$(jq -r .size <<<"$j")")" \
-		"$(jq -r 'if (.serial // "") == "" then "–" else .serial end' <<<"$j")" \
+		"$(jq -r 'if (.serial // "") != "" then .serial elif .dup then "nicht eindeutig" else "–" end' <<<"$j")" \
 		"$(jq -r '.tran // "?"' <<<"$j")"
 }
 
@@ -143,8 +157,9 @@ disks_overview() {
 		IFS='|' read -r st reason <<<"$(disk_smart "$dev")"
 		[[ $st == WARN || $st == DEFEKT ]] && DISKS_ANY_BAD=1
 		printf '%-9s %-8s %-28.28s %-10s %-20.20s %s\n' "$(basename "$dev")" "[$st]" \
-			"$(jq -r '.model // "?"' <<<"$j")" "$(human "$(jq -r .size <<<"$j")")" \
-			"$(jq -r '.serial // "–"' <<<"$j")" "$(jq -r '.tran // "?"' <<<"$j")"
+			"$(jq -r 'if (.model // "") == "" then "?" else .model end' <<<"$j")" "$(human "$(jq -r .size <<<"$j")")" \
+			"$(jq -r 'if (.serial // "") != "" then .serial elif .dup then "nicht eindeutig" else "–" end' <<<"$j")" \
+			"$(jq -r '.tran // "?"' <<<"$j")"
 		[[ -n $reason ]] && printf '          %s\n' "${reason//;/, }"
 	done < <(disks_json)
 }
@@ -153,17 +168,19 @@ disks_overview() {
 disk_pick() {
 	local title=$1 text=$2
 	shift 2
-	local exclude=("$@") items=() j id dev st skip x
+	local exclude=("$@") items=() j id dev st skip x dup=0
 	while IFS= read -r j; do
 		[[ -z $j ]] && continue
 		id=$(disk_id "$j")
 		skip=0
 		for x in "${exclude[@]}"; do [[ $x == "$id" ]] && skip=1; done
 		((skip)) && continue
+		[[ $(jq -r '.dup // false' <<<"$j") == true ]] && dup=1
 		dev=$(jq -r .path <<<"$j")
 		st=$(disk_smart "$dev" | cut -d'|' -f1)
-		items+=("$id" "$(printf '%-8s %-8s %-26.26s %s' "$(basename "$dev")" "[$st]" "$(jq -r '.model // "?"' <<<"$j")" "$(human "$(jq -r .size <<<"$j")")")")
+		items+=("$id" "$(printf '%-8s %-8s %-26.26s %s' "$(basename "$dev")" "[$st]" "$(jq -r 'if (.model // "") == "" then "?" else .model end' <<<"$j")" "$(human "$(jq -r .size <<<"$j")")")")
 	done < <(disks_json)
+	((dup)) && text+="\n\nHinweis: Mehrere Disks melden dieselbe Seriennummer. Sie stehen hier unter ihrem Gerätenamen und werden über Gerätename und Größe bestätigt."
 	if ((${#items[@]} == 0)); then
 		ui_msg "$title" "Keine passende Disk gefunden.\n\nIst die Disk angeschlossen und eingeschaltet? USB-Adapter brauchen manchmal ein paar Sekunden."
 		return 1

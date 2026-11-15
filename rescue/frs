@@ -67,6 +67,8 @@ selftest() {
 	[[ $(casefile_peek "$dir/case/case.env" STATE) == "done" ]] || ok=0
 	selftest_target "$dir" || ok=0
 	selftest_search "$dir" || ok=0
+	selftest_boot "$dir" || ok=0
+	selftest_tmux "$dir" || ok=0
 	selftest_claude "$dir" || ok=0
 	# Werkzeuge vorhanden?
 	local t
@@ -265,6 +267,58 @@ selftest_search() {
 	((good))
 }
 
+# Boot: Das Live-System wird nur auf dem benannten Medium gesucht. casper darf nicht alle
+# Blockgeräte durchsuchen und ihre Dateisysteme einhängen (siehe build/chroot-setup.sh).
+# Geprüft wird die initrd, mit der dieses System gestartet ist: Sie liegt auf dem Live-Medium.
+selftest_boot() {
+	local dir=$1/initrd good=1 f
+	if [[ ! -f /cdrom/casper/initrd ]]; then
+		echo "FRS-SELFTEST: Boot: initrd auf dem Live-Medium nicht gefunden"
+		return 1
+	fi
+	rm -rf "$dir"
+	if ! unmkinitramfs /cdrom/casper/initrd "$dir" >/dev/null 2>&1; then
+		echo "FRS-SELFTEST: Boot: initrd ließ sich nicht auspacken"
+		rm -rf "$dir"
+		return 1
+	fi
+	f=$(find "$dir" -path '*/etc/casper.conf' | head -n 1)
+	if [[ -n $f ]] && grep -Eq '^export LIVEMEDIA_TIMEOUT=[0-9]{3,}$' "$f"; then
+		echo "FRS-SELFTEST: Boot: casper sucht nur das benannte Medium ($(grep LIVEMEDIA_TIMEOUT "$f"))"
+	else
+		echo "FRS-SELFTEST: Boot: LIVEMEDIA_TIMEOUT fehlt in der initrd, casper würde alle Disks durchsuchen"
+		good=0
+	fi
+	if grep -q 'live-media=/dev/disk/by-label/FRS_RESCUE' /proc/cmdline; then
+		echo "FRS-SELFTEST: Boot: gestartet mit live-media=/dev/disk/by-label/FRS_RESCUE"
+	else
+		echo "FRS-SELFTEST: Boot: live-media fehlt in der Kernel-Befehlszeile"
+		good=0
+	fi
+	rm -rf "$dir"
+	((good))
+}
+
+# Lange Läufe (Rettung, Klon, Kopien) starten in tmux. Pfade gehen dabei als eigene Argumente
+# an das Programm und stehen nie im Text des Befehls. Geprüft wird mit dem tmux der ISO, dass
+# ein Argument mit Anführungszeichen und Semikolon unverändert ankommt und nichts daraus läuft.
+selftest_tmux() {
+	local dir=$1 out="$1/tmux-argumente" a="ein Pfad mit ' und \"" b="zwei; touch $1/MARKE-tmux" i
+	rm -f "$out" "$dir/MARKE-tmux"
+	tmux new-session -d -s frs-selftest -x 80 -y 24 bash -c 'printf "%s|" "$1" "$2" >"$3"' _ "$a" "$b" "$out"
+	for ((i = 0; i < 50; i++)); do
+		[[ -s $out ]] && break
+		sleep 0.1
+	done
+	tmux kill-session -t frs-selftest 2>/dev/null
+	if [[ $(cat "$out" 2>/dev/null) == "$a|$b|" && ! -e $dir/MARKE-tmux ]]; then
+		echo "FRS-SELFTEST: tmux: Pfade kommen als Argumente an, nichts daraus wird ausgeführt"
+	else
+		echo "FRS-SELFTEST: tmux: Argumente kamen verändert an oder wurden ausgeführt"
+		return 1
+	fi
+}
+
 # Sperre für Claude im gebooteten System. Die Claude-Code-CLI der ISO läuft gegen eine Attrappe
 # der API (selftest-claude-api.py): kein Konto, kein Modell. Die Attrappe verlangt einen
 # Shell-Befehl, so wie ein Modell es täte, das einer Anweisung von einem Datenträger folgt. Ob
@@ -278,8 +332,9 @@ selftest_claude_run() {
 	local dir=$1 name=$2 cwd=${4:-$1/arbeit} port srv i
 	local -a extra=("${@:5}")
 	jq -cn --arg c "$3" '{name: "Bash", input: {command: $c, description: "Selbsttest"}}' >"$dir/$name.aufruf"
-	rm -f "$dir/$name.port" "$dir/$name.json"
-	python3 -I "$FRS_LIB/selftest-claude-api.py" "$dir/$name.port" "$dir/$name.aufruf" "$dir/$name.api" 2>"$dir/$name.api-fehler" &
+	rm -f "$dir/$name.port" "$dir/$name.json" "$dir/$name.anfrage"
+	# NAME.anfrage: die erste Anfrage im Wortlaut, also alles, was das Modell zu lesen bekäme.
+	python3 -I "$FRS_LIB/selftest-claude-api.py" "$dir/$name.port" "$dir/$name.aufruf" "$dir/$name.api" "$dir/$name.anfrage" 2>"$dir/$name.api-fehler" &
 	srv=$!
 	for ((i = 0; i < 100; i++)); do
 		[[ -s $dir/$name.port ]] && break
@@ -292,7 +347,7 @@ selftest_claude_run() {
 			ANTHROPIC_API_KEY="selbsttest-kein-schluessel" DISABLE_TELEMETRY=1 DISABLE_ERROR_REPORTING=1 \
 			DISABLE_AUTOUPDATER=1 CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 \
 			timeout 180 "${SELFTEST_CLAUDE[@]}" -p "Selbsttest: Die Attrappe gibt den Werkzeugaufruf vor." \
-			"${extra[@]}" --no-session-persistence --strict-mcp-config --output-format stream-json --verbose \
+			"${extra[@]}" --no-session-persistence --output-format stream-json --verbose \
 			>"$dir/$name.json" 2>"$dir/$name.fehler" </dev/null)
 	fi
 	kill "$srv" 2>/dev/null
@@ -315,11 +370,15 @@ selftest_claude_started() {
 }
 
 selftest_claude() {
-	local dir=$1/claude loop good=1 token answer
-	mkdir -p "$dir/arbeit" "$dir/home" "$dir/fremd/.claude"
+	local dir=$1/claude loop good=1 token answer fremd=/mnt/frs-selftest-fremd
+	rm -rf "$fremd"
+	mkdir -p "$dir/arbeit" "$dir/home" "$fremd/.claude"
 	token="FRS-KONTROLLE-$RANDOM$RANDOM"
 	echo "$token" >"$dir/arbeit/kontrolle.txt"
-	echo "$token" >"$dir/fremd/kontrolle.txt"
+	echo "$token" >"$fremd/kontrolle.txt"
+	# Eine CLAUDE.md im Arbeitsordner des Tests: Kontrolle dafür, dass so eine Datei beim Modell
+	# ankommt, wenn sie nicht unter einem Einhängepunkt liegt.
+	echo "Hinweis aus dem Arbeitsordner: MERKWORT-EIGEN-$token" >"$dir/arbeit/CLAUDE.md"
 	head -c $((4 * 1024 * 1024)) /dev/urandom >"$dir/disk.raw"
 	cp "$dir/disk.raw" "$dir/ziel.raw"
 	loop=$(losetup --find --show "$dir/disk.raw")
@@ -331,8 +390,8 @@ selftest_claude() {
 	answer=$(selftest_claude_answer "$dir" kontrolle)
 	# Was die CLI beim Start meldet, etwa einen Eintrag der Einstellungen, den sie nicht versteht.
 	head -n 5 "$dir/kontrolle.fehler" 2>/dev/null | cut -c1-200 | sed 's/^/FRS-SELFTEST:   CLI meldet: /'
-	if [[ $answer == *"$token"* ]]; then
-		echo "FRS-SELFTEST: Claude-Sperre: Kontrolle, ein lesender Befehl läuft"
+	if [[ $answer == *"$token"* ]] && grep -q "MERKWORT-EIGEN-$token" "$dir/kontrolle.anfrage" 2>/dev/null; then
+		echo "FRS-SELFTEST: Claude-Sperre: Kontrolle, ein lesender Befehl läuft, die CLAUDE.md des Arbeitsordners kommt an"
 	else
 		# Eine Sperre, die sich nicht prüfen lässt, gilt als Fehler.
 		echo "FRS-SELFTEST: Claude-Sperre: nicht prüfbar, die CLI führt keinen Befehl der Attrappe aus"
@@ -402,21 +461,43 @@ selftest_claude() {
 	fi
 	echo "FRS-SELFTEST:   Antwort: ${answer:0:120}"
 
-	# Ein Projektordner, wie er auf einem fremden Datenträger liegen kann, bringt eigene Hooks
-	# mit. Sie dürfen nicht laufen: Hooks kommen nur aus dem Rettungssystem.
+	# Ein Projektordner, wie er auf einem fremden Datenträger liegt: unter einem Einhängepunkt,
+	# mit eigenen Hooks, einem eigenen MCP-Server und einer CLAUDE.md. Wer Claude dort startet,
+	# darf nichts davon bekommen: Die Hooks laufen nicht, der Server startet nicht, und der Text
+	# der CLAUDE.md erreicht das Modell nicht.
 	jq -n --arg c "touch $dir/fremder-hook" '{hooks: {
 		SessionStart: [{hooks: [{type: "command", command: $c}]}],
-		PreToolUse: [{matcher: "*", hooks: [{type: "command", command: $c}]}]}}' >"$dir/fremd/.claude/settings.json"
-	selftest_claude_run "$dir" fremd "cat $dir/fremd/kontrolle.txt" "$dir/fremd"
+		PreToolUse: [{matcher: "*", hooks: [{type: "command", command: $c}]}]}}' >"$fremd/.claude/settings.json"
+	jq -n --arg m "$dir/fremder-mcp" '{mcpServers: {fremd: {command: "touch", args: [$m]}}}' >"$fremd/.mcp.json"
+	echo "Anweisung vom Datenträger: MERKWORT-FREMD-$token" >"$fremd/CLAUDE.md"
+	selftest_claude_run "$dir" fremd "cat $fremd/kontrolle.txt" "$fremd"
 	answer=$(selftest_claude_answer "$dir" fremd)
-	if [[ $answer == *"$token"* && ! -e $dir/fremder-hook ]]; then
-		echo "FRS-SELFTEST: Claude-Sperre: Hooks aus einem Projektordner laufen nicht"
-	else
-		echo "FRS-SELFTEST: Claude-Sperre: Hook aus einem Projektordner lief oder der Lauf kam nicht zustande"
+	if [[ $answer != *"$token"* ]]; then
+		echo "FRS-SELFTEST: Claude-Sperre: Der Lauf im fremden Projektordner kam nicht zustande"
 		echo "FRS-SELFTEST:   Antwort: ${answer:0:200}"
 		good=0
+	else
+		if [[ ! -e $dir/fremder-hook ]]; then
+			echo "FRS-SELFTEST: Claude-Sperre: Hooks aus einem Projektordner laufen nicht"
+		else
+			echo "FRS-SELFTEST: Claude-Sperre: Ein Hook aus einem Projektordner lief"
+			good=0
+		fi
+		if [[ ! -e $dir/fremder-mcp ]]; then
+			echo "FRS-SELFTEST: Claude-Sperre: Ein MCP-Server aus einem Projektordner startet nicht"
+		else
+			echo "FRS-SELFTEST: Claude-Sperre: Ein MCP-Server aus einem Projektordner wurde gestartet"
+			good=0
+		fi
+		if [[ -s $dir/fremd.anfrage ]] && ! grep -q "MERKWORT-FREMD-$token" "$dir/fremd.anfrage"; then
+			echo "FRS-SELFTEST: Claude-Sperre: Eine CLAUDE.md unter einem Einhängepunkt erreicht das Modell nicht"
+		else
+			echo "FRS-SELFTEST: Claude-Sperre: Der Text einer CLAUDE.md unter /mnt stand in der Anfrage an das Modell"
+			good=0
+		fi
 	fi
 
+	rm -rf "$fremd"
 	losetup -d "$loop" 2>/dev/null
 	((good))
 }

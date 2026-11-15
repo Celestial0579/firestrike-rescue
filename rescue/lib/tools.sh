@@ -56,7 +56,7 @@ tools_mem() {
 	free=$(awk '/MemAvailable/ {print int($2/1024)}' /proc/meminfo)
 	mb=$(ui_input "memtester" "Wie viele MB testen? (verfügbar: $free MB)\nFür einen gründlichen Test besser memtest86+ aus dem Bootmenü." "$((free * 7 / 10))") || return 0
 	[[ $mb =~ ^[0-9]+$ ]] || return 0
-	tmux_run "frs-memtest" bash -c "sudo memtester ${mb}M 1; read -r -p 'Fertig. Enter … ' _"
+	tmux_run "frs-memtest" bash -c 'sudo memtester "$1"M 1; read -r -p "Fertig. Enter … " _' _ "$mb"
 }
 
 tools_ssh() {

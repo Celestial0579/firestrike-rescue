@@ -15,6 +15,12 @@
   "disableAutoMode": "disable",
   "allowManagedPermissionRulesOnly": true,
   "allowManagedHooksOnly": true,
+  "strictPluginOnlyCustomization": true,
+  "claudeMdExcludes": [
+    "/mnt/**",
+    "/media/**",
+    "/run/media/**"
+  ],
   "hooks": {
     "PreToolUse": [
       {

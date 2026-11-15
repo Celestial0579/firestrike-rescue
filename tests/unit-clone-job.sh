@@ -51,6 +51,16 @@ sudo() {
 	return 0
 }
 
+# lsblk meldet Seriennummer, WWN und Größe einer Disk (Fingerabdruck für den Klon-Job).
+IDENT_SRC="S5Y1NJ0R123456 0x5002538f12345678 500107862016"
+IDENT_DST="WD-WX12A34B5C6D 0x50014ee2b1234567 1000204886016"
+lsblk() {
+	case "${*: -1}" in
+	/dev/sda) printf '%s\n' "$IDENT_SRC" ;;
+	/dev/sdb) printf '%s\n' "$IDENT_DST" ;;
+	esac
+}
+
 GOOD_UUID="0f0f0f0f-1111-2222-3333-444444444444"
 
 # swap_line   Erzeugt die Zeile des Jobs für eine Swap-Partition und führt sie so aus, wie der
@@ -123,6 +133,46 @@ job
 check "Job erzeugt und gestartet" '[[ -n $JOB && $STARTED == "frs-klon sudo $FRS_RUN/clone-job.sh" ]]'
 check "der Job ist gültiges Shell-Skript" 'bash -n "$FRS_RUN/clone-job.sh"'
 check "jede Partition hat ihre Zeile" '[[ $JOB == *"partclone.vfat -b -s '"'"'/dev/sda1'"'"' -o '"'"'/dev/sdb1'"'"'"* && $JOB == *"partclone.extfs -b -s '"'"'/dev/sda2'"'"'"* && $JOB == *"mkswap -U $GOOD_UUID -L '"'"'swap'"'"' '"'"'/dev/sdb3'"'"'"* && $JOB == *"dd if='"'"'/dev/sda4'"'"' of='"'"'/dev/sdb4'"'"'"* ]]'
+
+echo "Der Klon-Job prüft vor jedem Schritt, dass Quelle und Ziel noch dieselben Disks sind:"
+hex='[0-9a-f]{64}'
+check "vor jeder der vier Partitionen stehen beide Prüfungen" '[[ $(grep -cE "^same ./dev/sda. .$hex.\$" <<<"$JOB") == 4 && $(grep -cE "^same ./dev/sdb. .$hex.\$" <<<"$JOB") == 4 ]]'
+check "die Prüfung steht vor dem Schritt, nicht danach" '[[ $(grep -nE "^(same|step) " <<<"$JOB" | head -n 3 | cut -d: -f2 | cut -d" " -f1 | tr "\n" " ") == "same same step " ]]'
+check "im Job steht nur der Hashwert, keine Angabe des Geräts" '[[ $JOB != *S5Y1NJ0R123456* && $JOB != *WD-WX12A34B5C6D* && $JOB != *0x5002538f12345678* ]]'
+# guard GERÄT   Führt die Prüfung des Jobs für GERÄT so aus, wie der Job es täte. lsblk meldet
+# dabei, was in IDENT_SRC und IDENT_DST steht. Ergebnis: GUARD ("JOB-LAEUFT" oder die Meldung).
+guard() {
+	local line
+	line=$(grep -E "^same '$1' " <<<"$JOB" | head -n 1)
+	GUARD=$(SRC=$IDENT_SRC DST=$IDENT_DST bash -c "lsblk() { case \"\${*: -1}\" in /dev/sda) printf '%s\n' \"\$SRC\" ;; /dev/sdb) printf '%s\n' \"\$DST\" ;; esac; }
+		read() { :; }
+		$(grep -E '^(fail|ident|same)\(\) ' <<<"$JOB")
+		$line
+		echo JOB-LAEUFT" 2>&1)
+}
+guard /dev/sdb
+check "unverändert: der Job läuft weiter" '[[ $GUARD == JOB-LAEUFT ]]'
+keep=$IDENT_DST
+IDENT_DST=$IDENT_SRC
+guard /dev/sdb
+check "hinter dem Namen des Ziels steht jetzt die Quelle: Abbruch vor dem Schreiben" '[[ $GUARD == *FEHLER*"nicht mehr die Disk vom Start"* && $GUARD != *JOB-LAEUFT* ]]'
+IDENT_DST=""
+guard /dev/sdb
+check "das Ziel ist verschwunden: Abbruch" '[[ $GUARD == *FEHLER* && $GUARD != *JOB-LAEUFT* ]]'
+IDENT_DST="WD-WX12A34B5C6D 0x50014ee2b1234567 2000398934016"
+guard /dev/sdb
+check "gleiche Seriennummer, andere Größe: Abbruch" '[[ $GUARD == *FEHLER* && $GUARD != *JOB-LAEUFT* ]]'
+IDENT_DST=$keep
+keep=$IDENT_SRC
+IDENT_SRC="\x27;touch MARKE;\x27 - 500107862016"
+IDENT_SRC=$(printf '%b' "$IDENT_SRC")
+job
+check "präparierte Seriennummer der Quelle: Job gültig, die Angabe steht nicht darin" '[[ -n $JOB && $JOB != *MARKE* ]] && bash -n "$FRS_RUN/clone-job.sh"'
+IDENT_SRC=""
+job
+check "die Quelle ist nicht mehr zu erkennen: kein Job, nichts gestartet" '[[ $RC != 0 && -z $JOB && -z $STARTED && $DIE_MSG == *"nicht mehr zu erkennen"* ]]'
+IDENT_SRC=$keep
+job
 
 echo "Klon-Job mit präpariertem Swap-Label:"
 SWAP_LABEL="';touch MARKE;'"

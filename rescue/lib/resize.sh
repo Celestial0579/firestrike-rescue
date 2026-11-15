@@ -44,7 +44,7 @@ resize_part() {
 	safety_release "$dev" || { die "Partitionen auf $dev sind eingehängt/in Benutzung."; return 0; }
 
 	if [[ $mode == grow ]]; then
-		safety_confirm_target "$tid" "$part wird bis zum nächsten belegten Bereich vergrößert." || return 0
+		safety_confirm_target "$tid" "$part wird bis zum nächsten belegten Bereich vergrößert." "$dev" || return 0
 		clear
 		echo "Vergrößere $part …"
 		[[ $(sudo sfdisk --dump "$dev" | grep -c '^label: gpt') == 1 ]] && runv sudo sgdisk -e "$dev"
@@ -81,12 +81,23 @@ resize_part() {
 	local bytes=$((want * 1073741824))
 	((bytes > min + min / 20)) || { ui_msg "Zu klein" "$want GiB ist kleiner als das Minimum + 5 % Reserve."; return 0; }
 	((bytes < cur)) || { ui_msg "Zu groß" "$want GiB ist nicht kleiner als die aktuelle Größe."; return 0; }
-	safety_confirm_target "$tid" "$part wird auf $want GiB verkleinert." || return 0
+	safety_confirm_target "$tid" "$part wird auf $want GiB verkleinert." "$dev" || return 0
 	clear
 	echo "Verkleinere Dateisystem auf $part …"
 	case $fs in
-	ntfs) yes y | runv sudo ntfsresize --force -s "$((bytes - 1048576))" "$part" || { pause; return 0; } ;;
-	*) runv sudo e2fsck -fy "$part"; runv sudo resize2fs "$part" "$(((bytes - 1048576) / 1024))K" || { pause; return 0; } ;;
+	ntfs) yes y | runv sudo ntfsresize --force -s "$((bytes - 1048576))" "$part" || { echo "Das Dateisystem ließ sich nicht verkleinern. Die Partition bleibt, wie sie ist."; pause; return 0; } ;;
+	*)
+		# e2fsck: 0 = sauber, 1 und 2 = Fehler behoben, ab 4 bleiben Fehler stehen. Dann wird
+		# nichts verkleinert.
+		local frc=0
+		runv sudo e2fsck -fy "$part" || frc=$?
+		if ((frc >= 4)); then
+			echo "Die Prüfung des Dateisystems ist gescheitert (e2fsck: $frc). Es wurde nichts verkleinert."
+			pause
+			return 0
+		fi
+		runv sudo resize2fs "$part" "$(((bytes - 1048576) / 1024))K" || { echo "Das Dateisystem ließ sich nicht verkleinern. Die Partition bleibt, wie sie ist."; pause; return 0; }
+		;;
 	esac
 	echo "Verkleinere Partition …"
 	echo ", ${want}GiB" | runv sudo sfdisk --no-reread -N "$num" "$dev"
@@ -110,14 +121,16 @@ resize_gptfix() {
 	case $a in
 	end)
 		safety_check_target "$tid" || return 0
-		safety_confirm_target "$tid" "Backup-GPT wird ans Ende verschoben." || return 0
+		safety_confirm_target "$tid" "Backup-GPT wird ans Ende verschoben." "$dev" || return 0
 		runv sudo sgdisk -e "$dev"
 		pause
 		;;
 	primary)
 		safety_check_target "$tid" || return 0
-		safety_confirm_target "$tid" "Die primäre GPT wird in gdisk aus der Backup-GPT wiederhergestellt." || return 0
+		safety_confirm_target "$tid" "Die primäre GPT wird in gdisk aus der Backup-GPT wiederhergestellt." "$dev" || return 0
 		ui_msg "gdisk" "gdisk startet jetzt interaktiv.\n\nTastenfolge: r (Recovery) > c (load backup partition table) > v (prüfen) > w (schreiben).\nMit q beendest du ohne zu speichern."
+		# Der Hinweis stand offen auf dem Bildschirm: Die Disk muss noch dieselbe sein.
+		safety_still "$tid" "$dev" || { die "Der Gerätename der Disk hat sich geändert. Es wurde nichts geändert."; return 0; }
 		sudo gdisk "$dev"
 		;;
 	esac
@@ -129,7 +142,7 @@ resize_mbr2gpt() {
 	safety_check_target "$tid" || return 0
 	dev=$(disk_resolve "$tid")
 	ui_yesno "MBR -> GPT" "Achtung:\n - Windows startet danach nur noch per UEFI und braucht eine EFI-Partition. Für Windows besser mbr2gpt.exe in Windows/WinRE verwenden.\n - Für Linux ggf. eine BIOS-Boot-Partition (1 MiB) bzw. EFI-Partition nötig.\n\nFortfahren?" --defaultno || return 0
-	safety_confirm_target "$tid" "Partitionstabelle wird von MBR in GPT umgewandelt." || return 0
+	safety_confirm_target "$tid" "Partitionstabelle wird von MBR in GPT umgewandelt." "$dev" || return 0
 	safety_release "$dev" || return 0
 	clear
 	runv sudo sgdisk -g "$dev"
@@ -152,8 +165,10 @@ resize_erase() {
 	items+=(zero "Mit Nullen überschreiben (langsam, funktioniert immer)")
 	local m
 	m=$(ui_menu "Sicher löschen" "$(disk_label "$j")" -- "${items[@]}") || return 0
-	safety_confirm_target "$tid" "ALLE DATEN auf dieser Disk werden unwiderruflich gelöscht." || return 0
+	safety_confirm_target "$tid" "ALLE DATEN auf dieser Disk werden unwiderruflich gelöscht." "$dev" || return 0
 	ui_yesno "Letzte Warnung" "Wirklich $(disk_label "$j") löschen?\n\nDas kann nicht rückgängig gemacht werden." --defaultno || return 0
+	# Die letzte Warnung stand offen auf dem Bildschirm: Die Disk muss noch dieselbe sein.
+	safety_still "$tid" "$dev" || { die "Der Gerätename der Disk hat sich geändert. Es wurde nichts gelöscht."; return 0; }
 	safety_release "$dev" || return 0
 	clear
 	case $m in
