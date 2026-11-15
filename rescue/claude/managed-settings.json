@@ -8,7 +8,10 @@
       "Bash(*frs-claude-guard*)",
       "Edit(//etc/claude-code/**)",
       "Edit(//usr/local/bin/frs-claude-guard)",
-      "Edit(//run/frs/readonly)"
+      "Edit(//run/frs/readonly)",
+      "Bash(*frs-freigabe*)",
+      "Bash(*sudoers*)",
+      "Edit(//etc/sudoers.d/**)"
     ],
     "disableBypassPermissionsMode": "disable"
   },
@@ -35,5 +38,9 @@
         ]
       }
     ]
+  },
+  "statusLine": {
+    "type": "command",
+    "command": "/usr/local/bin/frs-freigabe zeile"
   }
 }

@@ -183,13 +183,18 @@ persist_bind() {
 }
 
 # persist_bind_claude   Das Home von Claude ($CLAUDE_HOME) kommt vom Speicher (claude-home).
-#   Beim ersten Mal wird ~/.claude des Live-Benutzers übernommen: Login und eigene CLAUDE.md aus
-#   der Zeit, als Claude als Live-Benutzer lief. Die aktualisierte CLI lädt Claude neu.
+#   Beim ersten Mal werden ~/.claude, ~/.config/Claude und der Schlüsselbund des Live-Benutzers
+#   übernommen: Login (CLI und Desktop) und eigene CLAUDE.md aus der Zeit, als Claude als
+#   Live-Benutzer lief. Die aktualisierte CLI lädt Claude neu.
 persist_bind_claude() {
-	local h=$FRS_PERSIST/claude-home
+	local h=$FRS_PERSIST/claude-home d
 	if ! sudo test -d "$h"; then
 		run sudo install -d -m 700 "$h"
-		[[ -d $FRS_PERSIST/home/.claude ]] && run sudo cp -a "$FRS_PERSIST/home/.claude" "$h/.claude"
+		for d in .claude .config/Claude .local/share/keyrings; do
+			[[ -d $FRS_PERSIST/home/$d ]] || continue
+			run sudo install -d "$h/$(dirname "$d")"
+			run sudo cp -a "$FRS_PERSIST/home/$d" "$h/$d"
+		done
 		# -h: Verknüpfungen selbst umschreiben, nie ihr Ziel.
 		run sudo chown -R -h "$CLAUDE_USER:$CLAUDE_USER" "$h"
 	fi

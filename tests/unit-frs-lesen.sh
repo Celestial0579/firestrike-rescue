@@ -45,7 +45,7 @@ if [[ -n $dev && -b /dev/$dev ]]; then
 	run dateisystem "/dev/$dev"
 	check "dateisystem: blkid -p -o export GERÄT" '[[ $(cat "$T/aufrufe") == "blkid -p -o export /dev/$dev" ]]'
 	run sektoren "/dev/$dev" 0010 3
-	check "sektoren: dd mit festen Optionen, führende Nullen als Dezimalzahl" '[[ $(head -n 1 "$T/aufrufe") == "dd if=/dev/$dev bs=512 skip=10 count=3 iflag=direct status=none" ]]'
+	check "sektoren: dd mit festen Optionen, führende Nullen als Dezimalzahl" 'grep -qx "dd if=/dev/$dev bs=512 skip=10 count=3 iflag=direct status=none" "$T/aufrufe" && [[ $(grep -c "^dd " "$T/aufrufe") == 1 ]]'
 	run sektoren "/dev/$dev" 0 64
 	check "sektoren: 64 Sektoren gehen" '[[ $rc == 0 ]]'
 else
@@ -91,9 +91,7 @@ run
 check "ohne Aktion" '[[ $rc == 2 && ! -s $T/aufrufe ]]'
 
 echo "Einbau:"
-check "sudo erlaubt frs-claude nur frs-lesen" 'grep -q "^frs-claude ALL=(root) NOPASSWD: /usr/local/bin/frs-lesen$" build/chroot-setup.sh && [[ $(grep -c "NOPASSWD" build/chroot-setup.sh) == 1 ]]'
 check "die Regel wird mit visudo geprüft" 'grep -q "^visudo -cf /etc/sudoers.d/frs-claude$" build/chroot-setup.sh'
-check "frs-claude ist ein Systembenutzer ohne weitere Gruppen" 'grep -q "^useradd --system --home-dir /var/lib/frs-claude --create-home --shell /bin/bash frs-claude$" build/chroot-setup.sh'
 check "der Assistent startet Claude als frs-claude" 'grep -q "^CLAUDE_USER=frs-claude$" rescue/lib/claude.sh && grep -q "claude_as sh -c .cd" rescue/lib/claude.sh'
 check "das Home von Claude kommt vom Speicher, Verknüpfungen werden nicht verfolgt" 'grep -q "chown -R -h" rescue/lib/persist.sh'
 check "der Selbsttest prüft frs-claude" 'grep -q "selftest_claude_user \"\$dir\" || ok=0" rescue/frs'

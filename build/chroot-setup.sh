@@ -63,15 +63,18 @@ cat >>/etc/bash.bashrc <<'EOF'
 claude() { /usr/local/bin/claude "$@"; }
 EOF
 
-log "Benutzer für Claude: frs-claude, als root nur frs-lesen"
+log "Benutzer für Claude: frs-claude, als root nur die frs-Werkzeuge"
 # Claude läuft nicht als Live-Benutzer (sudo ohne Passwort), sondern als eigener Benutzer ohne
-# Zugriff auf Blockgeräte, ohne Passwort und in keiner Gruppe außer seiner eigenen. Als root darf
-# er nur das lesende frs-lesen starten. Schreibendes geht nur über den Assistenten.
-useradd --system --home-dir /var/lib/frs-claude --create-home --shell /bin/bash frs-claude
+# Zugriff auf Blockgeräte und ohne Passwort. Gruppen: die eigene und render (GPU für Claude
+# Desktop, keine Bildschirm- oder Eingabegeräte). Als root darf er nur die frs-Werkzeuge starten:
+# frs-lesen (Diagnose) und frs-aufgabe (Rettungsaufgaben, nur auf das bestätigte Ziel).
+# Volles sudo gibt es nur zeitlich begrenzt, wenn der Techniker es freischaltet (frs-freigabe).
+getent group render >/dev/null || groupadd --system render
+useradd --system --home-dir /var/lib/frs-claude --create-home --shell /bin/bash --groups render frs-claude
 chmod 700 /var/lib/frs-claude
 cat >/etc/sudoers.d/frs-claude <<'EOF'
-# Firestrike Rescue: Claude (frs-claude) darf als root nur frs-lesen starten.
-frs-claude ALL=(root) NOPASSWD: /usr/local/bin/frs-lesen
+# Firestrike Rescue: Claude (frs-claude) darf als root nur die frs-Werkzeuge starten.
+frs-claude ALL=(root) NOPASSWD: /usr/local/bin/frs-lesen, /usr/local/bin/frs-aufgabe
 EOF
 chmod 0440 /etc/sudoers.d/frs-claude
 visudo -cf /etc/sudoers.d/frs-claude
