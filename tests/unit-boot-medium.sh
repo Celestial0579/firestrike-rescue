@@ -55,7 +55,8 @@ scene() {
 	rm -rf "$R"
 	mkdir -p "$R/conf" "$R/run" "$R/sys/class/block" "$R/sys/devices" "$R/dev"
 	printf 'FRS_ISO_UUID=%s\nFRS_SQUASHFS_SHA256=%s\n' "$UUID" "$SUM" >"$R/conf/frs-medium.conf"
-	: >"$R/uuid-geraete" >"$R/aufrufe"
+	: >"$R/uuid-geraete"
+	: >"$R/aufrufe"
 }
 # device NAME [DISK] SQUASHFS [WEITERE-DATEI]   Ein Gerät mit der UUID der ISO. DISK: Es ist eine
 # Partition dieser Disk. SQUASHFS: Datei, die als casper/filesystem.squashfs dort liegt.
