@@ -1,0 +1,21 @@
+#!/bin/bash
+# Firestrike Rescue: claude startet nur mit den Einstellungen des Rettungssystems und des Benutzers.
+#
+# Claude Code liest sonst auch die Projekt-Einstellungen des Ordners, in dem es startet
+# (.claude/settings.json, .claude/settings.local.json, CLAUDE.md). Liegt der Ordner auf einem
+# fremden Datenträger, könnte er nach der Vertrauensabfrage Umgebungsvariablen setzen
+# (etwa ANTHROPIC_BASE_URL) oder ein Hilfsprogramm starten lassen (apiKeyHelper). Mit
+# --setting-sources user lädt Claude Code keine Projekt-Einstellungen. Die verwalteten
+# Einstellungen (/etc/claude-code) gelten weiter, das prüft der Selbsttest der ISO.
+#
+# Die CLI selbst liegt in /usr/local/lib/frs/claude-cli (aus der ISO) oder, aktualisiert, in
+# ~/.local/bin/claude auf dem persistenten Speicher. Beide stehen nicht vor diesem Skript im PATH.
+set -u
+cli=/usr/local/lib/frs/claude-cli
+[[ -x ${HOME:-}/.local/bin/claude ]] && cli=$HOME/.local/bin/claude
+for a in "$@"; do
+	[[ $a == --setting-sources* ]] || continue
+	echo "claude: --setting-sources ist im Rettungssystem fest auf \"user\" gesetzt." >&2
+	exit 2
+done
+exec "$cli" --setting-sources user "$@"
