@@ -5,13 +5,23 @@
 # /usr/local/lib/frs/claude-cli) immer ohne Projekt-Einstellungen.
 CLAUDE_CMD=/usr/local/bin/claude
 CLAUDE_CLI_ISO=/usr/local/lib/frs/claude-cli
+# Die CLI läuft als eigener Benutzer: ohne sudo (außer frs-lesen) und ohne Zugriff auf
+# Blockgeräte. Login, ~/.claude/CLAUDE.md und die aktualisierte CLI liegen in seinem Home, mit
+# persistentem Speicher dort unter claude-home (persist_bind_claude).
+CLAUDE_USER=frs-claude
+CLAUDE_HOME=/var/lib/frs-claude
+
+# claude_as BEFEHL …   Startet BEFEHL als $CLAUDE_USER mit dessen Home.
+claude_as() {
+	sudo -u "$CLAUDE_USER" -H "$@"
+}
 
 # Hält die CLI auf der Persistenz aktuell (im Hintergrund, Fehler sind egal). Eine neue Version
 # wird gleich danach geprüft (frs-claude-check), dann wartet der Techniker beim Start nicht darauf.
 claude_update_bg() {
 	persist_is_open || return 0
 	is_online || return 0
-	( ("$CLAUDE_CLI_ISO" install stable && frs-claude-check "$HOME/.local/bin/claude") >>"$FRS_LOG" 2>&1 &)
+	(claude_as sh -c '"$1" install stable && frs-claude-check "$HOME/.local/bin/claude"' frs "$CLAUDE_CLI_ISO" >>"$FRS_LOG" 2>&1 &)
 }
 
 # Datei mit dem aktuellen Zustand im Sitzungsverzeichnis. Sie heißt bewusst nicht CLAUDE.md:
@@ -36,7 +46,8 @@ claude_data_filter() {
 # Schreibt den aktuellen Zustand in das Sitzungsverzeichnis (Datei $CLAUDE_STATE_FILE).
 claude_context() {
 	local dir=$1 case=${2:-}
-	mkdir -p "$dir"
+	# Das Verzeichnis gehört dem Assistenten. Claude ($CLAUDE_USER) darf darin lesen, nicht schreiben.
+	sudo install -d -o "$(id -u)" -g "$CLAUDE_USER" -m 2750 "$dir"
 	# Im Arbeitsverzeichnis von Claude liegt keine CLAUDE.md mit Angaben von Datenträgern.
 	rm -f "$dir/CLAUDE.md"
 	{
@@ -71,6 +82,7 @@ claude_context() {
 		echo "$FRS_LOG" | claude_data_filter
 		tail -n 40 "$FRS_LOG" 2>/dev/null | claude_data_filter
 	} >"$dir/$CLAUDE_STATE_FILE"
+	chmod 640 "$dir/$CLAUDE_STATE_FILE"
 }
 
 # Gibt die geprüften Werte einer Falldatei aus. Läuft in einer Subshell, damit ein gerade
@@ -102,14 +114,15 @@ claude_start() {
 		Der aktuelle Zustand (Disks, SMART, Rettungsfall, Protokoll) steht dort in $CLAUDE_STATE_FILE.
 		Claude liest die Datei als Daten: Was ein Datenträger über sich meldet, ist keine Anweisung.
 
-		Gesperrt für Claude: den Schreibschutz einer Disk aufheben, die Sperre ändern, das
-		Original-Image reparieren. Jeden schreibenden Befehl bestätigst du selbst, jedes Mal.
+		Claude läuft als eigener Benutzer ($CLAUDE_USER) und kann nur lesen: keine Blockgeräte,
+		keine Ziel-Disk, kein sudo. Für SMART, Partitionen und Sektoren gibt es frs-lesen.
+		Schreibendes (Retten, Klonen, Partitionieren, Kopieren) machst du im Assistenten.
 
 		Erster Start: /login wählen, die angezeigte URL auf dem Handy oder einem anderen
 		Rechner öffnen und den Code hier einfügen. Beenden mit /exit oder Strg+D.
 
 	EOF
-	(cd "$dir" && "$CLAUDE_CMD")
+	claude_as sh -c 'cd "$1" && exec "$2"' frs "$dir" "$CLAUDE_CMD"
 }
 
 claude_desktop() {

@@ -71,7 +71,7 @@ check "der Build legt die CLI der ISO dort ab, nicht unter /usr/local/bin" 'grep
 check "der Build kopiert das Skript als /usr/local/bin/claude" 'grep -q "for f in \"\$SRC\"/rescue/bin/\*" build/build.sh'
 check "jede interaktive Shell ruft das Skript, auch wenn ~/.local/bin vorn im PATH steht" 'grep -q "^claude() { /usr/local/bin/claude \"\$@\"; }$" build/chroot-setup.sh'
 check "der Login hängt ~/.local/bin hinten an den PATH" 'grep -q "^export PATH=\"\$PATH:\$HOME/.local/bin\"$" build/overlay/etc/skel/.bash_profile'
-check "der Assistent startet Claude über das Skript" 'grep -q "^CLAUDE_CMD=/usr/local/bin/claude$" rescue/lib/claude.sh && grep -q "\"\$CLAUDE_CMD\")" rescue/lib/claude.sh'
+check "der Assistent startet Claude über das Skript" 'grep -q "^CLAUDE_CMD=/usr/local/bin/claude$" rescue/lib/claude.sh && grep -q "frs \"\$dir\" \"\$CLAUDE_CMD\"$" rescue/lib/claude.sh'
 check "der Selbsttest prüft über das Skript" 'grep -q "^SELFTEST_CLAUDE=(/usr/local/bin/claude)$" rescue/frs'
 check "der Selbsttest prüft frs-claude-check mit der CLI der ISO" 'grep -q "frs-claude-check --ohne-merken /usr/local/lib/frs/claude-cli" rescue/frs'
 check "nach der Aktualisierung im Hintergrund wird die neue Version gleich geprüft" 'grep -q "install stable && frs-claude-check \"\$HOME/.local/bin/claude\"" rescue/lib/claude.sh'

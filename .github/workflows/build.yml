@@ -72,6 +72,7 @@ jobs:
           bash tests/dialog-disk-text.sh
           bash tests/unit-claude-guard.sh
           bash tests/unit-claude-wrapper.sh
+          bash tests/unit-frs-lesen.sh
           bash tests/unit-disk-identity.sh
           bash tests/unit-boot-config.sh
           bash tests/unit-boot-medium.sh

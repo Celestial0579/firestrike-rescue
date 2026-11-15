@@ -22,7 +22,8 @@ target_mount_optstring() {
 target_mount_raw() {
 	local part=$1 fs=$2 opts own
 	opts=$(target_mount_optstring)
-	own="uid=$(id -u),gid=$(id -g)"
+	# Dateien gehören dem Assistenten. umask=022: Andere Benutzer, auch Claude (frs-claude), lesen nur.
+	own="uid=$(id -u),gid=$(id -g),umask=022"
 	case $fs in
 	ntfs) run sudo mount -t ntfs3 -o "$opts,$own" "$part" "$FRS_TARGET_MNT" || target_mount_ntfs3g "$part" ;;
 	exfat) run sudo mount -o "$opts,$own" "$part" "$FRS_TARGET_MNT" ;;
@@ -33,7 +34,7 @@ target_mount_raw() {
 # Ersatzweg für NTFS, wenn der Kerneltreiber ntfs3 ablehnt. ntfs-3g (FUSE) kennt nosymfollow
 # nicht. Die Option setzt target_mount_secure danach am Einhängepunkt.
 target_mount_ntfs3g() {
-	run sudo ntfs-3g -o "nodev,nosuid,noexec,uid=$(id -u),gid=$(id -g)" "$1" "$FRS_TARGET_MNT"
+	run sudo ntfs-3g -o "nodev,nosuid,noexec,uid=$(id -u),gid=$(id -g),umask=022" "$1" "$FRS_TARGET_MNT"
 }
 
 # Gelten am Einhängepunkt des Ziels wirklich alle Schutzoptionen (mount_has_opts in common.sh)?

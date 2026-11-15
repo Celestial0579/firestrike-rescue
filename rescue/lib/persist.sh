@@ -148,6 +148,7 @@ persist_bind() {
 		mountpoint -q "$HOME/$d" || run sudo mount --bind "$FRS_PERSIST/home/$d" "$HOME/$d"
 	done
 	chmod 700 "$HOME/.ssh" 2>/dev/null || true
+	persist_bind_claude
 	# Eigene Konfiguration: /persist/config wird zu /etc/frs
 	sudo install -d /etc/frs
 	mountpoint -q /etc/frs || run sudo mount --bind "$FRS_PERSIST/config" /etc/frs
@@ -165,7 +166,8 @@ persist_bind() {
 		run sudo nmcli connection reload
 	fi
 	# Eigene CLAUDE.md anlegen, falls es noch keine gibt
-	[[ -f $HOME/.claude/CLAUDE.md ]] || cat >"$HOME/.claude/CLAUDE.md" <<-'EOF'
+	claude_as test -f "$CLAUDE_HOME/.claude/CLAUDE.md" ||
+		claude_as sh -c 'mkdir -p "$1" && cat >"$1/CLAUDE.md"' frs "$CLAUDE_HOME/.claude" <<-'EOF'
 		# Meine Ergänzungen für Claude im Rettungssystem
 
 		Diese Datei liegt auf dem persistenten Speicher des Sticks und wird zusätzlich zu
@@ -180,8 +182,23 @@ persist_bind() {
 	fi
 }
 
+# persist_bind_claude   Das Home von Claude ($CLAUDE_HOME) kommt vom Speicher (claude-home).
+#   Beim ersten Mal wird ~/.claude des Live-Benutzers übernommen: Login und eigene CLAUDE.md aus
+#   der Zeit, als Claude als Live-Benutzer lief. Die aktualisierte CLI lädt Claude neu.
+persist_bind_claude() {
+	local h=$FRS_PERSIST/claude-home
+	if ! sudo test -d "$h"; then
+		run sudo install -d -m 700 "$h"
+		[[ -d $FRS_PERSIST/home/.claude ]] && run sudo cp -a "$FRS_PERSIST/home/.claude" "$h/.claude"
+		# -h: Verknüpfungen selbst umschreiben, nie ihr Ziel.
+		run sudo chown -R -h "$CLAUDE_USER:$CLAUDE_USER" "$h"
+	fi
+	mountpoint -q "$CLAUDE_HOME" || run sudo mount --bind "$h" "$CLAUDE_HOME"
+}
+
 persist_close() {
 	local d
+	mountpoint -q "$CLAUDE_HOME" && run sudo umount "$CLAUDE_HOME"
 	for ((i = ${#PERSIST_HOME_DIRS[@]} - 1; i >= 0; i--)); do
 		d=${PERSIST_HOME_DIRS[i]}
 		mountpoint -q "$HOME/$d" && run sudo umount "$HOME/$d"
@@ -297,7 +314,7 @@ persist_menu() {
 	open) persist_open || ui_msg "Persistenz" "Kein persistenter Speicher gefunden oder nicht entsperrt." ;;
 	create) persist_create ;;
 	edit) persist_is_open && sudo nano /etc/frs/frs.conf ;;
-	claudemd) persist_is_open && nano "$HOME/.claude/CLAUDE.md" ;;
+	claudemd) persist_is_open && claude_as nano "$CLAUDE_HOME/.claude/CLAUDE.md" ;;
 	wifi)
 		persist_is_open || return 0
 		sudo install -d -m 700 /etc/frs/wifi

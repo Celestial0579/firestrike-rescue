@@ -63,6 +63,19 @@ cat >>/etc/bash.bashrc <<'EOF'
 claude() { /usr/local/bin/claude "$@"; }
 EOF
 
+log "Benutzer für Claude: frs-claude, als root nur frs-lesen"
+# Claude läuft nicht als Live-Benutzer (sudo ohne Passwort), sondern als eigener Benutzer ohne
+# Zugriff auf Blockgeräte, ohne Passwort und in keiner Gruppe außer seiner eigenen. Als root darf
+# er nur das lesende frs-lesen starten. Schreibendes geht nur über den Assistenten.
+useradd --system --home-dir /var/lib/frs-claude --create-home --shell /bin/bash frs-claude
+chmod 700 /var/lib/frs-claude
+cat >/etc/sudoers.d/frs-claude <<'EOF'
+# Firestrike Rescue: Claude (frs-claude) darf als root nur frs-lesen starten.
+frs-claude ALL=(root) NOPASSWD: /usr/local/bin/frs-lesen
+EOF
+chmod 0440 /etc/sudoers.d/frs-claude
+visudo -cf /etc/sudoers.d/frs-claude
+
 log "Live-Benutzer und Autologin"
 # casper legt den Benutzer beim Boot an (sudo ohne Passwort).
 #
