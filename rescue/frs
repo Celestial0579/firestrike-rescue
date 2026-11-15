@@ -787,10 +787,15 @@ selftest_claude_aufgabe() {
 	# der Rest. Die Domain liegt ganz in der Partition, das Abbild gleicht am Ende der Disk.
 	local nt=$dir/ntfs.raw dloop off size c2 bad
 	truncate -s 64M "$nt"
-	sgdisk -q -n 1:2048:+40M -t 1:0700 "$nt" >/dev/null
+	sgdisk -n 1:2048:+40M -t 1:0700 "$nt" >/dev/null 2>&1
 	dloop=$(losetup --find --show -P "$nt")
 	blockdev --setrw "$dloop"
-	for i in 1 2 3 4 5 6 7 8 9 10; do [[ -b ${dloop}p1 ]] && break; sleep 0.5; done
+	for i in 1 2 3 4 5 6 7 8 9 10; do
+		udevadm settle
+		[[ -b ${dloop}p1 ]] && break
+		sleep 0.5
+	done
+	[[ -b ${dloop}p1 ]] || echo "FRS-SELFTEST: frs-aufgabe: Testdisk für die Domain hat keine Partition ($(sgdisk -p "$nt" 2>&1 | tail -n 2 | tr '\n' ' '))"
 	blockdev --setrw "${dloop}p1" 2>/dev/null
 	mkfs.ntfs -Q -F "${dloop}p1" >/dev/null 2>&1
 	mkdir -p "$dir/ntfs-mnt"
