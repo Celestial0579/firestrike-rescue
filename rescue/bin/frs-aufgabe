@@ -18,7 +18,10 @@
 #   frs-aufgabe pruefen PFAD [ORDNER]   die Kopie per Prüfsumme gegen PFAD prüfen, Ergebnis aufs Ziel
 #   frs-aufgabe timeout GERÄT SEKUNDEN  kurze Timeouts für eine schreibgeschützte Quelle (3 bis 120)
 #   frs-aufgabe ablegen FALL DATEI      Textdatei aus dem Home von Claude in den Rettungsfall legen
-#   frs-aufgabe retten GERÄT            Rettungsfall auf dem Ziel anlegen, ddrescue im Hintergrund
+#   frs-aufgabe retten GERÄT [--domain PARTITION]
+#                                       Rettungsfall auf dem Ziel anlegen, ddrescue im Hintergrund.
+#                                       Mit --domain zuerst MFT und belegte Cluster dieser NTFS-Partition
+#   frs-aufgabe domain FALL PARTITION   Domain für einen Fall, der noch nicht über Phase 1 hinaus ist
 #   frs-aufgabe fortsetzen FALL GERÄT   unterbrochene Rettung im Hintergrund fortsetzen
 #   frs-aufgabe stand                   laufende Rettungen und letzte Aufgaben
 #   frs-aufgabe notiz TEXT              Eintrag ins Protokoll des Assistenten
@@ -112,6 +115,30 @@ claude_dir() {
 	printf '%s\n' "$FRS_TARGET_MNT/FRS/claude/$1"
 }
 
+# make_domain FALLORDNER DISK PARTITION   Domains aus der NTFS-Bitmap (#46): domain-mft.map
+#   (die MFT) und domain.map (belegte Cluster), bezogen auf die ganze Disk. Gelesen wird nur von
+#   der schreibgeschützten Quelle, mit ddru_ntfsbitmap in einem eigenen Arbeitsordner.
+make_domain() {
+	local c=$1 disk=$2 part=$3 off work rc
+	[[ $(disk_of "$part") == "$disk" && $part != "$disk" ]] || fail "$part ist keine Partition von $disk."
+	safety_is_ro "$disk" && safety_is_ro "$part" || fail "$disk ist nicht schreibgeschützt."
+	[[ $(blkid -p -o value -s TYPE "$part" 2>/dev/null) == ntfs ]] || fail "$part ist kein NTFS. Domains gibt es nur für NTFS."
+	command -v ddru_ntfsbitmap >/dev/null || fail "ddru_ntfsbitmap (ddrutility) ist in diesem Image nicht installiert."
+	off=$(($(cat "/sys/class/block/$(basename "$part")/start") * 512))
+	work=$(mktemp -d "$FRS_RUN/domain.XXXXXX") || fail "Arbeitsordner fehlt."
+	log "domain: $part (Offset $off) auf $disk für $c"
+	(cd "$work" && ddru_ntfsbitmap -i "$off" -m domain-mft.map "$disk" domain.map) >>"$AUFGABEN_LOG" 2>&1
+	rc=$?
+	if ((rc != 0)) || ! casefile_domain_ok "$work/domain.map" || ! casefile_domain_ok "$work/domain-mft.map"; then
+		rm -rf "${work:?}"
+		fail "ddru_ntfsbitmap hat keine gültige Domain erzeugt (rc=$rc). Protokoll: $AUFGABEN_LOG"
+	fi
+	install -m 0644 "$work/domain-mft.map" "$c/domain-mft.map" && install -m 0644 "$work/domain.map" "$c/domain.map" ||
+		{ rm -rf "${work:?}"; fail "Die Domain ließ sich nicht im Fall ablegen."; }
+	rm -rf "${work:?}"
+	echo "Domain angelegt: zuerst die MFT, dann die belegten Cluster von $part."
+}
+
 # start_rescue FALLORDNER QUELLE   frs-rescue-run im Hintergrund, als eigene systemd-Einheit.
 start_rescue() {
 	local unit
@@ -124,7 +151,7 @@ start_rescue() {
 	echo "Rettung läuft im Hintergrund ($unit). Stand: sudo frs-aufgabe stand"
 }
 
-[[ $# -ge 1 ]] || fail "Aktion fehlt (einhaengen, aushaengen, image, kopieren, pruefen, retten, fortsetzen, timeout, ablegen, stand, notiz)"
+[[ $# -ge 1 ]] || fail "Aktion fehlt (einhaengen, aushaengen, image, kopieren, pruefen, retten, domain, fortsetzen, timeout, ablegen, stand, notiz)"
 action=$1
 shift
 log "Claude: $action $(printf '%q ' "$@")"
@@ -232,9 +259,14 @@ ablegen)
 	echo "Abgelegt: $c/claude-$name"
 	;;
 retten)
-	(($# == 1)) || fail "retten erwartet ein Gerät"
+	[[ $# == 1 || ($# == 3 && $2 == --domain) ]] || fail "retten erwartet GERÄT [--domain PARTITION]"
 	target_ok
 	sdev=$(dev "$1") || exit 2
+	dpart=""
+	if (($# == 3)); then
+		dpart=$(dev "$3") || exit 2
+		[[ $(disk_of "$dpart") == "$sdev" && $dpart != "$sdev" ]] || fail "$dpart ist keine Partition von $sdev."
+	fi
 	[[ $(lsblk -dno TYPE "$sdev") == disk || $sdev == /dev/loop* ]] || fail "$sdev ist keine ganze Disk."
 	source_ok "$sdev"
 	sj=$(lsblk -J -b -d -o PATH,SIZE,MODEL,SERIAL,WWN "$sdev" 2>/dev/null |
@@ -263,7 +295,25 @@ retten)
 		"SRC_LABEL=$(casefile_clean_text "$(disk_label "$sj")")" "TARGET_ID=$tid" "STATE=new" ||
 		fail "Der Rettungsfall konnte nicht angelegt werden: $CASEFILE_ERROR"
 	echo "Neuer Rettungsfall: $name"
+	[[ -n $dpart ]] && make_domain "$c" "$sdev" "$dpart"
 	start_rescue "$c" "$sdev"
+	;;
+domain)
+	(($# == 2)) || fail "domain erwartet FALL PARTITION"
+	target_ok
+	c=$(case_dir "$1") || exit 2
+	part=$(dev "$2") || exit 2
+	disk=$(disk_of "$part")
+	source_ok "$disk"
+	casefile_load "$c/case.env" || fail "Die Falldatei ist ungültig."
+	[[ $(casefile_get PHASE_DONE 0) == 0 ]] || fail "Der Fall ist schon über Phase 1 hinaus. Eine Domain spart dann nichts mehr."
+	# Die Disk muss die Quelle dieses Falls sein, geprüft wie in frs-rescue-run.
+	info=$(lsblk -J -b -d -o SERIAL,WWN,SIZE "$disk" 2>/dev/null | jq -c '.blockdevices[0] // empty')
+	casefile_source_check "$(jq -r '(.serial // "") | gsub("^\\s+|\\s+$"; "")' <<<"$info")" "$(jq -r '.wwn // ""' <<<"$info")" "$(jq -r '.size // ""' <<<"$info")" ||
+		[[ $? == 3 ]] || fail "$disk ist nicht die Quelle dieses Falls: $CASEFILE_ERROR"
+	safety_is_ro "$disk" || safety_set_ro "$disk"
+	make_domain "$c" "$disk" "$part"
+	echo "Weiter mit: sudo frs-aufgabe fortsetzen $1 $disk"
 	;;
 fortsetzen)
 	(($# == 2)) || fail "fortsetzen erwartet FALL GERÄT"

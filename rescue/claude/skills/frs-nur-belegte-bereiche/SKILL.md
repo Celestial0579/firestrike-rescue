@@ -21,14 +21,25 @@ nennt, die gelesen werden sollen. Das Image bleibt sparse und belegt nur so viel
    Dateien berechnen (Pfad passt auf ein Muster) und als eigene Domain vor allen anderen lesen.
 5. **Der Rest:** freie Bereiche zuletzt, wenn noch Zeit ist und die Disk durchhält.
 
-## Wer was macht
+## Ablauf mit den Werkzeugen
 
-- Die Rettung mit Domain kann `frs-aufgabe` noch nicht starten: `frs-aufgabe retten` liest die ganze
-  Disk in Phasen. **Den Domain-Lauf richtet der Techniker ein**, mit ddrescue und der Option `-m`
-  in derselben Mapfile wie der Rettungsfall. Danach setzt `sudo frs-aufgabe fortsetzen FALL /dev/sdX`
-  den vollständigen Lauf fort, ohne schon Gelesenes erneut zu lesen.
-- Claude kann vorbereiten und erklären: Lage des Volumes, Clustergröße (`sudo frs-lesen dateisystem`),
-  welche Pfade wichtig sind, wie viel Platz belegt ist.
+1. `sudo frs-lesen partitionen /dev/sdX` und `sudo frs-lesen dateisystem /dev/sdXN`: Welche Partition
+   ist das NTFS mit den Daten? Bei LDM zuerst `frs-partitionen-ldm`.
+2. **Neuer Fall:** `sudo frs-aufgabe retten /dev/sdX --domain /dev/sdXN`. Das Werkzeug schützt die
+   Quelle, legt den Fall an, erzeugt aus der NTFS-Bitmap der Quelle zwei Domains (`domain-mft.map`
+   für die MFT, `domain.map` für die belegten Cluster) und startet die Rettung. Phase 0 liest erst die
+   MFT, dann die belegten Cluster. Danach holen die Phasen 1 bis 3 den Rest in derselben Mapfile.
+3. **Schon angelegter Fall, noch nicht über Phase 1 hinaus** (etwa nach einem Abbruch):
+   `sudo frs-aufgabe domain FALL /dev/sdXN`, dann `sudo frs-aufgabe fortsetzen FALL /dev/sdX`.
+4. Stand mit `sudo frs-aufgabe stand`. Reicht die Zeit oder hält die Disk nicht durch, kann der
+   Techniker nach Phase 0 abbrechen: Die belegten Daten sind dann schon im Image.
+
+## Wann der Techniker entscheidet
+
+- **Abbrechen nach Phase 0 oder weiterlesen?** Das ist eine Abwägung zwischen Zeit, Risiko für die
+  Disk und dem Wert von Gelöschtem im freien Bereich. Vorlegen, nicht selbst entscheiden.
+- **Einzelne Dateien vor allem anderen** (Datenläufe aus der MFT): Eine eigene Domain dafür kann
+  `frs-aufgabe` nicht erzeugen. Der Techniker richtet sie bei Bedarf selbst ein.
 
 ## Stolpersteine
 

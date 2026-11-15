@@ -354,5 +354,17 @@ full abbruch
 check "Fortsetzen: nur die offenen Phasen laufen" '[[ $RC == 0 && $CALLS == 2 && $(field abbruch STATE) == "done" ]]'
 check "Fortsetzen: Beginn bleibt der erste Start" '[[ -n $started && $(field abbruch STARTED) == "$started" ]]'
 
+echo "Domain-Mapfile (#46):"
+dom() { printf '%b' "$1" >"$T/domain.map"; casefile_domain_ok "$T/domain.map"; }
+check "wie ddru_ntfsbitmap: Kommentar, Position, Bereiche" 'dom "# Mapfile\n0x00000000     ?     1\n0x00000000  0x00100000  ?\n0x00100000  0x00200000  +\n"'
+check "ohne Bereich mit Status: ungültig" '! dom "0x00000000     +\n"'
+check "eine Zeile mit Optionstext: ungültig" '! dom "0x00100000  0x00200000  +\n--input-position=0\n"'
+check "Dezimalzahlen: ungültig" '! dom "1048576  2097152  +\n"'
+check "unbekannter Status: ungültig" '! dom "0x00100000  0x00200000  x\n"'
+check "leer: ungültig" '! dom ""'
+ln -sf "$T/domain.map" "$T/verknuepfung.map"
+dom "0x00100000  0x00200000  +\n"
+check "eine Verknüpfung: ungültig, auch auf eine gültige Datei" '! casefile_domain_ok "$T/verknuepfung.map"'
+
 rm -rf "$T"
 ((fails == 0)) && echo "Alle Tests bestanden." || { echo "$fails Test(s) fehlgeschlagen."; exit 1; }

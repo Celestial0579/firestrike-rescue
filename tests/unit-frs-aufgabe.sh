@@ -70,6 +70,13 @@ timeout $dev x
 timeout /etc/shadow 5
 ablegen fall
 ablegen ../x /etc/shadow
+domain
+domain fall
+domain ../x $dev
+domain fall /etc/shadow
+retten $dev --domain
+retten $dev --domain /etc/shadow
+retten $dev --mehr $dev
 EOF
 run einhaengen "$dev -o rw"
 check "frs-aufgabe einhaengen '$dev -o rw' (ein Argument)" '[[ $rc == 2 ]] && ! wrote'

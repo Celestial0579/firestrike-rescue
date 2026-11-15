@@ -231,3 +231,25 @@ casefile_create() {
 	done
 	casefile_save "$file"
 }
+
+# casefile_domain_ok DATEI   Ist DATEI eine Domain-Mapfile für ddrescue, wie ddru_ntfsbitmap sie
+#   schreibt (#46)? Nur Kommentare, die Zeile mit der aktuellen Position und Bereiche aus
+#   Position, Größe und Status, alles hexadezimal. Höchstens 64 MiB, keine Verknüpfung.
+#   Eine Domain beschränkt nur, was ddrescue liest. Die Prüfung hält trotzdem alles fern, was
+#   ddrescue anders verstehen könnte.
+casefile_domain_ok() {
+	local f=$1 n=0 line
+	[[ -f $f && ! -L $f ]] || return 1
+	(($(stat -c %s "$f") <= 64 * 1024 * 1024)) || return 1
+	while IFS= read -r line || [[ -n $line ]]; do
+		[[ -z $line || $line == \#* ]] && continue
+		if [[ $line =~ ^0x[0-9A-Fa-f]{1,16}[[:space:]]+0x[0-9A-Fa-f]{1,16}[[:space:]]+[-?*/+]$ ]]; then
+			n=$((n + 1))
+		elif [[ $line =~ ^0x[0-9A-Fa-f]{1,16}[[:space:]]+[-?*/+FG]([[:space:]]+[0-9]{1,3})?$ ]]; then
+			:
+		else
+			return 1
+		fi
+	done <"$f"
+	((n > 0))
+}
