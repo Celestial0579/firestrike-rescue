@@ -1,0 +1,16 @@
+[Unit]
+Description=Leuchtfeuer-Selbsttest (nur mit Kernelparameter lf.selftest)
+# multi-user.target ausdrücklich, sonst ordnet systemd den Dienst davor ein (Zyklus mit lf-ready)
+After=multi-user.target lf-ready.service
+ConditionKernelCommandLine=lf.selftest
+
+[Service]
+Type=oneshot
+StandardOutput=tty
+StandardError=tty
+TTYPath=/dev/ttyS0
+ExecStart=/usr/local/bin/lf --selftest
+ExecStopPost=/bin/systemctl --no-block poweroff
+
+[Install]
+WantedBy=multi-user.target

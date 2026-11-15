@@ -27,10 +27,10 @@ T=$(mktemp -d)
 . rescue/lib/target.sh
 # shellcheck disable=SC1091
 . rescue/lib/recover.sh
-FRS_RUN="$T/run"
-FRS_TARGET_MNT="$T/mnt"
-FRS_LOG=/dev/null
-mkdir -p "$FRS_RUN" "$T/ro" "$T/inhalt"
+LF_RUN="$T/run"
+LF_TARGET_MNT="$T/mnt"
+LF_LOG=/dev/null
+mkdir -p "$LF_RUN" "$T/ro" "$T/inhalt"
 
 fails=0
 check() {
@@ -141,13 +141,13 @@ part() {
 	mkdir -p "$T/inhalt/$name"
 	shift 2
 	for c in "$@"; do
-		mkdir -p "$T/inhalt/$name/FRS/$c"
-		printf '%s\n' 'SRC_ID="ABC"' 'SRC_SIZE="1"' 'STATE="done"' >"$T/inhalt/$name/FRS/$c/case.env"
+		mkdir -p "$T/inhalt/$name/LF/$c"
+		printf '%s\n' 'SRC_ID="ABC"' 'SRC_SIZE="1"' 'STATE="done"' >"$T/inhalt/$name/LF/$c/case.env"
 	done
 }
 # machine   Neue Maschine: nichts eingehängt, nichts geschützt, keine Partitionen.
 machine() {
-	rm -rf "${T:?}/inhalt" "${T:?}/ro" "${T:?}/mnt" "${T:?}/mounted" "${T:?}/source" "${T:?}/events" "${T:?}/log" "$FRS_RUN/search-lock"
+	rm -rf "${T:?}/inhalt" "${T:?}/ro" "${T:?}/mnt" "${T:?}/mounted" "${T:?}/source" "${T:?}/events" "${T:?}/log" "$LF_RUN/search-lock"
 	mkdir -p "$T/inhalt" "$T/ro"
 	PARTS="" UMOUNT_OK=1 SETRO_FAIL="" DIRTY="" REFUSE=""
 	TARGET_CASE_PART="" TARGET_CASE_ACTIVE=0
@@ -173,11 +173,11 @@ check "eingehängt wurde nur lesend, mit Schutzoptionen, ohne das Journal nachzu
 check "die Partition ohne Rettungsfall ist wieder ausgehängt und nicht mehr geschützt" '[[ $(events | sed -n 1,4p | tr "\n" " ") == "setro sdz1 mount sdz1 "*"umount setrw sdz1 " ]]'
 check "die Partition mit dem Rettungsfall hängt nur lesend und bleibt geschützt" '[[ $(state) == "ro,$ALL" && $(protected) == "sdz2 " ]]'
 check "die dritte Partition wurde nicht angefasst" '! events | grep -q sdz3'
-check "der Rettungsfall ist lesbar" '[[ $(casefile_peek "$FRS_TARGET_MNT/FRS/20261112-0900_WDC_X/case.env" STATE) == "done" ]]'
+check "der Rettungsfall ist lesbar" '[[ $(casefile_peek "$LF_TARGET_MNT/LF/20261112-0900_WDC_X/case.env" STATE) == "done" ]]'
 
 echo "Die Suche wird nicht weiterverwendet (abgebrochen):"
 target_search_end
-check "ausgehängt, kein Schreibschutz bleibt zurück" '[[ ! -L $T/mnt && -z $(protected) && ! -e $FRS_RUN/search-lock ]]'
+check "ausgehängt, kein Schreibschutz bleibt zurück" '[[ ! -L $T/mnt && -z $(protected) && ! -e $LF_RUN/search-lock ]]'
 check "zu keiner Zeit war etwas beschreibbar eingehängt" '! mounts | grep -q "ergebnis=rw"'
 
 echo "Der Techniker wählt den Rettungsfall:"
@@ -298,7 +298,7 @@ rm -f "$T/msg"
 recover_resume
 check "die Auswahl der Fälle läuft auf der nur lesend eingehängten Disk" 'events | grep -q "^menue ro,$ALL$"'
 check "vor dem beschreibbaren Einhängen wird geprüft, ob die Disk ein Ziel sein darf" '[[ $(events | grep -n "^pruefung ro," | cut -d: -f1) -lt $(events | grep -n "ergebnis=rw" | cut -d: -f1) ]]'
-check "mit dem Image wird auf der beschreibbar eingehängten Partition weitergearbeitet" 'events | grep -q "^after $T/mnt/FRS/20261112-0900_WDC_X rw,$ALL$"'
+check "mit dem Image wird auf der beschreibbar eingehängten Partition weitergearbeitet" 'events | grep -q "^after $T/mnt/LF/20261112-0900_WDC_X rw,$ALL$"'
 
 echo "Fortsetzen, der Techniker bricht in der Auswahl ab:"
 machine

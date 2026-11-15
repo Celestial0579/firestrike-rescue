@@ -1,30 +1,35 @@
 # shellcheck shell=bash
-# Persistenter Speicher auf dem Boot-Stick (Partition FRS-DATA, LUKS2 + ext4).
+# Persistenter Speicher auf dem Boot-Stick (Partition LF-DATA, LUKS2 + ext4).
 # Die ISO wird dafür nicht verändert: Die Partition wird hinter den ISO-Bereich angehängt.
 #
 # Wer den Speicher stellt, bestimmt die Sitzung: Aus ihm kommen Programme (~/.local/bin), die
 # Regeln und Einstellungen für Claude (~/.claude), SSH-Schlüssel und WLAN-Profile. Deshalb gilt:
-#   - Der eigene Speicher ist die Partition FRS-DATA auf dem Stick, von dem das System läuft,
+#   - Der eigene Speicher ist die Partition LF-DATA auf dem Stick, von dem das System läuft,
 #     und nur sie. Eine Partition gleichen Namens auf einer anderen Disk wird nie verwendet.
 #   - Eingebunden wird er erst, wenn der Techniker ihn in dieser Sitzung freigibt: mit der
 #     Passphrase (verschlüsselt) oder mit einem ausdrücklichen Ja (unverschlüsselt).
-#   - Aus dem Speicher wird nichts als Shell-Code gelesen. frs.conf ist eine Liste von
+#   - Aus dem Speicher wird nichts als Shell-Code gelesen. lf.conf ist eine Liste von
 #     Einstellungen (persist_config_load).
 
-PERSIST_LABEL="FRS-DATA"
-PERSIST_MAPPER="frs-data"
+PERSIST_LABEL="LF-DATA"
+# Übergang von firestrike-rescue, gilt eine Beta lang: Ein Speicher mit dem alten Namen gilt
+# weiter, unter denselben Regeln wie LF-DATA. Neu angelegt wird nur LF-DATA.
+PERSIST_LABEL_OLD="FRS-DATA"
+PERSIST_CONFIG_OLD="/etc/lf/frs.conf"
+PERSIST_MAPPER="lf-data"
 PERSIST_MAPPER_DEV="/dev/mapper/$PERSIST_MAPPER"
-PERSIST_CONFIG="/etc/frs/frs.conf"
+PERSIST_CONFIG="/etc/lf/lf.conf"
 # Verzeichnisse im Home, die auf die Persistenz zeigen
 PERSIST_HOME_DIRS=(.claude .config/Claude .local/share/keyrings .local/share/claude .local/bin .ssh .config/rclone)
 
 # persist_candidates DISK   Partitionen von DISK, die den Namen des Speichers tragen.
 persist_candidates() {
 	lsblk -J -o PATH,PARTLABEL,LABEL "$1" 2>/dev/null |
-		jq -r --arg l "$PERSIST_LABEL" '.blockdevices[0].children[]? | select(.partlabel == $l or .label == $l) | .path'
+		jq -r --arg l "$PERSIST_LABEL" --arg o "$PERSIST_LABEL_OLD" '.blockdevices[0].children[]?
+			| select(.partlabel == $l or .label == $l or .partlabel == $o or .label == $o) | .path'
 }
 
-# Die Partition des eigenen Speichers: FRS-DATA auf dem Boot-Stick. Ist der Stick nicht sicher
+# Die Partition des eigenen Speichers: LF-DATA auf dem Boot-Stick. Ist der Stick nicht sicher
 # zu erkennen oder tragen dort mehrere Partitionen den Namen, gibt es keinen Speicher.
 persist_find() {
 	local bd parts
@@ -40,8 +45,8 @@ persist_foreign() {
 	local bd
 	bd=$(boot_disk 2>/dev/null || true)
 	lsblk -J -o PATH,PKNAME,TYPE,PARTLABEL,LABEL 2>/dev/null |
-		jq -r --arg l "$PERSIST_LABEL" --arg bd "$bd" '.blockdevices[] | .. | objects
-			| select(.type? == "part") | select(.partlabel == $l or .label == $l)
+		jq -r --arg l "$PERSIST_LABEL" --arg o "$PERSIST_LABEL_OLD" --arg bd "$bd" '.blockdevices[] | .. | objects
+			| select(.type? == "part") | select(.partlabel == $l or .label == $l or .partlabel == $o or .label == $o)
 			| select(("/dev/" + (.pkname // "")) != $bd) | .path'
 }
 
@@ -52,23 +57,23 @@ persist_foreign_notice() {
 	list=$(persist_foreign | tr '\n' ' ')
 	[[ -n ${list// /} ]] || return 0
 	log "Partition mit dem Namen $PERSIST_LABEL auf einer anderen Disk wird nicht verwendet: $list"
-	[[ -f $FRS_RUN/persist-foreign-told ]] && return 0
-	touch "$FRS_RUN/persist-foreign-told"
+	[[ -f $LF_RUN/persist-foreign-told ]] && return 0
+	touch "$LF_RUN/persist-foreign-told"
 	ui_msg "Persistenter Speicher" "Auf einer anderen Disk liegt eine Partition mit dem Namen $PERSIST_LABEL:\n\n   $list\n\nDer Speicher dieses Rettungssystems liegt nur auf dem Stick, von dem es gestartet wurde. Die Partition wird nicht verwendet und nicht eingehängt.\n\nStammt die Disk aus fremder Hand, ist Vorsicht angebracht. Ist es dein Speicher auf einem anderen Stick, starte von jenem Stick."
 }
 
-# Einstellungen, die frs.conf setzen darf, mit dem Muster ihres Wertes. Hier steht nur, was der
-# Assistent auch benutzt: FRS_TECHNIKER im Rettungsbericht (recover_run), FRS_TARGET_FS als
+# Einstellungen, die lf.conf setzen darf, mit dem Muster ihres Wertes. Hier steht nur, was der
+# Assistent auch benutzt: LF_TECHNIKER im Rettungsbericht (recover_run), LF_TARGET_FS als
 # Vorauswahl beim Formatieren (target_format). Nichts davon startet einen Dienst oder ein Programm.
 persist_config_pattern() {
 	case $1 in
-	FRS_TECHNIKER) echo '^[^[:cntrl:]"$`\]{0,100}$' ;;
-	FRS_TARGET_FS) echo '^(ext4|exfat)$' ;;
+	LF_TECHNIKER) echo '^[^[:cntrl:]"$`\]{0,100}$' ;;
+	LF_TARGET_FS) echo '^(ext4|exfat)$' ;;
 	*) return 1 ;;
 	esac
 }
 
-# persist_config_load DATEI   Liest frs.conf als Daten, nie als Shell-Code.
+# persist_config_load DATEI   Liest lf.conf als Daten, nie als Shell-Code.
 # Gültig sind Leerzeilen, Kommentare (#) und Zeilen der Form NAME=Wert oder NAME="Wert" für die
 # Namen aus persist_config_pattern. Solche Zeilen setzen die gleichnamige Variable. Jede andere
 # Zeile wird nicht übernommen, ihre Nummer steht danach in PERSIST_CONFIG_REJECTED.
@@ -90,6 +95,8 @@ persist_config_load() {
 		if [[ $line =~ $quoted || $line =~ $bare ]]; then
 			key=${BASH_REMATCH[1]}
 			value=${BASH_REMATCH[2]}
+			# Übergang, eine Beta lang: Die Namen aus der frs.conf gelten als die lf-Namen.
+			[[ $key == FRS_* ]] && key=LF_${key#FRS_}
 			if pattern=$(persist_config_pattern "$key") && [[ $value =~ $pattern ]]; then
 				printf -v "$key" '%s' "$value"
 				continue
@@ -100,7 +107,7 @@ persist_config_load() {
 	return 0
 }
 
-persist_is_open() { mountpoint -q "$FRS_PERSIST"; }
+persist_is_open() { mountpoint -q "$LF_PERSIST"; }
 
 # Persistenz entsperren und einhängen; danach Home-Verzeichnisse umlenken.
 persist_open() {
@@ -124,17 +131,17 @@ persist_open() {
 	else
 		# Ohne Verschlüsselung gibt es keine Passphrase, die den Speicher als den eigenen ausweist.
 		# Er wird deshalb nie ohne Rückfrage eingebunden. Beim Start fragt der Assistent nur einmal.
-		[[ ${1:-} == startup && -f $FRS_RUN/persist-plain-declined ]] && return 1
+		[[ ${1:-} == startup && -f $LF_RUN/persist-plain-declined ]] && return 1
 		if ! ui_yesno "Speicher nicht verschlüsselt" "Der persistente Speicher auf dem Stick ($dev) ist nicht verschlüsselt.\n\nWer den Stick in der Hand hatte, kann seinen Inhalt verändert haben: Programme unter ~/.local/bin, Regeln und Einstellungen für Claude, SSH-Schlüssel, WLAN-Profile. Der Assistent bindet das alles ein.\n\nWar der Stick immer bei dir? Dann den Speicher verwenden?" --defaultno; then
-			touch "$FRS_RUN/persist-plain-declined"
+			touch "$LF_RUN/persist-plain-declined"
 			log "Unverschlüsselter Speicher $dev nicht eingebunden (abgelehnt)"
 			return 1
 		fi
 	fi
-	sudo install -d "$FRS_PERSIST"
+	sudo install -d "$LF_PERSIST"
 	# Im Speicher liegen Programme und Verknüpfungen (~/.local/bin). Gerätedateien und
 	# Setuid-Bits braucht er nicht.
-	run sudo mount -o noatime,nodev,nosuid "$fsdev" "$FRS_PERSIST" || { ui_msg "Persistenz" "Einhängen fehlgeschlagen, siehe Protokoll."; return 1; }
+	run sudo mount -o noatime,nodev,nosuid "$fsdev" "$LF_PERSIST" || { ui_msg "Persistenz" "Einhängen fehlgeschlagen, siehe Protokoll."; return 1; }
 	persist_bind
 	log "Persistenz eingehängt: $dev"
 	log_init
@@ -142,32 +149,37 @@ persist_open() {
 
 persist_bind() {
 	local d
-	sudo install -d -o "$(id -u)" -g "$(id -g)" "$FRS_PERSIST/home" "$FRS_PERSIST/logs" "$FRS_PERSIST/config"
+	sudo install -d -o "$(id -u)" -g "$(id -g)" "$LF_PERSIST/home" "$LF_PERSIST/logs" "$LF_PERSIST/config"
 	for d in "${PERSIST_HOME_DIRS[@]}"; do
-		install -d "$FRS_PERSIST/home/$d" "$HOME/$d"
-		mountpoint -q "$HOME/$d" || run sudo mount --bind "$FRS_PERSIST/home/$d" "$HOME/$d"
+		install -d "$LF_PERSIST/home/$d" "$HOME/$d"
+		mountpoint -q "$HOME/$d" || run sudo mount --bind "$LF_PERSIST/home/$d" "$HOME/$d"
 	done
 	chmod 700 "$HOME/.ssh" 2>/dev/null || true
 	persist_bind_claude
-	# Eigene Konfiguration: /persist/config wird zu /etc/frs
-	sudo install -d /etc/frs
-	mountpoint -q /etc/frs || run sudo mount --bind "$FRS_PERSIST/config" /etc/frs
+	# Eigene Konfiguration: /persist/config wird zu /etc/lf
+	sudo install -d /etc/lf
+	mountpoint -q /etc/lf || run sudo mount --bind "$LF_PERSIST/config" /etc/lf
+	# Übergang, eine Beta lang: Ein Speicher von firestrike-rescue hat nur die frs.conf. Sie wird
+	# als lf.conf übernommen und bleibt selbst, wie sie ist. Eine Verknüpfung wird nicht übernommen.
+	if [[ ! -e $PERSIST_CONFIG && ! -L $PERSIST_CONFIG && -f $PERSIST_CONFIG_OLD && ! -L $PERSIST_CONFIG_OLD ]]; then
+		cp -- "$PERSIST_CONFIG_OLD" "$PERSIST_CONFIG" && log "frs.conf als lf.conf übernommen"
+	fi
 	[[ -f $PERSIST_CONFIG ]] || cat >"$PERSIST_CONFIG" <<-'EOF'
-		# Firestrike Rescue – eigene Einstellungen (liegt auf dem persistenten Speicher)
+		# Leuchtfeuer – eigene Einstellungen (liegt auf dem persistenten Speicher)
 		# Eine Einstellung pro Zeile, NAME=Wert. Die Datei wird als Liste gelesen, nicht als Skript.
 		# Firmen- bzw. Technikername, steht im Rettungsbericht (report.txt)
-		#FRS_TECHNIKER="Vorname Nachname"
+		#LF_TECHNIKER="Vorname Nachname"
 		# Vorauswahl beim Formatieren von Ziel-Disks: ext4 oder exfat
-		#FRS_TARGET_FS=ext4
+		#LF_TARGET_FS=ext4
 	EOF
 	# WLAN-Profile übernehmen
-	if compgen -G "/etc/frs/wifi/*.nmconnection" >/dev/null; then
-		sudo install -m 600 /etc/frs/wifi/*.nmconnection /etc/NetworkManager/system-connections/
+	if compgen -G "/etc/lf/wifi/*.nmconnection" >/dev/null; then
+		sudo install -m 600 /etc/lf/wifi/*.nmconnection /etc/NetworkManager/system-connections/
 		run sudo nmcli connection reload
 	fi
 	# Eigene CLAUDE.md anlegen, falls es noch keine gibt
 	claude_as test -f "$CLAUDE_HOME/.claude/CLAUDE.md" ||
-		claude_as sh -c 'mkdir -p "$1" && cat >"$1/CLAUDE.md"' frs "$CLAUDE_HOME/.claude" <<-'EOF'
+		claude_as sh -c 'mkdir -p "$1" && cat >"$1/CLAUDE.md"' lf "$CLAUDE_HOME/.claude" <<-'EOF'
 		# Meine Ergänzungen für Claude im Rettungssystem
 
 		Diese Datei liegt auf dem persistenten Speicher des Sticks und wird zusätzlich zu
@@ -175,10 +187,10 @@ persist_bind() {
 
 		- Antworte auf Deutsch.
 	EOF
-	# frs.conf wird gelesen, nicht ausgeführt.
+	# lf.conf wird gelesen, nicht ausgeführt.
 	if persist_config_load "$PERSIST_CONFIG" && [[ -n $PERSIST_CONFIG_REJECTED ]]; then
-		log "frs.conf: Zeilen nicht übernommen:$PERSIST_CONFIG_REJECTED"
-		ui_msg "frs.conf" "Diese Zeilen der frs.conf wurden nicht übernommen:$PERSIST_CONFIG_REJECTED\n\nDie Datei ist eine Liste von Einstellungen und wird nicht als Skript ausgeführt. Erlaubt sind, je eine pro Zeile:\n\n   FRS_TECHNIKER=\"Vorname Nachname\"\n   FRS_TARGET_FS=ext4 oder exfat\n\nBearbeiten: Werkzeuge > Persistenter Speicher > frs.conf bearbeiten."
+		log "lf.conf: Zeilen nicht übernommen:$PERSIST_CONFIG_REJECTED"
+		ui_msg "lf.conf" "Diese Zeilen der lf.conf wurden nicht übernommen:$PERSIST_CONFIG_REJECTED\n\nDie Datei ist eine Liste von Einstellungen und wird nicht als Skript ausgeführt. Erlaubt sind, je eine pro Zeile:\n\n   LF_TECHNIKER=\"Vorname Nachname\"\n   LF_TARGET_FS=ext4 oder exfat\n\nBearbeiten: Werkzeuge > Persistenter Speicher > lf.conf bearbeiten."
 	fi
 }
 
@@ -187,15 +199,18 @@ persist_bind() {
 #   übernommen: Login (CLI und Desktop) und eigene CLAUDE.md aus der Zeit, als Claude als
 #   Live-Benutzer lief. Die aktualisierte CLI lädt Claude neu.
 persist_bind_claude() {
-	local h=$FRS_PERSIST/claude-home d
+	local h=$LF_PERSIST/claude-home d
 	if ! sudo test -d "$h"; then
 		run sudo install -d -m 700 "$h"
 		for d in .claude .config/Claude .local/share/keyrings; do
-			[[ -d $FRS_PERSIST/home/$d ]] || continue
+			[[ -d $LF_PERSIST/home/$d ]] || continue
 			run sudo install -d "$h/$(dirname "$d")"
-			run sudo cp -a "$FRS_PERSIST/home/$d" "$h/$d"
+			run sudo cp -a "$LF_PERSIST/home/$d" "$h/$d"
 		done
 		# -h: Verknüpfungen selbst umschreiben, nie ihr Ziel.
+		run sudo chown -R -h "$CLAUDE_USER:$CLAUDE_USER" "$h"
+	elif [[ $(sudo stat -c %U "$h" 2>/dev/null) != "$CLAUDE_USER" ]]; then
+		# Ein Speicher aus einer älteren Version (Benutzer frs-claude) mit anderer Benutzernummer.
 		run sudo chown -R -h "$CLAUDE_USER:$CLAUDE_USER" "$h"
 	fi
 	mountpoint -q "$CLAUDE_HOME" || run sudo mount --bind "$h" "$CLAUDE_HOME"
@@ -208,8 +223,8 @@ persist_close() {
 		d=${PERSIST_HOME_DIRS[i]}
 		mountpoint -q "$HOME/$d" && run sudo umount "$HOME/$d"
 	done
-	mountpoint -q /etc/frs && run sudo umount /etc/frs
-	persist_is_open && run sudo umount "$FRS_PERSIST"
+	mountpoint -q /etc/lf && run sudo umount /etc/lf
+	persist_is_open && run sudo umount "$LF_PERSIST"
 	[[ -e /dev/mapper/$PERSIST_MAPPER ]] && run sudo cryptsetup close "$PERSIST_MAPPER"
 	return 0
 }
@@ -279,11 +294,11 @@ persist_create() {
 		fsdev=/dev/mapper/$PERSIST_MAPPER
 	fi
 	run sudo mkfs.ext4 -q -L "$PERSIST_LABEL" "$fsdev" || return 1
-	sudo install -d "$FRS_PERSIST"
-	run sudo mount -o noatime,nodev,nosuid "$fsdev" "$FRS_PERSIST" || return 1
+	sudo install -d "$LF_PERSIST"
+	run sudo mount -o noatime,nodev,nosuid "$fsdev" "$LF_PERSIST" || return 1
 	persist_bind
 	log_init
-	ui_msg "Persistenz" "Persistenter Speicher ist eingerichtet ($(human "$(sudo blockdev --getsize64 "$part")")).\n\nDort liegen ab jetzt:\n - Claude-Login (CLI und Desktop) und ~/.claude/CLAUDE.md\n - /etc/frs/frs.conf und WLAN-Profile (/etc/frs/wifi/)\n - SSH-Schlüssel, rclone-Konfiguration\n - Protokolle (/persist/logs)"
+	ui_msg "Persistenz" "Persistenter Speicher ist eingerichtet ($(human "$(sudo blockdev --getsize64 "$part")")).\n\nDort liegen ab jetzt:\n - Claude-Login (CLI und Desktop) und ~/.claude/CLAUDE.md\n - /etc/lf/lf.conf und WLAN-Profile (/etc/lf/wifi/)\n - SSH-Schlüssel, rclone-Konfiguration\n - Protokolle (/persist/logs)"
 }
 
 # Beim Start: vorhandene Persistenz öffnen oder einmalig das Anlegen anbieten.
@@ -293,7 +308,7 @@ persist_startup() {
 		persist_open startup || true
 		return 0
 	fi
-	[[ -f $FRS_RUN/persist-declined ]] && return 0
+	[[ -f $LF_RUN/persist-declined ]] && return 0
 	local bd free
 	bd=$(boot_disk 2>/dev/null) || return 0
 	free=$(persist_free_bytes "$bd")
@@ -301,30 +316,30 @@ persist_startup() {
 		if ui_yesno "Persistenter Speicher" "Auf dem Stick ist $(human "$free") ungenutzter Platz.\n\nSoll dort ein kleiner persistenter Speicher für Configs, CLAUDE.md und den Claude-Login angelegt werden?\nDie Rettungs-ISO selbst bleibt unverändert."; then
 			persist_create || true
 		else
-			touch "$FRS_RUN/persist-declined"
+			touch "$LF_RUN/persist-declined"
 		fi
 	fi
 }
 
 persist_menu() {
 	local c
-	c=$(ui_menu "Persistenter Speicher" "Status: $(persist_is_open && echo "eingehängt unter $FRS_PERSIST ($(df -h --output=used,size "$FRS_PERSIST" | tail -n1 | xargs) belegt)" || echo "nicht eingehängt")" -- \
+	c=$(ui_menu "Persistenter Speicher" "Status: $(persist_is_open && echo "eingehängt unter $LF_PERSIST ($(df -h --output=used,size "$LF_PERSIST" | tail -n1 | xargs) belegt)" || echo "nicht eingehängt")" -- \
 		open "Entsperren und einhängen" \
 		create "Neu anlegen" \
-		edit "frs.conf bearbeiten" \
+		edit "lf.conf bearbeiten" \
 		claudemd "Eigene CLAUDE.md bearbeiten" \
 		wifi "Aktuelle WLAN-Verbindungen dauerhaft speichern" \
 		close "Aushängen und sperren") || return 0
 	case $c in
 	open) persist_open || ui_msg "Persistenz" "Kein persistenter Speicher gefunden oder nicht entsperrt." ;;
 	create) persist_create ;;
-	edit) persist_is_open && sudo nano /etc/frs/frs.conf ;;
+	edit) persist_is_open && sudo nano /etc/lf/lf.conf ;;
 	claudemd) persist_is_open && claude_as nano "$CLAUDE_HOME/.claude/CLAUDE.md" ;;
 	wifi)
 		persist_is_open || return 0
-		sudo install -d -m 700 /etc/frs/wifi
-		sudo sh -c 'cp /etc/NetworkManager/system-connections/*.nmconnection /etc/frs/wifi/ 2>/dev/null'
-		ui_msg "WLAN" "Gespeichert: $(sudo ls /etc/frs/wifi | tr '\n' ' ')"
+		sudo install -d -m 700 /etc/lf/wifi
+		sudo sh -c 'cp /etc/NetworkManager/system-connections/*.nmconnection /etc/lf/wifi/ 2>/dev/null'
+		ui_msg "WLAN" "Gespeichert: $(sudo ls /etc/lf/wifi | tr '\n' ' ')"
 		;;
 	close) persist_close ;;
 	esac

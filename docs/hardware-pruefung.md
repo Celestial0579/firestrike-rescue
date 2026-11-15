@@ -1,7 +1,7 @@
 Prüfung an echter Hardware
 ==========================
 
-Die CI prüft Firestrike Rescue nur mit Attrappen, Loop-Geräten und in QEMU. Diese Anleitung ist
+Die CI prüft Leuchtfeuer nur mit Attrappen, Loop-Geräten und in QEMU. Diese Anleitung ist
 die Liste für einen Testrechner mit echten Disks (Issue #34). Hake erledigte Punkte im Issue ab.
 Jede Abweichung wird ein eigenes Issue mit Version, Rechner und Foto oder Protokoll.
 
@@ -10,7 +10,7 @@ Bis alle Punkte geprüft sind, bleibt jedes Release eine Beta.
 Vorbereitung
 ------------
 
-- **Version:** das neueste Release, mit Prüfsumme (`sha256sum -c SHA256SUMS`) und Herkunft (`gh attestation verify <iso> --repo Celestial0579/firestrike-rescue`) geprüft
+- **Version:** das neueste Release, mit Prüfsumme (`sha256sum -c SHA256SUMS`) und Herkunft (`gh attestation verify <iso> --repo Celestial0579/leuchtfeuer`) geprüft
 - **Sticks:** zwei USB-Sticks ab 8 GB, mit Rufus (DD-Modus), balenaEtcher oder `dd` beschrieben
 - **Testrechner:**
   - einer mit UEFI, bei dem sich Secure Boot ein- und ausschalten lässt
@@ -20,16 +20,16 @@ Vorbereitung
   - eine gesunde Windows-Disk mit BitLocker, dazu der Wiederherstellungsschlüssel
   - zwei Ziel-Disks: eine kleiner, eine größer als die Quelle
 - **Adapter:** zwei baugleiche USB-SATA-Adapter
-- **Fürs Protokoll:** ein Handy für Fotos vom Bildschirm. Die Protokolle des Assistenten liegen unter `/persist/logs` (mit persistentem Speicher) oder `/run/frs/logs` (ohne).
+- **Fürs Protokoll:** ein Handy für Fotos vom Bildschirm. Die Protokolle des Assistenten liegen unter `/persist/logs` (mit persistentem Speicher) oder `/run/lf/logs` (ohne).
 
-Notiere zu jedem Punkt die Version (`frs --version`), das Rechnermodell und das Ergebnis.
+Notiere zu jedem Punkt die Version (`lf --version`), das Rechnermodell und das Ergebnis.
 
 1 Start
 -------
 
 | Prüfung | Erwartet |
 |---|---|
-| UEFI mit Secure Boot, vom Stick | Bootmenü „Firestrike Rescue“, nach 10 s startet der Assistent auf tty1 |
+| UEFI mit Secure Boot, vom Stick | Bootmenü „Leuchtfeuer“, nach 10 s startet der Assistent auf tty1 |
 | UEFI ohne Secure Boot | wie oben, zusätzlich der Eintrag memtest86+ |
 | BIOS oder CSM | wie oben |
 | Eintrag „in den RAM laden“, Stick danach abziehen | Der Assistent und die Werkzeuge laufen weiter |
@@ -38,10 +38,10 @@ Notiere zu jedem Punkt die Version (`frs --version`), das Rechnermodell und das 
 Nach jedem Start in der Shell (Werkzeuge > Shell):
 
 ```bash
-cat /run/frs-boot.env
+cat /run/lf-boot.env
 ```
 
-`FRS_BOOT_DEV` ist der Stick, `FRS_BOOT_DISKS=1`.
+`LF_BOOT_DEV` ist der Stick, `LF_BOOT_DISKS=1`.
 
 2 Startkette mit fremden Disks (GHSA-fgc3-pr99-9chm)
 ----------------------------------------------------
@@ -55,20 +55,20 @@ angeschlossen sind.
      echo "GEKAPERT"
      sleep 30
      ```
-   - Beide Sticks anstecken, den fremden möglichst an den ersten Anschluss, und per UEFI vom Firestrike-Stick starten.
-   - Erwartet: Vor dem Bootmenü steht kurz „Firestrike Rescue: Startmedium (…) auf derselben Disk“, nie „GEKAPERT“.
+   - Beide Sticks anstecken, den fremden möglichst an den ersten Anschluss, und per UEFI vom Leuchtfeuer-Stick starten.
+   - Erwartet: Vor dem Bootmenü steht kurz „Leuchtfeuer: Startmedium (…) auf derselben Disk“, nie „GEKAPERT“.
 2. **Zwei Sticks mit derselben ISO:**
    - Den zweiten Stick mit derselben ISO beschreiben. Beide anstecken und von einem starten.
-   - Erwartet: Das System startet. `cat /run/frs-boot.env` zeigt `FRS_BOOT_DISKS=2`. Der Assistent bindet keinen persistenten Speicher ein, und das Anlegen eines Speichers lehnt er mit einer Meldung ab.
-3. **Nur der fremde Stick aus Schritt 1** und die Firmware startet von ihm: Er bootet nichts, was wie Firestrike Rescue aussieht. Das ist eine Gegenprobe, kein Fehler.
+   - Erwartet: Das System startet. `cat /run/lf-boot.env` zeigt `LF_BOOT_DISKS=2`. Der Assistent bindet keinen persistenten Speicher ein, und das Anlegen eines Speichers lehnt er mit einer Meldung ab.
+3. **Nur der fremde Stick aus Schritt 1** und die Firmware startet von ihm: Er bootet nichts, was wie Leuchtfeuer aussieht. Das ist eine Gegenprobe, kein Fehler.
 
 3 Persistenter Speicher
 -----------------------
 
 1. Frischen Stick starten. Beim ersten Start einen verschlüsselten Speicher mit 2 GiB anlegen, neu starten, Passphrase eingeben.
-   Erwartet: `findmnt /persist` zeigt die Partition `FRS-DATA` auf dem Stick, mit `nodev,nosuid`.
+   Erwartet: `findmnt /persist` zeigt die Partition `LF-DATA` auf dem Stick, mit `nodev,nosuid`.
 2. Dasselbe mit einem unverschlüsselten Speicher auf dem zweiten Stick: Der Assistent fragt vor dem Einbinden nach.
-3. Eine Partition mit dem Label `FRS-DATA` auf einer anderen Disk anlegen und anschließen: Der Assistent verwendet sie nie, er weist nur auf sie hin.
+3. Eine Partition mit dem Label `LF-DATA` auf einer anderen Disk anlegen und anschließen: Der Assistent verwendet sie nie, er weist nur auf sie hin.
 4. **Wirkung von `nosuid`.** Der Selbsttest läuft als root und kann das nicht prüfen. Als Live-Benutzer in der Shell:
    ```bash
    sudo cp /usr/bin/id /persist/id-probe && sudo chmod 4755 /persist/id-probe
@@ -83,7 +83,7 @@ angeschlossen sind.
    Erwartet:
    - Die Quelle ist sofort schreibgeschützt (`blockdev --getro` ergibt 1).
    - Alle drei Phasen laufen.
-   - `report.txt` und `smart-before.txt`/`smart-after.txt` liegen unter `FRS/…`.
+   - `report.txt` und `smart-before.txt`/`smart-after.txt` liegen unter `LF/…`.
 2. **Während Phase 1 den USB-Adapter der Quelle abziehen, wieder anstecken** und „Unterbrochene Rettung fortsetzen“ wählen.
    Erwartet: Es geht an der Stelle weiter, an der der Lauf aufgehört hat. Mit einer anderen Disk statt der Quelle lehnt der Assistent ab.
 3. **Neustart während der Rettung,** dann fortsetzen: wie Schritt 2.
@@ -128,25 +128,25 @@ Nur mit Internet und eigenem Konto.
 3. **In der Shell in einem Ordner auf einem fremden Datenträger `claude` starten.** Der Ordner hat eine `.claude/settings.json` mit `{"env": {"ANTHROPIC_BASE_URL": "http://127.0.0.1:9"}}`.
    Erwartet: Claude Code verbindet sich normal. Die Einstellung des Ordners gilt nicht.
 4. **Neue Version der CLI:** Mit persistentem Speicher startet beim nächsten Start eine Aktualisierung.
-   Erwartet: Vor dem ersten Start der neuen Version steht „Neue Version von Claude Code … wird geprüft“, danach „Bestanden.“. Das Ergebnis steht in `/var/lib/frs-claude/.local/state/frs/claude-check/`.
+   Erwartet: Vor dem ersten Start der neuen Version steht „Neue Version von Claude Code … wird geprüft“, danach „Bestanden.“. Das Ergebnis steht in `/var/lib/lf-claude/.local/state/lf/claude-check/`.
 5. **Rechte von Claude:** Claude fragen, als wer es läuft und was `sudo -l` zeigt.
-   Erwartet: Benutzer `frs-claude`, sudo nur für `frs-lesen` und `frs-aufgabe`. `sudo dd`, `sudo mkfs` und `sudo -i` lehnt sudo ab. Die Statuszeile von Claude Code zeigt „Claude arbeitet mit frs-lesen und frs-aufgabe“.
+   Erwartet: Benutzer `lf-claude`, sudo nur für `lf-lesen` und `lf-aufgabe`. `sudo dd`, `sudo mkfs` und `sudo -i` lehnt sudo ab. Die Statuszeile von Claude Code zeigt „Claude arbeitet mit lf-lesen und lf-aufgabe“.
 6. **Aufgaben selbständig:** Im Assistenten ein Ziel wählen und bestätigen, dann Claude bitten, eine kleine Testdisk zu retten und ein paar Dateien daraus aufs Ziel zu kopieren.
-   Erwartet: Claude benutzt `sudo frs-aufgabe retten`, `image`, `einhaengen` und `kopieren`. Die Quelle ist danach schreibgeschützt, die Dateien liegen unter `FRS/claude/`. Ein Versuch, auf eine andere Disk als das Ziel zu schreiben, scheitert.
+   Erwartet: Claude benutzt `sudo lf-aufgabe retten`, `image`, `einhaengen` und `kopieren`. Die Quelle ist danach schreibgeschützt, die Dateien liegen unter `LF/claude/`. Ein Versuch, auf eine andere Disk als das Ziel zu schreiben, scheitert.
 7. **Claude-Freigabe:** Werkzeuge > Claude-Freigabe, 1 Minute.
-   Erwartet: Das Hauptmenü und die Statuszeile zeigen „volles sudo“, `sudo -l` für Claude zeigt `ALL`. Nach einer Minute ist die Freigabe von selbst weg, das Protokoll nennt An und Ablauf. Claude kann `frs-freigabe an` nicht selbst auslösen.
-8. **Claude Desktop als frs-claude** (in QEMU nicht prüfbar):
+   Erwartet: Das Hauptmenü und die Statuszeile zeigen „volles sudo“, `sudo -l` für Claude zeigt `ALL`. Nach einer Minute ist die Freigabe von selbst weg, das Protokoll nennt An und Ablauf. Claude kann `lf-freigabe an` nicht selbst auslösen.
+8. **Claude Desktop als lf-claude** (in QEMU nicht prüfbar):
    - Die App startet im Vollbild, das Fenster ist sichtbar und bedienbar, Login klappt, nach Strg+Q geht es im Assistenten weiter.
    - Nach einem Neustart mit persistentem Speicher ist der Login noch da.
-   - In der App läuft Claude Code als `frs-claude`: kein sudo außer `frs-lesen` und `frs-aufgabe`. Schreibende Schritte gehen nur über die Werkzeuge bzw. den Assistenten, die Rückfragen aus Schritt 2 kommen auch hier.
+   - In der App läuft Claude Code als `lf-claude`: kein sudo außer `lf-lesen` und `lf-aufgabe`. Schreibende Schritte gehen nur über die Werkzeuge bzw. den Assistenten, die Rückfragen aus Schritt 2 kommen auch hier.
    - Grafik mit GPU: `ls -l /dev/dri` und in der App flüssiges Scrollen. Ohne GPU-Zugriff (Gruppe `render`) fällt sie auf Software-Darstellung zurück.
-   - Auf tty2 als Live-Benutzer: `ls -l /run/frs/wayland` zeigt nur den Socket von cage, Gruppe `frs-claude`.
+   - Auf tty2 als Live-Benutzer: `ls -l /run/lf/wayland` zeigt nur den Socket von cage, Gruppe `lf-claude`.
 
 9 Selbsttest auf echter Hardware
 --------------------------------
 
 ```bash
-sudo frs --selftest | tee /persist/selftest-$(date +%F).txt
+sudo lf --selftest | tee /persist/selftest-$(date +%F).txt
 ```
 
-Erwartet: Die letzte Zeile ist `FRS-SELFTEST: PASS`. Die Datei gehört ins Issue.
+Erwartet: Die letzte Zeile ist `LF-SELFTEST: PASS`. Die Datei gehört ins Issue.

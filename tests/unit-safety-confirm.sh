@@ -7,7 +7,7 @@ cd "$(dirname "$0")/.." || exit 1
 export LC_ALL=C.UTF-8
 
 T=$(mktemp -d)
-FRS_RUN=$T
+LF_RUN=$T
 # shellcheck disable=SC1091
 . rescue/lib/common.sh
 # shellcheck disable=SC1091

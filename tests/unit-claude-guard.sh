@@ -3,20 +3,20 @@
 #
 # /etc/claude-code/CLAUDE.md nennt Regeln, an die sich Claude halten soll. Eine Regel ist aber nur
 # Text im Kontext des Modells: Ein präparierter Datenträger oder ein Irrtum können das Modell
-# dazu bringen, sie zu brechen. rescue/bin/frs-claude-guard ist ein PreToolUse-Hook von Claude
+# dazu bringen, sie zu brechen. rescue/bin/lf-claude-guard ist ein PreToolUse-Hook von Claude
 # Code. Er bekommt jeden Werkzeugaufruf vor der Ausführung und entscheidet selbst:
 #   Rückgabe 2             gesperrt, der Aufruf läuft nicht,
 #   Rückgabe 0 mit "ask"   der Techniker muss selbst bestätigen,
 #   Rückgabe 0 ohne Text   keine Entscheidung.
 # Der Test füttert das Skript mit Anfragen in der Form, in der Claude Code sie übergibt, und
 # prüft die Entscheidung. Dazu prüft er die verwalteten Einstellungen, die das Skript eintragen.
-# Dass Claude Code selbst sich daran hält, zeigt der Selbsttest der ISO (frs --selftest): Dort
+# Dass Claude Code selbst sich daran hält, zeigt der Selbsttest der ISO (lf --selftest): Dort
 # läuft die echte CLI gegen eine Attrappe der API.
 set -u
 cd "$(dirname "$0")/.." || exit 1
 export LC_ALL=C.UTF-8
 
-GUARD=rescue/bin/frs-claude-guard
+GUARD=rescue/bin/lf-claude-guard
 SETTINGS=rescue/claude/managed-settings.json
 T=$(mktemp -d)
 
@@ -28,7 +28,7 @@ check() {
 # guard_json WERKZEUG EINGABE   Übergibt dem Skript eine Anfrage mit der Eingabe (JSON) des
 #                               Werkzeugs. Ergebnis: RC, OUT (stdout), ERR, DECISION.
 guard_json() {
-	jq -cn --arg t "$1" --argjson i "$2" '{session_id: "s", cwd: "/run/frs/claude-session", permission_mode: "default",
+	jq -cn --arg t "$1" --argjson i "$2" '{session_id: "s", cwd: "/run/lf/claude-session", permission_mode: "default",
 		hook_event_name: "PreToolUse", tool_name: $t, tool_input: $i, tool_use_id: "toolu_1"}' |
 		"$GUARD" >"$T/out" 2>"$T/err"
 	RC=$?
@@ -89,21 +89,21 @@ done <<'EOF'
 sudo rm /etc/claude-code/managed-settings.json
 sudo sed -i 's/deny/allow/' /etc/claude-code/managed-settings.json
 cat /etc/claude-code/CLAUDE.md
-sudo mv /usr/local/bin/frs-claude-guard /tmp/
-sudo chmod -x /usr/local/bin/frs-claude-guard
-echo > /run/frs/readonly
-sudo rm -f /run/frs/readonly
-sudo sed -i '/sdb/d' /run/frs/readonly
-sudo tee /run/frs/readonly </dev/null
-sudo chattr -i /run/frs/readonly
-: > /run/frs/readonly
-sudo cp /usr/local/bin/frs-claude-guard /tmp/x
-sudo sed -i -e /sdb/d /run/frs/readonly
-sudo truncate -s 0 /run/frs/readonly
+sudo mv /usr/local/bin/lf-claude-guard /tmp/
+sudo chmod -x /usr/local/bin/lf-claude-guard
+echo > /run/lf/readonly
+sudo rm -f /run/lf/readonly
+sudo sed -i '/sdb/d' /run/lf/readonly
+sudo tee /run/lf/readonly </dev/null
+sudo chattr -i /run/lf/readonly
+: > /run/lf/readonly
+sudo cp /usr/local/bin/lf-claude-guard /tmp/x
+sudo sed -i -e /sdb/d /run/lf/readonly
+sudo truncate -s 0 /run/lf/readonly
 sudo rm -rf /etc/claude*
 sudo rm /etc/cl*/man*
-sudo chmod 000 /usr/local/bin/frs-*
-sudo rm -f /run/frs/*
+sudo chmod 000 /usr/local/bin/lf-*
+sudo rm -f /run/lf/*
 sudo sh -c ': > /etc/cl*/m*.json'
 sudo mv /etc/claude-{code,alt}
 sudo rm -rf /etc
@@ -120,26 +120,26 @@ while IFS= read -r c; do
 	guard "$c"
 	check "$c" denied
 done <<'EOF'
-sudo ntfsfix /mnt/frs-target/FRS/x/image.img
-sudo e2fsck -fy /mnt/frs-target/FRS/x/image.img
-fsck.ext4 -y "/mnt/frs-target/FRS/x/image.img"
-sudo xfs_repair /mnt/frs-target/FRS/x/image.img
-sudo testdisk /mnt/frs-target/FRS/x/image.img
-sudo e2fsck /mnt/frs-target/FRS/x/image.img
-cd /mnt/frs-target/FRS/x && sudo ntfsfix image.img
-IMG=/mnt/frs-target/FRS/x/image.img; sudo ntfsfix "$IMG"
-for f in /mnt/frs-target/FRS/x/image.img; do sudo e2fsck -y $f; done
-sudo btrfs check --repair /mnt/frs-target/FRS/x/image.img
-sudo btrfs rescue zero-log /mnt/frs-target/FRS/x/image.img
-sudo debugfs -w /mnt/frs-target/FRS/x/image.img
-sudo ls -n /tmp; sudo e2fsck -y /mnt/frs-target/FRS/x/image.img
+sudo ntfsfix /mnt/lf-target/LF/x/image.img
+sudo e2fsck -fy /mnt/lf-target/LF/x/image.img
+fsck.ext4 -y "/mnt/lf-target/LF/x/image.img"
+sudo xfs_repair /mnt/lf-target/LF/x/image.img
+sudo testdisk /mnt/lf-target/LF/x/image.img
+sudo e2fsck /mnt/lf-target/LF/x/image.img
+cd /mnt/lf-target/LF/x && sudo ntfsfix image.img
+IMG=/mnt/lf-target/LF/x/image.img; sudo ntfsfix "$IMG"
+for f in /mnt/lf-target/LF/x/image.img; do sudo e2fsck -y $f; done
+sudo btrfs check --repair /mnt/lf-target/LF/x/image.img
+sudo btrfs rescue zero-log /mnt/lf-target/LF/x/image.img
+sudo debugfs -w /mnt/lf-target/LF/x/image.img
+sudo ls -n /tmp; sudo e2fsck -y /mnt/lf-target/LF/x/image.img
 EOF
 # Die Kopie reparieren und das Original nur lesend prüfen ist nicht gesperrt.
-guard "cp --reflink=auto /mnt/frs-target/FRS/x/image.img /mnt/frs-target/FRS/x/image.img.repair && sudo ntfsfix /mnt/frs-target/FRS/x/image.img.repair"
+guard "cp --reflink=auto /mnt/lf-target/LF/x/image.img /mnt/lf-target/LF/x/image.img.repair && sudo ntfsfix /mnt/lf-target/LF/x/image.img.repair"
 check "Kopie anlegen und die Kopie reparieren: nicht gesperrt, aber zu bestätigen" asked
-guard "sudo e2fsck -n /mnt/frs-target/FRS/x/image.img"
+guard "sudo e2fsck -n /mnt/lf-target/LF/x/image.img"
 check "das Original nur lesend prüfen (e2fsck -n): keine Entscheidung" passed
-guard "sudo xfs_repair -n /mnt/frs-target/FRS/x/image.img"
+guard "sudo xfs_repair -n /mnt/lf-target/LF/x/image.img"
 check "das Original nur lesend prüfen (xfs_repair -n): keine Entscheidung" passed
 
 echo "Der Techniker bestätigt selbst: schreibende Befehle"
@@ -179,7 +179,7 @@ sudo fdisk /dev/sdc
 sudo wipefs -a /dev/sdc
 sudo blkdiscard /dev/sdc
 sudo ntfsfix /dev/sdc1
-sudo ntfsfix /mnt/frs-target/FRS/x/image.img.repair
+sudo ntfsfix /mnt/lf-target/LF/x/image.img.repair
 sudo e2fsck -fy /dev/sdc1
 sudo fsck /dev/sdc1
 sudo fsck.vfat -a /dev/sdc1
@@ -196,7 +196,7 @@ sudo qemu-nbd -c /dev/nbd0 image.img
 sudo ddrescue /dev/sdb image.img image.map
 sudo partclone.ntfs -b -s /dev/sdb1 -o /dev/sdc1
 sudo nvme format /dev/nvme0n1 --ses=1
-sudo hdparm --security-erase frs /dev/sdc
+sudo hdparm --security-erase lf /dev/sdc
 sudo smartctl -t long /dev/sdb
 sudo badblocks -sv /dev/sdb
 sudo shred -n1 /dev/sdc
@@ -224,16 +224,16 @@ sudo dislocker -V /dev/sdb2 -u -- /mnt/dl
 sudo swapon /dev/sdb3
 sudo cp image.img /dev/sdc
 sudo md5sum /dev/sdb
-sudo cat /dev/sdb | gzip > /mnt/frs-target/sdb.gz
-sudo dd if=/dev/sdb bs=1M | zstd > /mnt/frs-target/sdb.zst
+sudo cat /dev/sdb | gzip > /mnt/lf-target/sdb.gz
+sudo dd if=/dev/sdb bs=1M | zstd > /mnt/lf-target/sdb.zst
 sudo grep -a geheim /dev/sdb1
 sudo strings -n 8 /dev/sdb
 gzip -c </dev/sdb >x.gz
-rm /mnt/frs-target/FRS/x/image.img
-mv /mnt/frs-target/FRS/x/image.map /tmp/
-: > /mnt/frs-target/FRS/x/image.map
-cp /dev/null /mnt/frs-target/FRS/x/image.img
-truncate -s 0 /mnt/frs-target/FRS/x/image.img
+rm /mnt/lf-target/LF/x/image.img
+mv /mnt/lf-target/LF/x/image.map /tmp/
+: > /mnt/lf-target/LF/x/image.map
+cp /dev/null /mnt/lf-target/LF/x/image.img
+truncate -s 0 /mnt/lf-target/LF/x/image.img
 sudo cryptsetup luksErase --readonly /dev/sdb2
 sudo cryptsetup luksDump /dev/sdb2; sudo cryptsetup luksFormat /dev/sdc1
 sudo qemu-img convert -O raw x.qcow2 /dev/sdc
@@ -256,15 +256,16 @@ sudo efibootmgr -b 0001 -B
 sudo os-prober
 sudo safecopy /dev/sdb x.img
 echo 1 | sudo tee /sys/block/sdb/device/delete
-sudo frs-rescue-run /mnt/frs-target/FRS/x /dev/sdb
-bash -c '. /usr/local/lib/frs/common.sh; . /usr/local/lib/frs/target.sh; target_mount_part /dev/sdc1 ext4'
+sudo lf-rescue-run /mnt/lf-target/LF/x /dev/sdb
+bash -c '. /usr/local/lib/lf/common.sh; . /usr/local/lib/lf/target.sh; target_mount_part /dev/sdc1 ext4'
 grep x `sudo nvme format /dev/nvme0n1`
 echo $(grep -c x f; sudo mkfs.ext4 /dev/sdc1)
 sudo mount -o ro -w /dev/sdb1 /mnt/x
-rm -rf /mnt/frs-target/FRS/20261112-0900_Modell_1234
-sudo sed -i s/a/b/ /usr/local/lib/frs/safety.sh
-echo "true" | sudo tee -a /usr/local/lib/frs/common.sh
-sudo cp /tmp/frs /usr/local/bin/frs
+rm -rf /mnt/lf-target/LF/20261112-0900_Modell_1234
+rm -rf /mnt/lf-target/FRS/20261112-0900_Modell_1234
+sudo sed -i s/a/b/ /usr/local/lib/lf/safety.sh
+echo "true" | sudo tee -a /usr/local/lib/lf/common.sh
+sudo cp /tmp/lf /usr/local/bin/lf
 sudo parted --script /dev/sdc mklabel gpt
 sudo e2image -I /dev/sdc1 meta.e2i
 sudo swaplabel -L x /dev/sdc2
@@ -295,7 +296,7 @@ grep 'a|b' datei; sudo mkfs.ext4 /dev/sdc1
 grep 'a|b' datei && sudo nvme format /dev/nvme0n1
 which nvme && sudo nvme format /dev/nvme0n1
 grep x datei | sudo tee /dev/sdc
-grep -r x . > /mnt/frs-target/FRS/x/image.img
+grep -r x . > /mnt/lf-target/LF/x/image.img
 /tmp/grep nvme format /dev/nvme0n1
 grep -q x datei || { sudo swapon /dev/sdb3; }
 pgrep ddrescue || sudo ddrescue /dev/sdb image.img image.map
@@ -325,16 +326,16 @@ sudo blkid /dev/sdb1
 sudo blockdev --getro /dev/sdb
 sudo blockdev --setro /dev/sdb
 sudo file -s /dev/sdb1
-ddrescuelog -t /mnt/frs-target/FRS/x/image.map
-cat /run/frs/readonly
-sort -u /run/frs/readonly | wc -l
+ddrescuelog -t /mnt/lf-target/LF/x/image.map
+cat /run/lf/readonly
+sort -u /run/lf/readonly | wc -l
 sudo mount -o ro,noload /dev/sdb1 /mnt/x
 sudo mount -t ntfs3 -o ro /dev/sdb1 /mnt/x
 sudo mount -r /dev/sdb1 /mnt/x
 sudo mount --read-only /dev/sdb1 /mnt/x
-mount | grep frs
+mount | grep lf
 mount
-findmnt /mnt/frs-target
+findmnt /mnt/lf-target
 sudo umount /mnt/x
 sudo e2fsck -n /dev/sdb1
 sudo fsck -fn /dev/sdb1
@@ -363,18 +364,18 @@ sudo parted -s /dev/sdb print 2>&1 | head -20
 sudo sfdisk -d /dev/sdb > /tmp/tabelle.txt
 sudo wipefs /dev/sdb
 sudo wipefs -n -a /dev/sdb
-ls -la /mnt/frs-image/loop0p2
-rsync -a /mnt/frs-image/loop0p2/Users/ /mnt/frs-target/FRS/x/dateien/
-tmux attach -t frs-rettung
+ls -la /mnt/lf-image/loop0p2
+rsync -a /mnt/lf-image/loop0p2/Users/ /mnt/lf-target/LF/x/dateien/
+tmux attach -t lf-rettung
 dd if=/dev/sdb bs=512 count=1 | xxd | head
-cat /mnt/frs-target/FRS/x/report.txt
-grep -r mountpoint /usr/local/lib/frs
+cat /mnt/lf-target/LF/x/report.txt
+grep -r mountpoint /usr/local/lib/lf
 dmesg | grep -i nvme
 sudo dmesg | grep -iE 'ata|nvme|I/O error'
 ps aux | grep ddrescue
 lsmod | grep btrfs
 lsblk -f | grep -i ntfs
-grep -rn "mount " /usr/local/lib/frs/target.sh
+grep -rn "mount " /usr/local/lib/lf/target.sh
 which sgdisk parted ddrescue
 ls /dev/nvme*
 ls -l /dev/disk/by-id/
@@ -402,25 +403,25 @@ sudo nvme id-ctrl /dev/nvme0 -H
 sudo smartctl -l error /dev/sdb
 sudo smartctl -l scterc /dev/sdb
 sudo partclone.info -s teil.img
-cp /mnt/frs-target/FRS/x/image.img /mnt/frs-target/FRS/x/image.img.repair
-md5sum /mnt/frs-target/FRS/x/image.img
+cp /mnt/lf-target/LF/x/image.img /mnt/lf-target/LF/x/image.img.repair
+md5sum /mnt/lf-target/LF/x/image.img
 sudo pvs; sudo vgs; sudo lvs
 cat /sys/block/sdb/ro 2>/dev/null
 cat /sys/block/sdb/ro | tee /tmp/ro.txt
-cat /run/frs/readonly 2>/dev/null
-sed -n 1,5p /run/frs/readonly
+cat /run/lf/readonly 2>/dev/null
+sed -n 1,5p /run/lf/readonly
 sudo parted --script /dev/sdb print
 sudo parted --script --machine /dev/sdb unit B print
-sed -n 1,40p /usr/local/lib/frs/safety.sh
-head -n 30 /usr/local/lib/frs/common.sh
-ls -la /mnt/frs-target/FRS/
-cat /mnt/frs-target/FRS/20261112-0900_Modell_1234/report.txt
+sed -n 1,40p /usr/local/lib/lf/safety.sh
+head -n 30 /usr/local/lib/lf/common.sh
+ls -la /mnt/lf-target/LF/
+cat /mnt/lf-target/LF/20261112-0900_Modell_1234/report.txt
 ls -la /etc/claude*
 du -sh /etc/* 2>/dev/null | tail
-sudo rm -f /mnt/frs-target/tmp/*.part
-find /mnt/frs-image/loop0p2 -name '*.jpg'
-sudo find /mnt/frs-target/ausgabe -name '*.tmp' -delete
-sudo chown -R rescue: /mnt/frs-target/ausgabe
+sudo rm -f /mnt/lf-target/tmp/*.part
+find /mnt/lf-image/loop0p2 -name '*.jpg'
+sudo find /mnt/lf-target/ausgabe -name '*.tmp' -delete
+sudo chown -R rescue: /mnt/lf-target/ausgabe
 sudo qemu-io -r -c 'read 0 4k' image.img
 sudo bootctl status
 sudo pvscan
@@ -432,7 +433,7 @@ guard "sudo blockdev --setrw /dev/sdb" Monitor
 check "Monitor mit blockdev --setrw: gesperrt" denied
 guard "sudo mkfs.ext4 /dev/sdc1" Monitor
 check "Monitor mit mkfs: der Techniker bestätigt" asked
-guard "tail -f /mnt/frs-target/FRS/x/rescue.log | grep --line-buffered -i error" Monitor
+guard "tail -f /mnt/lf-target/LF/x/rescue.log | grep --line-buffered -i error" Monitor
 check "Monitor, der ein Protokoll verfolgt: keine Entscheidung" passed
 guard "sudo blockdev --setrw /dev/sdb" WerkzeugVonMorgen
 check "unbekanntes Werkzeug mit einem Befehl: gesperrt wie Bash" denied
@@ -444,7 +445,7 @@ check "Text eines Auftrags an einen Subagenten ist kein Befehl: keine Entscheidu
 echo "Werkzeuge, die Dateien schreiben"
 mkdir -p "$T/ordner"
 ln -s /etc/claude-code "$T/verweis"
-ln -s /run/frs/readonly "$T/liste"
+ln -s /run/lf/readonly "$T/liste"
 for tool in Write Edit NotebookEdit; do
 	key=file_path
 	[[ $tool == NotebookEdit ]] && key=notebook_path
@@ -452,12 +453,12 @@ for tool in Write Edit NotebookEdit; do
 	check "$tool auf die verwalteten Einstellungen: gesperrt" denied
 	guard_file "$tool" /etc/claude-code/CLAUDE.md "$key"
 	check "$tool auf die Regeln für Claude: gesperrt" denied
-	guard_file "$tool" /usr/local/bin/frs-claude-guard "$key"
+	guard_file "$tool" /usr/local/bin/lf-claude-guard "$key"
 	check "$tool auf das Sperr-Skript: gesperrt" denied
-	guard_file "$tool" /run/frs/readonly "$key"
+	guard_file "$tool" /run/lf/readonly "$key"
 	check "$tool auf die Liste der Quell-Disks: gesperrt" denied
 done
-guard_file Write /run/frs/claude-session/../readonly
+guard_file Write /run/lf/claude-session/../readonly
 check "Write über einen Umweg im Pfad (..): gesperrt" denied
 guard_file Write "$T/ordner/../verweis/managed-settings.json"
 check "Write über eine Verknüpfung auf /etc/claude-code: gesperrt" denied
@@ -469,19 +470,19 @@ guard_file WerkzeugVonMorgen /etc/claude-code/CLAUDE.md
 check "unbekanntes Werkzeug mit Dateipfad auf die Regeln: gesperrt" denied
 guard_file Write /dev/sdc
 check "Write auf ein Gerät: der Techniker bestätigt" asked
-guard_file Edit /usr/local/lib/frs/safety.sh
+guard_file Edit /usr/local/lib/lf/safety.sh
 check "Edit am Assistenten: der Techniker bestätigt" asked
-guard_file Write /mnt/frs-target/FRS/x/image.img
+guard_file Write /mnt/lf-target/LF/x/image.img
 check "Write auf das Original-Image: der Techniker bestätigt" asked
 guard_file Read /etc/claude-code/CLAUDE.md
 check "Read auf die Regeln: keine Entscheidung (Claude darf sie lesen)" passed
-guard_file Write /run/frs/claude-session/notiz.txt
+guard_file Write /run/lf/claude-session/notiz.txt
 check "Write im Arbeitsverzeichnis: keine Entscheidung" passed
-guard_file Edit /mnt/frs-target/FRS/x/report.txt
+guard_file Edit /mnt/lf-target/LF/x/report.txt
 check "Edit am Bericht: keine Entscheidung" passed
-guard_json Read '{"file_path": "/run/frs/claude-session/zustand.txt"}'
+guard_json Read '{"file_path": "/run/lf/claude-session/zustand.txt"}'
 check "Read der Zustandsdatei: keine Entscheidung" passed
-guard_json Grep '{"pattern": "setrw", "path": "/usr/local/lib/frs"}'
+guard_json Grep '{"pattern": "setrw", "path": "/usr/local/lib/lf"}'
 check "Grep: keine Entscheidung" passed
 guard_json ToolSearch '{"query": "x", "max_results": 3}'
 check "Werkzeug ohne Befehl und Pfad: keine Entscheidung" passed
@@ -531,7 +532,7 @@ command -v taskset >/dev/null && pin=(taskset -c 0)
 c='sudo sgdisk -p /dev/sdb; sudo sgdisk -Z /dev/sdc'
 in=$(jq -cn --arg c "$c" '{tool_name: "Bash", tool_input: {command: $c}}')
 odd=0
-for ((i = 0; i < ${FRS_TEST_REPEAT:-300}; i++)); do
+for ((i = 0; i < ${LF_TEST_REPEAT:-300}; i++)); do
 	printf '%s' "$in" | "${pin[@]}" "$GUARD" >"$T/out" 2>"$T/err"
 	r=$?
 	if [[ $r != 0 || -s $T/err || $(jq -r '.hookSpecificOutput.permissionDecision' <"$T/out" 2>/dev/null) != ask ]]; then
@@ -539,30 +540,30 @@ for ((i = 0; i < ${FRS_TEST_REPEAT:-300}; i++)); do
 		[[ $odd == 1 ]] && echo "       erste Abweichung: rc=$r stderr=$(head -c 120 "$T/err")"
 	fi
 done
-check "\"$c\" ${FRS_TEST_REPEAT:-300}-mal: jedes Mal Rückfrage, stderr leer" '[[ $odd == 0 ]]'
+check "\"$c\" ${LF_TEST_REPEAT:-300}-mal: jedes Mal Rückfrage, stderr leer" '[[ $odd == 0 ]]'
 trap - PIPE
 
 # ---------------------------------------------------------------------------
 echo "Verwaltete Einstellungen ($SETTINGS):"
 check "gültiges JSON" 'jq -e . "$SETTINGS" >/dev/null'
-check "der Hook gilt für jedes Werkzeug und ruft das Sperr-Skript unter seinem Pfad in der ISO auf" '[[ $(jq -r ".hooks.PreToolUse[] | select(.matcher == \"*\") | .hooks[0] | .type + \" \" + .command" "$SETTINGS") == "command /usr/local/bin/frs-claude-guard" ]]'
+check "der Hook gilt für jedes Werkzeug und ruft das Sperr-Skript unter seinem Pfad in der ISO auf" '[[ $(jq -r ".hooks.PreToolUse[] | select(.matcher == \"*\") | .hooks[0] | .type + \" \" + .command" "$SETTINGS") == "command /usr/local/bin/lf-claude-guard" ]]'
 check "es gibt nur diesen einen Hook" '[[ $(jq -r "[.hooks[][] | .hooks[]] | length" "$SETTINGS") == 1 ]]'
 check "scheitert der Hook, wird gesperrt (onFailure: block)" '[[ $(jq -r ".hooks.PreToolUse[0].hooks[0].onFailure" "$SETTINGS") == block ]]'
 check "der Hook hat eine kurze Frist" '[[ $(jq -r ".hooks.PreToolUse[0].hooks[0].timeout" "$SETTINGS") =~ ^([1-9]|[12][0-9]|30)$ ]]'
 check "Deny-Regeln als zweite Schicht für das Aufheben des Schreibschutzes" 'jq -e ".permissions.deny | index(\"Bash(*--setrw*)\") != null and index(\"Bash(*hdparm*-r0*)\") != null" "$SETTINGS" >/dev/null'
-check "Deny-Regeln für die Dateiwerkzeuge: Einstellungen, Sperr-Skript und Liste der Quell-Disks" 'jq -e ".permissions.deny | index(\"Edit(//etc/claude-code/**)\") != null and index(\"Edit(//usr/local/bin/frs-claude-guard)\") != null and index(\"Edit(//run/frs/readonly)\") != null" "$SETTINGS" >/dev/null'
+check "Deny-Regeln für die Dateiwerkzeuge: Einstellungen, Sperr-Skript und Liste der Quell-Disks" 'jq -e ".permissions.deny | index(\"Edit(//etc/claude-code/**)\") != null and index(\"Edit(//usr/local/bin/lf-claude-guard)\") != null and index(\"Edit(//run/lf/readonly)\") != null" "$SETTINGS" >/dev/null'
 check "der Modus ohne Rückfragen ist abgeschaltet" '[[ $(jq -r ".permissions.disableBypassPermissionsMode" "$SETTINGS") == disable ]]'
 check "der Auto-Modus ist abgeschaltet: Über Befehle entscheidet der Techniker, kein Klassifikator" '[[ $(jq -r ".disableAutoMode" "$SETTINGS") == disable ]]'
 check "Hooks kommen nur aus dem Rettungssystem, nicht aus einem Projektordner" '[[ $(jq -r ".allowManagedHooksOnly" "$SETTINGS") == true ]]'
 check "Erlaubnis-Regeln gelten nur aus dem Rettungssystem: Keine Regel von außen schaltet eine Rückfrage ab" '[[ $(jq -r ".allowManagedPermissionRulesOnly" "$SETTINGS") == true ]]'
 check "Skills, Agenten und MCP-Server kommen nur aus dem Rettungssystem, nicht aus einem Projektordner" '[[ $(jq -r ".strictPluginOnlyCustomization" "$SETTINGS") == true ]]'
 check "eine CLAUDE.md unter den Einhängepunkten /mnt, /media und /run/media wird nicht geladen" '[[ $(jq -c ".claudeMdExcludes | sort" "$SETTINGS") == "[\"/media/**\",\"/mnt/**\",\"/run/media/**\"]" ]]'
-check "der Assistent hängt Ziel und Images unter /mnt ein, also unter einem ausgeschlossenen Pfad" 'grep -q "^FRS_TARGET_MNT=\"/mnt/" rescue/lib/common.sh && grep -q "^FRS_IMAGE_MNT=\"/mnt/" rescue/lib/common.sh'
+check "der Assistent hängt Ziel und Images unter /mnt ein, also unter einem ausgeschlossenen Pfad" 'grep -q "^LF_TARGET_MNT=\"/mnt/" rescue/lib/common.sh && grep -q "^LF_IMAGE_MNT=\"/mnt/" rescue/lib/common.sh'
 check "keine Regel erlaubt etwas von selbst" '[[ $(jq -r ".permissions.allow // [] | length" "$SETTINGS") == 0 ]]'
 check "das Sperr-Skript ist ausführbar und liegt bei den Programmen des Assistenten" '[[ -x $GUARD ]] && grep -q "rescue/bin/\*" build/build.sh'
 check "der Build legt die Einstellungen dorthin, wo Claude Code sie als verwaltet liest" 'grep -q "rescue/claude/managed-settings.json\" \"\$CHROOT/etc/claude-code/managed-settings.json\"" build/build.sh'
-check "die Regeln für Claude nennen die Sperre" 'grep -q "frs-claude-guard" rescue/claude/CLAUDE.md'
-check "der Selbsttest der ISO prüft die Sperre mit der echten CLI" 'grep -q "selftest_claude \"\$dir\" || ok=0" rescue/frs && [[ -f rescue/lib/selftest-claude-api.py ]]'
+check "die Regeln für Claude nennen die Sperre" 'grep -q "lf-claude-guard" rescue/claude/CLAUDE.md'
+check "der Selbsttest der ISO prüft die Sperre mit der echten CLI" 'grep -q "selftest_claude \"\$dir\" || ok=0" rescue/lf && [[ -f rescue/lib/selftest-claude-api.py ]]'
 
 rm -rf "$T"
 ((fails == 0)) && echo "Alle Tests bestanden." || { echo "$fails Test(s) fehlgeschlagen."; exit 1; }

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Unit-Test: Der Name eines Fallordners bleibt ein Name.
 #
-# Beim Fortsetzen liest der Assistent die Ordner unter FRS/ von der Ziel-Disk. Ihr Name stand
+# Beim Fortsetzen liest der Assistent die Ordner unter LF/ von der Ziel-Disk. Ihr Name stand
 # ungeprüft im Menü und danach in Befehlszeilen. Ein Ordner namens "--title" wurde von whiptail
 # als Option gelesen, und ein Name mit einem Anführungszeichen wurde beim Umwandeln in VHDX als
 # Befehl ausgeführt. Der Test prüft:
@@ -21,6 +21,8 @@ T=$(mktemp -d)
 . rescue/lib/casefile.sh
 # shellcheck disable=SC1091
 . rescue/lib/recover.sh
+# shellcheck disable=SC1091
+. rescue/lib/target.sh
 # Präparierte Namen legen Markerdateien im Arbeitsverzeichnis an, falls sie ausgeführt werden.
 mkdir -p "$T/lauf"
 cd "$T/lauf" || exit 1
@@ -57,8 +59,8 @@ check "Prüfung hängt nicht von der Sprache ab" '! (LC_ALL=de_DE.UTF-8 casefile
 
 # ---------------------------------------------------------------------------
 # Attrappen für den Assistenten. Auswahl und Menüs laufen in $(…), deshalb in Dateien.
-FRS_TARGET_MNT="$T/ziel"
-FRS_LOG=/dev/null
+LF_TARGET_MNT="$T/ziel"
+LF_LOG=/dev/null
 log() { printf '%s\n' "$*" >>"$T/log"; }
 tmux() { return 1; }
 human() { echo "1GiB"; }
@@ -113,13 +115,13 @@ wizard() {
 	NAME=$(basename "$(cat "$T/run" 2>/dev/null)")
 }
 wizard "WDC WD10EZEX-08WN4A0" "WD-WCC6Y0ABCDEF"
-check "gewöhnliche Disk: Fall angelegt" '[[ -f $T/ziel/FRS/$NAME/case.env ]]'
+check "gewöhnliche Disk: Fall angelegt" '[[ -f $T/ziel/LF/$NAME/case.env ]]'
 check "gewöhnliche Disk: Modell und Kennung im Namen" '[[ $NAME == *_WDC_WD10EZEX-08WN4A0_WD_WCC6Y0ABCDEF ]]'
 i=0
 for model in "--title" "x'; touch MARKE-modell; echo '" 'Disk $(touch MARKE-modell2)' "Platte für Müller" "" $'Zeile1\nZeile2' "$(printf '%0300d' 0)"; do
 	i=$((i + 1))
 	wizard "$model" "S/N: 12 34'\"; touch MARKE-serial"
-	check "Modellangabe $i: Name zulässig, Fall angelegt" 'casefile_dirname_ok "$NAME" && [[ -f $T/ziel/FRS/$NAME/case.env ]]'
+	check "Modellangabe $i: Name zulässig, Fall angelegt" 'casefile_dirname_ok "$NAME" && [[ -f $T/ziel/LF/$NAME/case.env ]]'
 done
 check "nichts wurde ausgeführt: keine Markerdatei" '! markers'
 
@@ -133,8 +135,8 @@ ui_menu() {
 }
 # zielfall NAME [ZUSTAND]   Rettungsfall auf der gedachten Ziel-Disk.
 zielfall() {
-	mkdir -p "$T/ziel/FRS/$1"
-	printf '%s\n' 'SRC_ID="ABC"' 'SRC_SIZE="1"' "STATE=\"${2:-done}\"" >"$T/ziel/FRS/$1/case.env"
+	mkdir -p "$T/ziel/LF/$1"
+	printf '%s\n' 'SRC_ID="ABC"' 'SRC_SIZE="1"' "STATE=\"${2:-done}\"" >"$T/ziel/LF/$1/case.env"
 }
 # resume   Ruft recover_resume auf. Ergebnis: MENU (angebotene Einträge), MSG, AFTER.
 resume() {
@@ -146,57 +148,77 @@ resume() {
 	LOG=$(cat "$T/log" 2>/dev/null)
 }
 rm -rf "$T/ziel"
-mkdir -p "$T/ziel/FRS" "$T/woanders"
+mkdir -p "$T/ziel/LF" "$T/woanders"
 zielfall 20261112-0900_WDC_gut
 zielfall 20261101-1200_kaputt
-echo 'touch MARKE-falldatei' >"$T/ziel/FRS/20261101-1200_kaputt/case.env"
+echo 'touch MARKE-falldatei' >"$T/ziel/LF/20261101-1200_kaputt/case.env"
 # Jeder präparierte Name bekommt einen Ordner mit gültiger Falldatei. Namen mit Punkt am
-# Anfang erfasst das Muster FRS/*/ ohnehin nicht.
+# Anfang erfasst das Muster LF/*/ ohnehin nicht.
 hostile=0
 for name in "${BAD[@]}"; do
 	[[ -n $name && $name != .* ]] || continue
 	zielfall "$name"
 	hostile=$((hostile + 1))
 done
-mkdir -p "$T/ziel/FRS/Alte Sachen" # fremder Ordner ohne Falldatei: wird still übergangen
+mkdir -p "$T/ziel/LF/Alte Sachen" # fremder Ordner ohne Falldatei: wird still übergangen
 printf '%s\n' 'SRC_ID="ABC"' 'SRC_SIZE="1"' 'STATE="done"' >"$T/woanders/case.env"
-ln -s "$T/woanders" "$T/ziel/FRS/verknuepft" # Verknüpfung mit zulässigem Namen: zählt mit
+ln -s "$T/woanders" "$T/ziel/LF/verknuepft" # Verknüpfung mit zulässigem Namen: zählt mit
 hostile=$((hostile + 1))
 resume
 check "angeboten werden genau die beiden zulässigen Ordner" '[[ $MENU == "20261101-1200_kaputt"$'"'"'\n'"'"'"[ungültig]"$'"'"'\n'"'"'"20261112-0900_WDC_gut"$'"'"'\n'"'"'"[done]" ]]'
-check "die übrigen sind gezählt, mit Hinweis" '[[ $MSG == "Fortsetzen|Nicht angebotene Einträge unter FRS/: '"$hostile"'"* ]]'
+check "die übrigen sind gezählt, mit Hinweis" '[[ $MSG == "Fortsetzen|Nicht angebotene Einträge unter LF/: '"$hostile"'"* ]]'
 check "der Hinweis nennt keinen der Namen" '[[ $MSG != *title* && $MSG != *touch* && $MSG != *MARKE* && $LOG != *touch* ]]'
 check "es sind mehr als 20 präparierte Einträge" '((hostile > 20))'
 check "der ungültige Fall wird gewählt und abgelehnt, nicht ausgeführt" '[[ -z $AFTER && $MSG == *"Rettungsfall nicht verwendbar"* ]]'
 # Der Ordner zu diesem Namen liegt auf der Disk, mit gültiger Falldatei im Zustand "done".
 PICK="x'; touch MARKE-quote; echo '"
 resume
-check "den Ordner zum präparierten Namen gibt es, mit gültiger Falldatei" '[[ $(casefile_peek "$T/ziel/FRS/$PICK/case.env" STATE) == "done" ]]'
+check "den Ordner zum präparierten Namen gibt es, mit gültiger Falldatei" '[[ $(casefile_peek "$T/ziel/LF/$PICK/case.env" STATE) == "done" ]]'
 check "liefert das Menü einen nicht angebotenen Namen, passiert nichts" '[[ -z $AFTER && $MSG != *"nicht verwendbar"* ]]'
 unset PICK
 
-rm -rf "$T/ziel/FRS"
-mkdir -p "$T/ziel/FRS"
+rm -rf "$T/ziel/LF"
+mkdir -p "$T/ziel/LF"
 zielfall "--title"
 zielfall "x'; touch MARKE-einzig; echo '"
 resume
 check "nur präparierte Ordner: kein Menü, klare Meldung" '[[ -z $MENU && $MSG == *"kein Rettungsfall, den der Assistent verwenden kann"* ]]'
 
-rm -rf "$T/ziel/FRS"
-mkdir -p "$T/echtes-frs"
-ln -s "$T/echtes-frs" "$T/ziel/FRS"
+rm -rf "$T/ziel/LF"
+mkdir -p "$T/echtes-lf"
+ln -s "$T/echtes-lf" "$T/ziel/LF"
 zielfall 20261112-0900_WDC_gut
 resume
-check "FRS selbst ist eine Verknüpfung: kein Menü, abgelehnt" '[[ -z $MENU && -z $AFTER && $MSG == *"FRS auf dieser Disk ist eine Verknüpfung"* ]]'
+check "LF selbst ist eine Verknüpfung: kein Menü, abgelehnt" '[[ -z $MENU && -z $AFTER && $MSG == *"LF auf dieser Disk ist eine Verknüpfung"* ]]'
 check "nichts wurde ausgeführt: keine Markerdatei" '! markers'
+
+echo "Übergang von firestrike-rescue (eine Beta lang): Fälle unter FRS/:"
+rm -rf "$T/ziel/LF" "$T/ziel/FRS"
+mkdir -p "$T/ziel/FRS/20261101-1200_alt"
+printf '%s\n' 'SRC_ID="ABC"' 'SRC_SIZE="1"' 'STATE="done"' >"$T/ziel/FRS/20261101-1200_alt/case.env"
+PICK=20261101-1200_alt
+resume
+check "nur unter FRS/ liegen Fälle: sie werden angeboten und fortgesetzt" '[[ $MENU == "20261101-1200_alt"$'"'"'\n'"'"'"[done]" && $AFTER == "$T/ziel/FRS/20261101-1200_alt" ]]'
+zielfall 20261112-0900_WDC_gut
+PICK=20261112-0900_WDC_gut
+resume
+check "liegen auch unter LF/ Fälle, gilt LF/" '[[ $MENU == "20261112-0900_WDC_gut"$'"'"'\n'"'"'"[done]" && $AFTER == "$T/ziel/LF/20261112-0900_WDC_gut" ]]'
+unset PICK
+rm -rf "$T/ziel/LF" "$T/ziel/FRS"
+mkdir -p "$T/echtes-frs/20261101-1200_alt"
+printf '%s\n' 'SRC_ID="ABC"' 'SRC_SIZE="1"' 'STATE="done"' >"$T/echtes-frs/20261101-1200_alt/case.env"
+ln -s "$T/echtes-frs" "$T/ziel/FRS"
+resume
+check "FRS selbst ist eine Verknüpfung: kein Menü, abgelehnt" '[[ -z $MENU && -z $AFTER && $MSG == *"FRS auf dieser Disk ist eine Verknüpfung"* ]]'
+rm -f "$T/ziel/FRS"
 
 # ---------------------------------------------------------------------------
 echo "Ein präparierter Name wird in keiner Befehlszeile zum Befehl:"
 # Jetzt mit dem echten recover_after: Der Techniker wählt den Fall und "In VHDX umwandeln".
 # shellcheck disable=SC1090
 . "$REPO/rescue/lib/recover.sh"
-rm -rf "$T/ziel/FRS"
-mkdir -p "$T/ziel/FRS"
+rm -rf "$T/ziel/LF"
+mkdir -p "$T/ziel/LF"
 zielfall "x'; touch MARKE-vhdx; echo '"
 ui_menu() {
 	echo x >>"$T/menues"
@@ -211,24 +233,24 @@ recover_resume
 check "über Fortsetzen: keine Befehlszeile gebaut, nichts ausgeführt" '[[ ! -e $T/tmux ]] && ! markers'
 rm -f "$T/menues" "$T/tmux" "$T/msg"
 echo x >"$T/menues"
-recover_after "$T/ziel/FRS/x'; touch MARKE-direkt; echo '"
+recover_after "$T/ziel/LF/x'; touch MARKE-direkt; echo '"
 check "recover_after direkt: abgelehnt, keine Befehlszeile gebaut" '[[ ! -e $T/tmux && $(cat "$T/msg") == "Abbruch|Der Fallordner hat einen Namen"* ]] && ! markers'
 zielfall 20261112-0900_WDC_gut
 rm -f "$T/menues" "$T/tmux" "$T/msg"
 echo x >"$T/menues"
-recover_after "$T/ziel/FRS/20261112-0900_WDC_gut"
-check "zulässiger Name: die Umwandlung wird gestartet" '[[ $(cat "$T/tmux" 2>/dev/null) == "frs-vhdx bash -c qemu-img convert"*"/FRS/20261112-0900_WDC_gut/image.vhdx"* ]]'
+recover_after "$T/ziel/LF/20261112-0900_WDC_gut"
+check "zulässiger Name: die Umwandlung wird gestartet" '[[ $(cat "$T/tmux" 2>/dev/null) == "lf-vhdx bash -c qemu-img convert"*"/LF/20261112-0900_WDC_gut/image.vhdx"* ]]'
 
 # ---------------------------------------------------------------------------
 # Zweite Sicherung: Auch ohne die Prüfung des Namens wird kein Pfad zum Befehl. Pfade sind
 # eigene Argumente des Befehls und stehen nie in seinem Text.
 echo "Pfade sind Argumente, nie Befehlstext:"
-check "kein Befehlstext in doppelten Anführungszeichen mehr (bash -c \"…\")" '! grep -rn "bash -c \"" "$REPO/rescue/lib" "$REPO/rescue/frs" "$REPO/rescue/bin"'
+check "kein Befehlstext in doppelten Anführungszeichen mehr (bash -c \"…\")" '! grep -rn "bash -c \"" "$REPO/rescue/lib" "$REPO/rescue/lf" "$REPO/rescue/bin"'
 casefile_dirname_ok() { return 0; }
 zielfall "y'; touch MARKE-argument; echo '"
 rm -f "$T/menues" "$T/tmux" "$T/msg"
 echo x >"$T/menues"
-recover_after "$T/ziel/FRS/y'; touch MARKE-argument; echo '"
+recover_after "$T/ziel/LF/y'; touch MARKE-argument; echo '"
 check "Name mit Anführungszeichen, Namensprüfung abgeschaltet: Der Befehl startet, der Name bleibt ein Argument" '[[ -s $T/tmux ]] && ! markers'
 # Das Protokoll wird in den Fallordner kopiert. Liegt dort eine Verknüpfung gleichen Namens,
 # wird sie ersetzt und nicht durchschrieben.
@@ -242,12 +264,12 @@ recover_case_invalid() { :; }
 recover_after() { :; }
 zielfall 20261112-0900_Protokoll
 echo "geheim" >"$T/opfer"
-FRS_LOG="$T/frs-sitzung.log"
-echo "Zeile aus dem Protokoll" >"$FRS_LOG"
-ln -s "$T/opfer" "$T/ziel/FRS/20261112-0900_Protokoll/$(basename "$FRS_LOG")"
-recover_run "$T/ziel/FRS/20261112-0900_Protokoll" /dev/sdx >/dev/null 2>&1
+LF_LOG="$T/lf-sitzung.log"
+echo "Zeile aus dem Protokoll" >"$LF_LOG"
+ln -s "$T/opfer" "$T/ziel/LF/20261112-0900_Protokoll/$(basename "$LF_LOG")"
+recover_run "$T/ziel/LF/20261112-0900_Protokoll" /dev/sdx >/dev/null 2>&1
 check "Verknüpfung mit dem Namen des Protokolls: Ihr Ziel bleibt unberührt" '[[ $(cat "$T/opfer") == geheim ]]'
-check "im Fallordner liegt danach das Protokoll als gewöhnliche Datei" '[[ ! -L $T/ziel/FRS/20261112-0900_Protokoll/frs-sitzung.log && $(cat "$T/ziel/FRS/20261112-0900_Protokoll/frs-sitzung.log") == "Zeile aus dem Protokoll" ]]'
+check "im Fallordner liegt danach das Protokoll als gewöhnliche Datei" '[[ ! -L $T/ziel/LF/20261112-0900_Protokoll/lf-sitzung.log && $(cat "$T/ziel/LF/20261112-0900_Protokoll/lf-sitzung.log") == "Zeile aus dem Protokoll" ]]'
 
 cd "$REPO" || exit 1
 rm -rf "$T"

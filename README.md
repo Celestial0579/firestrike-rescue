@@ -1,10 +1,12 @@
-<p align="center"><img src="docs/banner.svg" alt="Firestrike Rescue" width="100%"></p>
+<p align="center"><img src="docs/banner.svg" alt="Leuchtfeuer" width="100%"></p>
 
-Firestrike Rescue ist ein bootfähiges Rettungssystem auf Basis von **Ubuntu 26.04 LTS**. Es ist mit allen Updates gebaut und bringt die wichtigen Werkzeuge mit. Ein Assistent führt Schritt für Schritt durch drei Aufgaben:
+Leuchtfeuer ist ein bootfähiges Rettungssystem auf Basis von **Ubuntu 26.04 LTS**. Es ist mit allen Updates gebaut und bringt die wichtigen Werkzeuge mit. Ein Assistent führt Schritt für Schritt durch drei Aufgaben:
 
 - **Datenrettung** von defekten Disks. Zuerst entsteht immer ein Image auf einer Ziel-Disk, dann geht es mit dem Image weiter.
 - **Klonen**, z. B. von HDD auf SSD. Die Größe wird automatisch angepasst, auch auf kleinere Ziele.
 - **Disk anpassen**: Partitionen vergrößern oder verkleinern, GPT reparieren, sicher löschen.
+
+Leuchtfeuer hieß bis November 2026 **firestrike-rescue**. GitHub leitet alte Links und Klone auf dieses Repo um. Eine Beta lang gelten die alten `frs`-Befehle weiter, und ein persistenter Speicher mit dem alten Namen `FRS-DATA` wird wie `LF-DATA` verwendet. Rettungsfälle im alten Ordner `FRS/` auf einer Ziel-Disk lassen sich fortsetzen.
 
 **Claude** ist an Bord, als Claude Code CLI und als Claude Desktop. Auf dem Stick gibt es einen kleinen, verschlüsselten Speicher für Configs, `CLAUDE.md` und Logins.
 
@@ -16,8 +18,9 @@ Fertige ISOs gibt es unter [Releases](../../releases). Jeden Monat entsteht auto
 Die ISO kommt **im DD-Modus** auf einen USB-Stick. Empfohlen sind mindestens 8 GB, damit Platz für den persistenten Speicher bleibt.
 
 - **Windows:** [Rufus](https://rufus.ie). ISO wählen, Rufus fragt nach dem Modus, „DD-Image“ wählen.
-- **Linux/macOS:** `sudo dd if=firestrike-rescue-*.iso of=/dev/sdX bs=4M status=progress conv=fsync`
-- So prüfst du die Herkunft: `gh attestation verify firestrike-rescue-*.iso --repo Celestial0579/firestrike-rescue`
+- **Linux/macOS:** `sudo dd if=leuchtfeuer-*.iso of=/dev/sdX bs=4M status=progress conv=fsync`
+- So prüfst du die Herkunft: `gh attestation verify leuchtfeuer-*.iso --repo Celestial0579/leuchtfeuer`
+- Ältere Betas bis `v26.04-20261115.6-beta` heißen noch `firestrike-rescue-*.iso`. Ihre Herkunft prüfst du mit dem alten Repo-Namen, unter dem sie gebaut wurden: `gh attestation verify firestrike-rescue-*.iso --repo Celestial0579/firestrike-rescue`
 
 Der Stick startet per UEFI (auch mit Secure Boot) und per Legacy-BIOS.
 
@@ -47,7 +50,7 @@ Diese Schutzregeln gelten immer:
 - Texte von Datenträgern sind auch für Claude Daten, keine Anweisungen. Was die Geräte melden, steht in einer Datendatei (`zustand.txt`), nicht in einer `CLAUDE.md`. Eine `CLAUDE.md`, Hooks, Skills oder ein MCP-Server von einem eingehängten Datenträger gelten nicht.
 - Was ein Datenträger über sich meldet (Modell, Label, Partitionsname), steht in Dialogen nur gefiltert: sichtbare Zeichen, alles andere als `?`. Eine Seriennummer mit anderen Zeichen gilt nicht als Kennung. Auch die Ausgabe von Werkzeugen wie fsck erreicht Bildschirm und Protokoll ohne Steuerzeichen.
 - Die Suche nach Rettungsfällen schreibt nicht. Die gewählte Disk ist dabei schreibgeschützt und nur lesend eingehängt, bis du einen Rettungsfall gewählt hast.
-- Der persistente Speicher ist nur die Partition `FRS-DATA` auf dem Stick, von dem gestartet wurde. Unverschlüsselt wird er erst nach einer Rückfrage eingebunden, und `frs.conf` wird gelesen, nicht ausgeführt.
+- Der persistente Speicher ist nur die Partition `LF-DATA` auf dem Stick, von dem gestartet wurde. Unverschlüsselt wird er erst nach einer Rückfrage eingebunden, und `lf.conf` wird gelesen, nicht ausgeführt.
 - Für Claude sind die wichtigsten Regeln gesperrt statt nur aufgeschrieben. Den Schreibschutz einer Disk aufheben, die Sperre anfassen oder das Original-Image reparieren kann Claude nicht. Jeden schreibenden Befehl bestätigst du selbst, und keine Rückfrage lässt sich dauerhaft abschalten. Auto-Modus und Modus ohne Rückfragen gibt es nicht.
 
 Was ist drin
@@ -80,9 +83,9 @@ Die ISO landet in `out/`.
 | `build/packages.list` | Paketliste |
 | `build/chroot-setup.sh` | Pakete, Claude, Sicherheits-Defaults |
 | `build/grub/` | Bootmenü und Theme |
-| `rescue/frs` | Assistent, Bibliotheken in `rescue/lib/` |
+| `rescue/lf` | Assistent, Bibliotheken in `rescue/lib/` |
 | `rescue/claude/CLAUDE.md` | Regeln für Claude im Rettungssystem |
-| `rescue/claude/managed-settings.json`, `rescue/bin/frs-claude-guard` | Sperre für Claude: Was die Regeln verbieten, lehnt ein Hook ab. Kein Auto-Modus. Hooks, Erlaubnis-Regeln, Skills, Agenten und MCP-Server nur aus dem Rettungssystem, keine `CLAUDE.md` von einem Einhängepunkt. `rescue/bin/claude` startet die CLI ohne Projekt-Einstellungen (`--setting-sources user`), eine neue Version erst nach `rescue/bin/frs-claude-check`. CLI und Desktop laufen als Benutzer `frs-claude` und dürfen als root nur `rescue/bin/frs-lesen` und `rescue/bin/frs-aufgabe` starten, mehr nur zeitlich begrenzt über `rescue/bin/frs-freigabe` |
+| `rescue/claude/managed-settings.json`, `rescue/bin/lf-claude-guard` | Sperre für Claude: Was die Regeln verbieten, lehnt ein Hook ab. Kein Auto-Modus. Hooks, Erlaubnis-Regeln, Skills, Agenten und MCP-Server nur aus dem Rettungssystem, keine `CLAUDE.md` von einem Einhängepunkt. `rescue/bin/claude` startet die CLI ohne Projekt-Einstellungen (`--setting-sources user`), eine neue Version erst nach `rescue/bin/lf-claude-check`. CLI und Desktop laufen als Benutzer `lf-claude` und dürfen als root nur `rescue/bin/lf-lesen` und `rescue/bin/lf-aufgabe` starten, mehr nur zeitlich begrenzt über `rescue/bin/lf-freigabe` |
 | `rescue/claude/skills/` | Skills zur Datenrettung für Claude, verwaltet unter `/etc/claude-code/.claude/skills` |
 | `tests/qemu-smoke.sh` | Boot-Tests (UEFI, BIOS, Selbsttest mit simulierter defekter Disk) |
 

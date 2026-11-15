@@ -14,15 +14,15 @@ cd "$(dirname "$0")/.." || exit 1
 export LC_ALL=C.UTF-8
 
 T=$(mktemp -d)
-FRS_RUN=$T
+LF_RUN=$T
 # shellcheck disable=SC1091
 . rescue/lib/common.sh
 # shellcheck disable=SC1091
 . rescue/lib/clone.sh
 # shellcheck disable=SC1091
 . rescue/lib/resize.sh
-FRS_LOG=$T/log
-: >"$FRS_LOG"
+LF_LOG=$T/log
+: >"$LF_LOG"
 
 fails=0
 check() {
@@ -37,15 +37,15 @@ runv false >/dev/null
 check "Fehler: 1" '[[ $? == 1 ]]'
 runv bash -c 'echo ausgabe; exit 3' >"$T/out"
 check "Rückgabe 3 bleibt 3, die Ausgabe kommt trotzdem an" '[[ $? == 3 && $(cat "$T/out") == ausgabe ]]'
-check "das Protokoll nennt Befehl und Rückgabewert" 'grep -q -- "-> rc=3" "$FRS_LOG" && grep -q "^ausgabe$" "$FRS_LOG"'
+check "das Protokoll nennt Befehl und Rückgabewert" 'grep -q -- "-> rc=3" "$LF_LOG" && grep -q "^ausgabe$" "$LF_LOG"'
 if runv false >/dev/null; then r=weiter; else r=abbruch; fi
 check "\"runv … || Abbruch\" reagiert auf den Fehler" '[[ $r == abbruch ]]'
 
 echo "Die Ausgabe erreicht Bildschirm und Protokoll nur gefiltert:"
-: >"$FRS_LOG"
+: >"$LF_LOG"
 runv printf 'Datei \033[2J\033[HALLES GUT\x9b2J\xc2\x9b1m\a\x7f ende\n' >"$T/out"
 check "ESC, U+009B, BEL und DEL sind entfernt" '[[ $(cat "$T/out") == "Datei [2J[HALLES GUT2J1m ende" ]]'
-check "im Protokoll steht dasselbe" 'grep -qx "Datei \[2J\[HALLES GUT2J1m ende" "$FRS_LOG"'
+check "im Protokoll steht dasselbe" 'grep -qx "Datei \[2J\[HALLES GUT2J1m ende" "$LF_LOG"'
 check "kein Steuerzeichen außer Zeilenwechsel bleibt" '! LC_ALL=C grep -q "[[:cntrl:]]" "$T/out"'
 runv printf 'Größe: 50 %%\r 60 %%\tfertig – ß ä 😀\n' >"$T/out"
 check "Umlaute, Gedankenstrich, Wagenrücklauf und Tabulator bleiben" '[[ $(cat "$T/out") == $'"'"'Größe: 50 %\r 60 %\tfertig – ß ä 😀'"'"' ]]'

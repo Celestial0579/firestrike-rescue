@@ -23,7 +23,7 @@ tools_menu() {
 		persist) persist_menu ;;
 		freigabe) claude_freigabe_menu ;;
 		logs) tools_logs ;;
-		hw) sudo lshw -short >"$FRS_RUN/hw.txt" 2>&1; ui_textfile "Hardware" "$FRS_RUN/hw.txt" ;;
+		hw) sudo lshw -short >"$LF_RUN/hw.txt" 2>&1; ui_textfile "Hardware" "$LF_RUN/hw.txt" ;;
 		mc) mc ;;
 		shell) clear; echo "Shell. Zurück zum Assistenten mit 'exit'."; bash -i ;;
 		esac
@@ -41,8 +41,8 @@ tools_smart() {
 		result "Testergebnisse anzeigen") || return 0
 	case $a in
 	show | result)
-		sudo smartctl -x "$dev" >"$FRS_RUN/smart.txt" 2>&1
-		ui_textfile "SMART $dev" "$FRS_RUN/smart.txt"
+		sudo smartctl -x "$dev" >"$LF_RUN/smart.txt" 2>&1
+		ui_textfile "SMART $dev" "$LF_RUN/smart.txt"
 		;;
 	short) run sudo smartctl -t short "$dev"; ui_msg "SMART" "Kurztest läuft. Ergebnis in ca. 2 Minuten unter 'Testergebnisse'." ;;
 	long)
@@ -50,7 +50,7 @@ tools_smart() {
 			run sudo smartctl -t long "$dev" && ui_msg "SMART" "Langtest läuft im Laufwerk selbst."
 		;;
 	esac
-	rm -f "$FRS_RUN/smart-$(basename "$dev")"
+	rm -f "$LF_RUN/smart-$(basename "$dev")"
 }
 
 tools_mem() {
@@ -58,7 +58,7 @@ tools_mem() {
 	free=$(awk '/MemAvailable/ {print int($2/1024)}' /proc/meminfo)
 	mb=$(ui_input "memtester" "Wie viele MB testen? (verfügbar: $free MB)\nFür einen gründlichen Test besser memtest86+ aus dem Bootmenü." "$((free * 7 / 10))") || return 0
 	[[ $mb =~ ^[0-9]+$ ]] || return 0
-	tmux_run "frs-memtest" bash -c 'sudo memtester "$1"M 1; read -r -p "Fertig. Enter … " _' _ "$mb"
+	tmux_run "lf-memtest" bash -c 'sudo memtester "$1"M 1; read -r -p "Fertig. Enter … " _' _ "$mb"
 }
 
 tools_ssh() {
@@ -73,12 +73,12 @@ tools_ssh() {
 	run sudo systemctl start ssh
 	ips=$(ip -4 -o addr show scope global | awk '{print $4}' | cut -d/ -f1 | tr '\n' ' ')
 	log "SSH eingeschaltet (Einmal-Passwort gesetzt)"
-	ui_msg "SSH ist an" "Verbinden mit:\n\n   ssh $(id -un)@${ips%% *}\n\nAdressen: $ips\nPasswort (nur für diese Sitzung): $pw\n\nLaufende Rettung ansehen: tmux attach -t frs-rettung"
+	ui_msg "SSH ist an" "Verbinden mit:\n\n   ssh $(id -un)@${ips%% *}\n\nAdressen: $ips\nPasswort (nur für diese Sitzung): $pw\n\nLaufende Rettung ansehen: tmux attach -t lf-rettung"
 }
 
 tools_logs() {
 	local items=() f
-	for f in "$FRS_PERSIST"/logs/*.log "$FRS_RUN"/logs/*.log; do
+	for f in "$LF_PERSIST"/logs/*.log "$LF_RUN"/logs/*.log; do
 		[[ -f $f ]] && items+=("$f" "$(date -r "$f" '+%F %T') $(human "$(stat -c %s "$f")")")
 	done
 	((${#items[@]})) || { ui_msg "Protokolle" "Keine Protokolle gefunden."; return 0; }

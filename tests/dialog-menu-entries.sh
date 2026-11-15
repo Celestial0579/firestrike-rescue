@@ -3,7 +3,7 @@
 #
 # Der Test zeichnet ui_menu mit echtem whiptail in ein Pseudo-Terminal (script) und prüft, was
 # dort ankommt und was die Auswahl liefert. Anlass: Menüeinträge stammen oft von Datenträgern
-# (Ordnernamen unter FRS/, Seriennummern). Ein Eintrag "--title" verschwand aus der Liste und
+# (Ordnernamen unter LF/, Seriennummern). Ein Eintrag "--title" verschwand aus der Liste und
 # ersetzte den Titel des Dialogs durch seine Beschreibung, bei "--yesno" kam statt des Menüs
 # der Hilfetext von whiptail und die Auswahl war nicht mehr möglich.
 #
@@ -17,7 +17,7 @@ for t in whiptail script; do
 done
 
 T=$(mktemp -d)
-WAIT=${FRS_TEST_WAIT:-2} # Sekunden, bis der Dialog steht und Tasten ankommen dürfen
+WAIT=${LF_TEST_WAIT:-2} # Sekunden, bis der Dialog steht und Tasten ankommen dürfen
 
 # Läuft im Pseudo-Terminal: die echte Bibliothek, die Argumente für ui_menu stehen zeilenweise
 # in einer Datei.
@@ -27,8 +27,8 @@ stty rows 25 cols 80
 export TERM=linux
 cd "$REPO" || exit 1
 . rescue/lib/common.sh
-FRS_LOG=/dev/null
-UI_BACKTITLE="Firestrike Rescue Dialogtest"
+LF_LOG=/dev/null
+UI_BACKTITLE="Leuchtfeuer Dialogtest"
 mapfile -t ARGS <"$OUT/args"
 sel=$(ui_menu "${ARGS[@]}")
 echo $? >"$OUT/rc"
@@ -90,7 +90,7 @@ menu "$ENTER" "SMART" "--msgbox ist hier nur Text" -- a "Eintrag A" b "Eintrag B
 check "der Text wird angezeigt, das Menü bleibt ein Menü" '[[ $SCREEN == *"--msgbox ist hier nur Text"* && $SCREEN == *"Eintrag B"* && $RC == 0 && $SEL == a ]]'
 
 echo "Was vorher ging, geht weiter:"
-menu "$ENTER" "Firestrike Rescue" "Empfehlung" --default-item b -- a "Eintrag A" b "Eintrag B"
+menu "$ENTER" "Leuchtfeuer" "Empfehlung" --default-item b -- a "Eintrag A" b "Eintrag B"
 check "Optionen vor den Einträgen gelten (--default-item)" '[[ $RC == 0 && $SEL == b ]]'
 menu "$ESC" "Fortsetzen" "Welcher Rettungsfall?" -- "--title" "[new]" "$FALL" "[interrupted]"
 check "Abbrechen liefert nichts" '[[ $RC != 0 && -z $SEL ]]'

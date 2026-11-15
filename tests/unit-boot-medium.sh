@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Unit-Test: Die initrd nimmt nur das geprüfte Live-Medium (casper-premount/frs_medium).
+# Unit-Test: Die initrd nimmt nur das geprüfte Live-Medium (casper-premount/lf_medium).
 #
 # Das Skript läuft in der initrd, bevor casper ein Medium sucht. Kandidaten sind die Geräte mit
 # der UUID der ISO. Eines gilt nur, wenn casper/ genau filesystem.squashfs enthält und dessen
@@ -10,7 +10,7 @@ set -u
 cd "$(dirname "$0")/.." || exit 1
 export LC_ALL=C.UTF-8
 
-SCRIPT=$PWD/build/overlay/etc/initramfs-tools/scripts/casper-premount/frs_medium
+SCRIPT=$PWD/build/overlay/etc/initramfs-tools/scripts/casper-premount/lf_medium
 T=$(mktemp -d)
 UUID=2026-11-15-10-02-44-00
 
@@ -49,12 +49,12 @@ GOOD=$T/squashfs-echt
 head -c 300000 /dev/urandom >"$GOOD"
 SUM=$(sha256sum "$GOOD" | cut -d' ' -f1)
 
-# scene   Neuer Rechner ohne Geräte, mit gültiger frs-medium.conf.
+# scene   Neuer Rechner ohne Geräte, mit gültiger lf-medium.conf.
 scene() {
 	R=$T/root
 	rm -rf "$R"
 	mkdir -p "$R/conf" "$R/run" "$R/sys/class/block" "$R/sys/devices" "$R/dev"
-	printf 'FRS_ISO_UUID=%s\nFRS_SQUASHFS_SHA256=%s\n' "$UUID" "$SUM" >"$R/conf/frs-medium.conf"
+	printf 'LF_ISO_UUID=%s\nLF_SQUASHFS_SHA256=%s\n' "$UUID" "$SUM" >"$R/conf/lf-medium.conf"
 	: >"$R/uuid-geraete"
 	: >"$R/aufrufe"
 }
@@ -75,14 +75,14 @@ device() {
 		ln -s "$R/sys/devices/pci/$name" "$R/sys/class/block/$name"
 	fi
 }
-# boot   Startet das Skript. Ergebnis: RC, OUT, ENV (Inhalt von /run/frs-boot.env), MNT (was unter
-# /run/frs-medium hängt: Name des Geräts oder leer).
+# boot   Startet das Skript. Ergebnis: RC, OUT, ENV (Inhalt von /run/lf-boot.env), MNT (was unter
+# /run/lf-medium hängt: Name des Geräts oder leer).
 boot() {
-	OUT=$(FRS_TEST_ROOT=$R FAKE=$R FAKE_UUID=$UUID PATH="$T/bin:$PATH" sh "$SCRIPT" 2>&1)
+	OUT=$(LF_TEST_ROOT=$R FAKE=$R FAKE_UUID=$UUID PATH="$T/bin:$PATH" sh "$SCRIPT" 2>&1)
 	RC=$?
-	ENV=$(cat "$R/run/frs-boot.env" 2>/dev/null)
+	ENV=$(cat "$R/run/lf-boot.env" 2>/dev/null)
 	MNT=""
-	[[ -L $R/run/frs-medium ]] && MNT=$(basename "$(readlink "$R/run/frs-medium")")
+	[[ -L $R/run/lf-medium ]] && MNT=$(basename "$(readlink "$R/run/lf-medium")")
 }
 env_has() { grep -qx "$1" <<<"$ENV"; }
 
@@ -94,9 +94,9 @@ scene
 device sdb "" "$GOOD"
 device sdb1 sdb "$GOOD"
 boot
-check "das Medium ist gewählt und bleibt eingehängt" '[[ $RC == 0 && $MNT == sdb ]] && env_has FRS_BOOT_DEV=/dev/sdb && env_has FRS_BOOT_DISK=sdb'
-check "ganze Disk und erste Partition zählen als eine Disk" 'env_has FRS_BOOT_DISKS=1'
-check "die Prüfsumme steht im Ergebnis" 'env_has "FRS_SQUASHFS_SHA256=$SUM" && env_has "FRS_ISO_UUID=$UUID"'
+check "das Medium ist gewählt und bleibt eingehängt" '[[ $RC == 0 && $MNT == sdb ]] && env_has LF_BOOT_DEV=/dev/sdb && env_has LF_BOOT_DISK=sdb'
+check "ganze Disk und erste Partition zählen als eine Disk" 'env_has LF_BOOT_DISKS=1'
+check "die Prüfsumme steht im Ergebnis" 'env_has "LF_SQUASHFS_SHA256=$SUM" && env_has "LF_ISO_UUID=$UUID"'
 check "blkid sucht nur nach der UUID der ISO, ohne Zwischenspeicher" '! grep -v -- "-c /dev/null -t UUID=$UUID -o device" "$R/aufrufe" | grep -q "^blkid"'
 
 echo "Eine fremde Disk gibt sich als Stick aus (gleiche UUID, anderes squashfs), sie wird zuerst gemeldet:"
@@ -104,9 +104,9 @@ scene
 device sda "" "$BAD"
 device sr0 "" "$GOOD"
 boot
-check "gewählt ist das Medium mit der richtigen Prüfsumme" '[[ $RC == 0 && $MNT == sr0 ]] && env_has FRS_BOOT_DEV=/dev/sr0'
+check "gewählt ist das Medium mit der richtigen Prüfsumme" '[[ $RC == 0 && $MNT == sr0 ]] && env_has LF_BOOT_DEV=/dev/sr0'
 check "die fremde Disk wurde eingehängt, geprüft und wieder ausgehängt" 'grep -q "^mount -t iso9660 -o ro /dev/sda " "$R/aufrufe" && grep -q "^umount " "$R/aufrufe"'
-check "sie wird gemeldet und gezählt" '[[ $OUT == *"/dev/sda trägt die UUID der ISO, aber ein anderes squashfs"* ]] && env_has FRS_BOOT_DISKS=2'
+check "sie wird gemeldet und gezählt" '[[ $OUT == *"/dev/sda trägt die UUID der ISO, aber ein anderes squashfs"* ]] && env_has LF_BOOT_DISKS=2'
 check "der Techniker erfährt, dass kein persistenter Speicher eingebunden wird" '[[ $OUT == *"Persistenter Speicher wird nicht eingebunden"* ]]'
 
 echo "Eine fremde Disk mit dem echten squashfs und einem zweiten Abbild darüber:"
@@ -127,7 +127,7 @@ scene
 device sda "" "$BAD"
 device sdc "" "$GOOD" extra.ext2
 boot
-check "kein Start: Abbruch mit Meldung" '[[ $RC != 0 && $OUT == *"PANIC: Firestrike Rescue: Kein Gerät mit dem geprüften Live-Medium"* ]]'
+check "kein Start: Abbruch mit Meldung" '[[ $RC != 0 && $OUT == *"PANIC: Leuchtfeuer: Kein Gerät mit dem geprüften Live-Medium"* ]]'
 check "nichts bleibt eingehängt, kein Ergebnis" '[[ -z $MNT && -z $ENV ]]'
 check "jede Disk wurde nur einmal geprüft, obwohl das Skript wartet" '[[ $(grep -c "^mount .* /dev/sda " "$R/aufrufe") == 1 && $(grep -c "^mount .* /dev/sdc " "$R/aufrufe") == 1 ]]'
 scene
@@ -141,19 +141,19 @@ device sdb "" "$GOOD"
 boot
 check "der Stick dahinter wird gewählt" '[[ $RC == 0 && $MNT == sdb ]]'
 
-echo "Ohne gültige frs-medium.conf startet nichts:"
-for c in "" "FRS_ISO_UUID=$UUID" "FRS_SQUASHFS_SHA256=$SUM" "FRS_ISO_UUID=$UUID
-FRS_SQUASHFS_SHA256=${SUM:0:63}" "FRS_ISO_UUID=x\$(id)
-FRS_SQUASHFS_SHA256=$SUM"; do
+echo "Ohne gültige lf-medium.conf startet nichts:"
+for c in "" "LF_ISO_UUID=$UUID" "LF_SQUASHFS_SHA256=$SUM" "LF_ISO_UUID=$UUID
+LF_SQUASHFS_SHA256=${SUM:0:63}" "LF_ISO_UUID=x\$(id)
+LF_SQUASHFS_SHA256=$SUM"; do
 	scene
 	device sdb "" "$GOOD"
-	printf '%s\n' "$c" >"$R/conf/frs-medium.conf"
+	printf '%s\n' "$c" >"$R/conf/lf-medium.conf"
 	boot
 	check "conf: $(tr '\n' ' ' <<<"${c:-leer}" | cut -c1-60)" '[[ $RC != 0 && -z $MNT && $OUT == *"PANIC"* ]] && ! grep -q "^mount" "$R/aufrufe"'
 done
 scene
 device sdb "" "$GOOD"
-rm "$R/conf/frs-medium.conf"
+rm "$R/conf/lf-medium.conf"
 boot
 check "conf fehlt: kein Start" '[[ $RC != 0 && -z $MNT ]]'
 

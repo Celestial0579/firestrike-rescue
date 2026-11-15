@@ -5,11 +5,11 @@
       "Bash(*hdparm*-r0*)",
       "Bash(*hdparm*-r 0*)",
       "Bash(*/etc/claude-code*)",
-      "Bash(*frs-claude-guard*)",
+      "Bash(*lf-claude-guard*)",
       "Edit(//etc/claude-code/**)",
-      "Edit(//usr/local/bin/frs-claude-guard)",
-      "Edit(//run/frs/readonly)",
-      "Bash(*frs-freigabe*)",
+      "Edit(//usr/local/bin/lf-claude-guard)",
+      "Edit(//run/lf/readonly)",
+      "Bash(*lf-freigabe*)",
       "Bash(*sudoers*)",
       "Edit(//etc/sudoers.d/**)"
     ],
@@ -31,7 +31,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "/usr/local/bin/frs-claude-guard",
+            "command": "/usr/local/bin/lf-claude-guard",
             "timeout": 10,
             "onFailure": "block"
           }
@@ -41,6 +41,6 @@
   },
   "statusLine": {
     "type": "command",
-    "command": "/usr/local/bin/frs-freigabe zeile"
+    "command": "/usr/local/bin/lf-freigabe zeile"
   }
 }

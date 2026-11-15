@@ -1,16 +1,16 @@
 #!/usr/bin/env bash
-# Unit-Test: Was die Vorlage der frs.conf nennt, wirkt. Und nichts darüber hinaus.
+# Unit-Test: Was die Vorlage der lf.conf nennt, wirkt. Und nichts darüber hinaus.
 #
-# Die Vorlage für /etc/frs/frs.conf nannte drei Einstellungen. Der Assistent las und prüfte sie,
+# Die Vorlage für /etc/lf/lf.conf nannte drei Einstellungen. Der Assistent las und prüfte sie,
 # benutzte aber keine. Jetzt gilt:
-#   - FRS_TARGET_FS wählt beim Formatieren einer Ziel-Disk das Dateisystem vor. Der Techniker
+#   - LF_TARGET_FS wählt beim Formatieren einer Ziel-Disk das Dateisystem vor. Der Techniker
 #     entscheidet weiter selbst und bestätigt danach wie immer.
-#   - FRS_TECHNIKER steht im Rettungsbericht. Der Name geht als eigenes Argument an
-#     frs-rescue-run, nie als Befehlstext, und kommt im Bericht nur als Text an.
-#   - FRS_SSH_AUTOSTART gibt es nicht: Nichts auf dem Stick schaltet von selbst einen Dienst ein.
+#   - LF_TECHNIKER steht im Rettungsbericht. Der Name geht als eigenes Argument an
+#     lf-rescue-run, nie als Befehlstext, und kommt im Bericht nur als Text an.
+#   - LF_SSH_AUTOSTART gibt es nicht: Nichts auf dem Stick schaltet von selbst einen Dienst ein.
 #
 # Die Vorauswahl wird mit echtem whiptail in einem Pseudo-Terminal geprüft, der Bericht mit dem
-# echten frs-rescue-run (lsblk, ddrescue und Co. sind Attrappen). Ohne root und ohne Disks.
+# echten lf-rescue-run (lsblk, ddrescue und Co. sind Attrappen). Ohne root und ohne Disks.
 set -u
 cd "$(dirname "$0")/.." || exit 1
 export LC_ALL=C.UTF-8
@@ -20,8 +20,8 @@ for t in whiptail script jq; do
 done
 
 T=$(mktemp -d)
-WAIT=${FRS_TEST_WAIT:-2} # Sekunden, bis der Dialog steht und Tasten ankommen dürfen
-FRS_RUN=$T
+WAIT=${LF_TEST_WAIT:-2} # Sekunden, bis der Dialog steht und Tasten ankommen dürfen
+LF_RUN=$T
 # shellcheck disable=SC1091
 . rescue/lib/common.sh
 # shellcheck disable=SC1091
@@ -32,8 +32,8 @@ FRS_RUN=$T
 . rescue/lib/target.sh
 # shellcheck disable=SC1091
 . rescue/lib/recover.sh
-FRS_LOG=$T/log
-: >"$FRS_LOG"
+LF_LOG=$T/log
+: >"$LF_LOG"
 
 fails=0
 check() {
@@ -44,40 +44,40 @@ markers() { compgen -G "$T/MARKE-*" >/dev/null; }
 # ---------------------------------------------------------------------------
 echo "Die Vorlage nennt genau die Einstellungen, die der Assistent kennt und benutzt:"
 template=$(sed -n "/cat >\"\$PERSIST_CONFIG\" <<-'EOF'/,/^[[:space:]]*EOF\$/p" rescue/lib/persist.sh)
-mapfile -t NAMES < <(grep -o '^[[:space:]]*#FRS_[A-Z_]*=' <<<"$template" | tr -d '#= \t' | sort -u)
-known=$(declare -f persist_config_pattern | grep -o 'FRS_[A-Z_]*' | sort -u | tr '\n' ' ')
+mapfile -t NAMES < <(grep -o '^[[:space:]]*#LF_[A-Z_]*=' <<<"$template" | tr -d '#= \t' | sort -u)
+known=$(declare -f persist_config_pattern | grep -o 'LF_[A-Z_]*' | sort -u | tr '\n' ' ')
 check "die Vorlage nennt Einstellungen" '((${#NAMES[@]} >= 2))'
-check "es sind dieselben, die frs.conf setzen darf" '[[ "${NAMES[*]} " == "$known" ]]'
+check "es sind dieselben, die lf.conf setzen darf" '[[ "${NAMES[*]} " == "$known" ]]'
 # used NAME   Benutzt eine Datei des Rettungssystems außer persist.sh die Einstellung?
-used() { grep -l -- "$1" rescue/lib/*.sh rescue/bin/* rescue/frs | grep -qv '^rescue/lib/persist\.sh$'; }
+used() { grep -l -- "$1" rescue/lib/*.sh rescue/bin/* rescue/lf | grep -qv '^rescue/lib/persist\.sh$'; }
 for n in "${NAMES[@]}"; do
 	check "$n wird benutzt, nicht nur gelesen" 'used "$n"'
 done
-check "FRS_SSH_AUTOSTART gibt es nicht: Nichts auf dem Stick schaltet einen Dienst ein" '! persist_config_pattern FRS_SSH_AUTOSTART >/dev/null && ! grep -rq FRS_SSH_AUTOSTART rescue/ build/ docs/ README.md'
+check "LF_SSH_AUTOSTART gibt es nicht: Nichts auf dem Stick schaltet einen Dienst ein" '! persist_config_pattern LF_SSH_AUTOSTART >/dev/null && ! grep -rq LF_SSH_AUTOSTART rescue/ build/ docs/ README.md'
 
 # ---------------------------------------------------------------------------
-echo "FRS_TARGET_FS wählt beim Formatieren nur vor:"
+echo "LF_TARGET_FS wählt beim Formatieren nur vor:"
 disk_resolve() { echo /dev/sdz; }
 # Das Menü schreibt seine Argumente mit, je Zeile eines, und bricht ab ("Zurück").
 ui_menu() {
 	printf '%s\n' "$@" >"$T/menu"
 	return 1
 }
-# preset [WERT]   Ruft target_format mit FRS_TARGET_FS=WERT auf (ohne WERT: nicht gesetzt).
+# preset [WERT]   Ruft target_format mit LF_TARGET_FS=WERT auf (ohne WERT: nicht gesetzt).
 # Ergebnis: PRE (Wert hinter --default-item, sonst leer), TEXT (Text des Menüs).
 preset() {
 	rm -f "$T/menu"
-	if (($#)); then FRS_TARGET_FS=$1; else unset FRS_TARGET_FS; fi
+	if (($#)); then LF_TARGET_FS=$1; else unset LF_TARGET_FS; fi
 	target_format ZIEL
 	PRE=$(awk '$0 == "--" { exit } want { print; exit } $0 == "--default-item" { want = 1 }' "$T/menu" 2>/dev/null)
 	TEXT=$(sed -n 2p "$T/menu" 2>/dev/null)
-	unset FRS_TARGET_FS
+	unset LF_TARGET_FS
 }
 preset
 check "ohne Einstellung: keine Vorauswahl, kein Hinweis" '[[ -s $T/menu && -z $PRE && $TEXT != *Vorausgew* ]]'
 preset exfat
 check "exfat: Das Menü bekommt --default-item exfat" '[[ $PRE == exfat ]]'
-check "der Text sagt, woher die Vorauswahl kommt" '[[ $TEXT == *"Vorausgewählt ist exfat (FRS_TARGET_FS in der frs.conf)"* ]]'
+check "der Text sagt, woher die Vorauswahl kommt" '[[ $TEXT == *"Vorausgewählt ist exfat (LF_TARGET_FS in der lf.conf)"* ]]'
 preset ext4
 check "ext4: Das Menü bekommt --default-item ext4" '[[ $PRE == ext4 ]]'
 for bad in ntfs "--title" "exfat --title x" ""; do
@@ -91,23 +91,23 @@ cat >"$T/innen.sh" <<'EOF'
 stty rows 25 cols 80
 export TERM=linux
 cd "$REPO" || exit 1
-FRS_RUN=$OUT
+LF_RUN=$OUT
 . rescue/lib/common.sh
 . rescue/lib/target.sh
-FRS_LOG=/dev/null
-UI_BACKTITLE="Firestrike Rescue Dialogtest"
+LF_LOG=/dev/null
+UI_BACKTITLE="Leuchtfeuer Dialogtest"
 disk_resolve() { echo /dev/sdz; }
 # Bis zur Bestätigung und nicht weiter: Der Test hält fest, wofür sie verlangt würde.
 safety_confirm_target() {
 	printf '%s' "$2" >"$OUT/aktion"
 	return 1
 }
-unset FRS_TARGET_FS
-[[ -n ${VORGABE:-} ]] && FRS_TARGET_FS=$VORGABE
+unset LF_TARGET_FS
+[[ -n ${VORGABE:-} ]] && LF_TARGET_FS=$VORGABE
 target_format ZIEL
 echo $? >"$OUT/rc"
 EOF
-# dialog TASTEN [VORGABE]   Zeigt "Ziel formatieren" mit FRS_TARGET_FS=VORGABE und sendet die
+# dialog TASTEN [VORGABE]   Zeigt "Ziel formatieren" mit LF_TARGET_FS=VORGABE und sendet die
 # Tasten. Ergebnis: ACTION (wofür die Bestätigung verlangt würde), SCREEN (was whiptail zeichnete).
 dialog() {
 	local keys=$1 k
@@ -127,29 +127,29 @@ UP='\033[A'
 dialog "$ENTER"
 check "ohne Einstellung steht die Auswahl auf ext4" '[[ $ACTION == *"als ext4 formatiert"* && $SCREEN != *Vorausgew* ]]'
 dialog "$ENTER" exfat
-check "mit FRS_TARGET_FS=exfat steht sie auf exfat, und der Dialog sagt es" '[[ $ACTION == *"als exfat formatiert"* && $SCREEN == *"Vorausgewählt ist exfat"* ]]'
+check "mit LF_TARGET_FS=exfat steht sie auf exfat, und der Dialog sagt es" '[[ $ACTION == *"als exfat formatiert"* && $SCREEN == *"Vorausgewählt ist exfat"* ]]'
 dialog "$UP $ENTER" exfat
 check "der Techniker wählt trotzdem frei: Pfeil hoch nimmt ext4" '[[ $ACTION == *"als ext4 formatiert"* ]]'
 
 # ---------------------------------------------------------------------------
-echo "FRS_TECHNIKER geht als eigenes Argument an frs-rescue-run:"
+echo "LF_TECHNIKER geht als eigenes Argument an lf-rescue-run:"
 # tmux_run schreibt mit, was gestartet würde: erst die Zahl der Argumente, dann je Zeile eines.
 tmux_run() { printf '%s\n' "$#" "$@" >"$T/tmux"; }
 tmux() { return 1; }
 ui_msg() { :; }
 mkdir -p "$T/fall"
 casefile_create "$T/fall/case.env" "SRC_ID=GIBT-ES-DOCH-4711" "SRC_SIZE=500107862016" "STATE=interrupted"
-# started [NAME]   Ruft recover_run mit FRS_TECHNIKER=NAME auf. Ergebnis: N (Zahl der Argumente), LAST.
+# started [NAME]   Ruft recover_run mit LF_TECHNIKER=NAME auf. Ergebnis: N (Zahl der Argumente), LAST.
 started() {
 	rm -f "$T/tmux"
-	if (($#)); then FRS_TECHNIKER=$1; else unset FRS_TECHNIKER; fi
+	if (($#)); then LF_TECHNIKER=$1; else unset LF_TECHNIKER; fi
 	recover_run "$T/fall" /dev/sdz
 	N=$(sed -n 1p "$T/tmux" 2>/dev/null)
 	LAST=$(tail -n 1 "$T/tmux" 2>/dev/null)
-	unset FRS_TECHNIKER
+	unset LF_TECHNIKER
 }
 started
-check "ohne Namen: der Aufruf wie bisher" '[[ $N == 5 && $(sed -n 2,6p "$T/tmux" | tr "\n" " ") == "frs-rettung sudo frs-rescue-run $T/fall /dev/sdz " ]]'
+check "ohne Namen: der Aufruf wie bisher" '[[ $N == 5 && $(sed -n 2,6p "$T/tmux" | tr "\n" " ") == "lf-rettung sudo lf-rescue-run $T/fall /dev/sdz " ]]'
 started ""
 check "leerer Name: kein Argument" '[[ $N == 5 ]]'
 started "Tim Beispiel"
@@ -182,7 +182,7 @@ job() {
 	mkdir -p "$T/$name"
 	casefile_create "$T/$name/case.env" "SRC_ID=GIBT-ES-DOCH-4711" "SRC_SIZE=500107862016" \
 		"SRC_LABEL=Testdisk (500 GB)" "STATE=new"
-	PATH="$T/attrappen:$PATH" bash rescue/bin/frs-rescue-run "$T/$name" /dev/sdz --no-pause "$@" >"$T/$name.out" 2>&1 </dev/null
+	PATH="$T/attrappen:$PATH" bash rescue/bin/lf-rescue-run "$T/$name" /dev/sdz --no-pause "$@" >"$T/$name.out" 2>&1 </dev/null
 	RC=$?
 	REPORT=$(cat "$T/$name/report.txt" 2>/dev/null)
 }
@@ -193,7 +193,7 @@ check "ohne Namen: Bericht ohne die Zeile" '[[ $RC == 0 && $REPORT == *"Quelle: 
 job mit "--techniker=Tim Beispiel"
 check "mit Namen: Der Bericht nennt ihn" '[[ $RC == 0 ]] && grep -qx "Techniker:   Tim Beispiel" "$T/mit/report.txt"'
 job vorn
-PATH="$T/attrappen:$PATH" bash rescue/bin/frs-rescue-run "--techniker=Erika Muster" "$T/vorn" /dev/sdz --no-pause >"$T/vorn.out" 2>&1 </dev/null
+PATH="$T/attrappen:$PATH" bash rescue/bin/lf-rescue-run "--techniker=Erika Muster" "$T/vorn" /dev/sdz --no-pause >"$T/vorn.out" 2>&1 </dev/null
 check "die Stelle im Aufruf ist gleich" 'grep -qx "Techniker:   Erika Muster" "$T/vorn/report.txt"'
 job boese "--techniker=$EVIL"
 check "Hochkomma und Semikolon stehen wörtlich im Bericht, nichts wurde ausgeführt" '[[ $RC == 0 ]] && grep -qxF "Techniker:   $EVIL" "$T/boese/report.txt" && ! markers'

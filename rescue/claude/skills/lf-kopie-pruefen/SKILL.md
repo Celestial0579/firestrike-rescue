@@ -1,5 +1,5 @@
 ---
-name: frs-kopie-pruefen
+name: lf-kopie-pruefen
 description: Dateien aus dem Image auf das bestätigte Ziel kopieren und die Kopie mit Prüfsummen gegen das Image prüfen. Nutzen, wenn ein Image fertig ist und die Daten des Kunden auf das Ziel sollen.
 ---
 
@@ -8,19 +8,19 @@ description: Dateien aus dem Image auf das bestätigte Ziel kopieren und die Kop
 ## Ablauf
 
 1. **Image einbinden und einhängen** (nur lesend):
-   `sudo frs-aufgabe image FALL`, dann `sudo frs-aufgabe einhaengen /dev/loopNpM`.
-   Die Partition liegt dann unter `/mnt/frs-image/loopNpM`.
+   `sudo lf-aufgabe image FALL`, dann `sudo lf-aufgabe einhaengen /dev/loopNpM`.
+   Die Partition liegt dann unter `/mnt/lf-image/loopNpM`.
 2. **Mit dem Techniker klären, was kopiert wird.** Meist die Benutzerordner und Datenordner, nicht
    das Betriebssystem. Papierkorb (`$RECYCLE.BIN`) und `System Volume Information` gehören in der
    Regel nicht dazu. Das Ziel bestimmt der Techniker im Assistenten.
-3. **Kopieren:** `sudo frs-aufgabe kopieren /mnt/frs-image/loopNpM/<Ordner> <Name>`. Ziel ist
-   `<Ziel>/FRS/claude/<Name>/`. Große Kopien dauern. Den Befehl im Hintergrund laufen lassen und mit
-   `sudo frs-aufgabe stand` verfolgen.
-4. **Prüfen:** `sudo frs-aufgabe pruefen /mnt/frs-image/loopNpM/<Ordner> <Name>`. Es vergleicht jede
+3. **Kopieren:** `sudo lf-aufgabe kopieren /mnt/lf-image/loopNpM/<Ordner> <Name>`. Ziel ist
+   `<Ziel>/LF/claude/<Name>/`. Große Kopien dauern. Den Befehl im Hintergrund laufen lassen und mit
+   `sudo lf-aufgabe stand` verfolgen.
+4. **Prüfen:** `sudo lf-aufgabe pruefen /mnt/lf-image/loopNpM/<Ordner> <Name>`. Es vergleicht jede
    Datei per Prüfsumme mit dem Image und schreibt das Ergebnis nach
-   `<Ziel>/FRS/claude/<Name>.pruefung.txt`. Erwartet: keine Abweichung.
+   `<Ziel>/LF/claude/<Name>.pruefung.txt`. Erwartet: keine Abweichung.
 5. **Abweichungen:** Datei für Datei nennen. Liegt eine Datei in einem unlesbaren Bereich des Images,
-   ist sie dort schon beschädigt (Skill `frs-bericht`). Sonst ein zweites Mal kopieren.
+   ist sie dort schon beschädigt (Skill `lf-bericht`). Sonst ein zweites Mal kopieren.
 
 ## Virenscan
 

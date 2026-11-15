@@ -15,14 +15,14 @@ cd "$(dirname "$0")/.." || exit 1
 export LC_ALL=C.UTF-8
 
 T=$(mktemp -d)
-FRS_RUN="$T/run"
-FRS_LOG="$T/frs.log"
-mkdir -p "$FRS_RUN" "$T/lauf"
+LF_RUN="$T/run"
+LF_LOG="$T/lf.log"
+mkdir -p "$LF_RUN" "$T/lauf"
 # shellcheck disable=SC1091
 . rescue/lib/common.sh
 # shellcheck disable=SC1091
 . rescue/lib/clone.sh
-FRS_RUN="$T/run"
+LF_RUN="$T/run"
 # Präparierte Texte legen Markerdateien im Arbeitsverzeichnis an, falls sie ausgeführt werden.
 cd "$T/lauf" || exit 1
 
@@ -92,7 +92,7 @@ for label in "';touch MARKE;'" '$(touch MARKE)' '`touch MARKE`' "a'b" 'a"b' "a;t
 	check "$(printf '%q' "$label"): weggelassen, Partition wird ohne Label angelegt" '[[ $ARGS == "-U|$GOOD_UUID|/dev/sdb3|" && $LINE != *MARKE* ]]'
 done
 check "nichts wurde ausgeführt: keine Markerdatei" '! markers'
-check "im Protokoll steht, dass das Label nicht übernommen wurde" 'grep -q "Swap-Label von /dev/sda3 nicht übernommen" "$FRS_LOG"'
+check "im Protokoll steht, dass das Label nicht übernommen wurde" 'grep -q "Swap-Label von /dev/sda3 nicht übernommen" "$LF_LOG"'
 
 echo "Präparierte UUID:"
 for uuid in "x';touch MARKE-uuid;'" '$(touch MARKE-uuid)' "0f0f0f0f-1111-2222-3333-44444444444" "$GOOD_UUID extra"; do
@@ -118,11 +118,11 @@ plan() {
 }
 # job   Erzeugt den Klon-Job, ohne ihn zu starten. Ergebnis: RC, JOB (Text des Jobs), DIE_MSG.
 job() {
-	rm -f "$FRS_RUN/clone-job.sh" "$T/tmux"
+	rm -f "$LF_RUN/clone-job.sh" "$T/tmux"
 	DIE_MSG=""
 	clone_copy /dev/sda /dev/sdb
 	RC=$?
-	JOB=$(cat "$FRS_RUN/clone-job.sh" 2>/dev/null)
+	JOB=$(cat "$LF_RUN/clone-job.sh" 2>/dev/null)
 	STARTED=$(cat "$T/tmux" 2>/dev/null)
 }
 
@@ -130,8 +130,8 @@ echo "Klon-Job für eine gewöhnliche Disk:"
 SWAP_UUID=$GOOD_UUID SWAP_LABEL="swap"
 plan "/dev/sda1 vfat" "/dev/sda2 ext4" "/dev/sda3 swap" "/dev/sda4 "
 job
-check "Job erzeugt und gestartet" '[[ -n $JOB && $STARTED == "frs-klon sudo $FRS_RUN/clone-job.sh" ]]'
-check "der Job ist gültiges Shell-Skript" 'bash -n "$FRS_RUN/clone-job.sh"'
+check "Job erzeugt und gestartet" '[[ -n $JOB && $STARTED == "lf-klon sudo $LF_RUN/clone-job.sh" ]]'
+check "der Job ist gültiges Shell-Skript" 'bash -n "$LF_RUN/clone-job.sh"'
 check "jede Partition hat ihre Zeile" '[[ $JOB == *"partclone.vfat -b -s '"'"'/dev/sda1'"'"' -o '"'"'/dev/sdb1'"'"'"* && $JOB == *"partclone.extfs -b -s '"'"'/dev/sda2'"'"'"* && $JOB == *"mkswap -U $GOOD_UUID -L '"'"'swap'"'"' '"'"'/dev/sdb3'"'"'"* && $JOB == *"dd if='"'"'/dev/sda4'"'"' of='"'"'/dev/sdb4'"'"'"* ]]'
 
 echo "Der Klon-Job prüft vor jedem Schritt, dass Quelle und Ziel noch dieselben Disks sind:"
@@ -167,7 +167,7 @@ keep=$IDENT_SRC
 IDENT_SRC="\x27;touch MARKE;\x27 - 500107862016"
 IDENT_SRC=$(printf '%b' "$IDENT_SRC")
 job
-check "präparierte Seriennummer der Quelle: Job gültig, die Angabe steht nicht darin" '[[ -n $JOB && $JOB != *MARKE* ]] && bash -n "$FRS_RUN/clone-job.sh"'
+check "präparierte Seriennummer der Quelle: Job gültig, die Angabe steht nicht darin" '[[ -n $JOB && $JOB != *MARKE* ]] && bash -n "$LF_RUN/clone-job.sh"'
 IDENT_SRC=""
 job
 check "die Quelle ist nicht mehr zu erkennen: kein Job, nichts gestartet" '[[ $RC != 0 && -z $JOB && -z $STARTED && $DIE_MSG == *"nicht mehr zu erkennen"* ]]'
@@ -177,7 +177,7 @@ job
 echo "Klon-Job mit präpariertem Swap-Label:"
 SWAP_LABEL="';touch MARKE;'"
 job
-check "Job erzeugt, gültiges Shell-Skript" '[[ -n $JOB ]] && bash -n "$FRS_RUN/clone-job.sh"'
+check "Job erzeugt, gültiges Shell-Skript" '[[ -n $JOB ]] && bash -n "$LF_RUN/clone-job.sh"'
 check "das Label steht nirgends im Job" '[[ $JOB != *MARKE* && $JOB == *"mkswap -U $GOOD_UUID  '"'"'/dev/sdb3'"'"'"* ]]'
 
 echo "Angaben, die in keinem Befehl stehen dürfen:"
@@ -224,7 +224,7 @@ check "jede Partition behält ihre eigene Größe" '[[ $(grep -c "size=204800," 
 table $'eins\n/dev/sdb9 : start=1, size=1' 'a\b' ""
 check "Name mit Zeilenumbruch: keine zusätzliche Zeile im Skript" '[[ $(grep -c "^/dev/sdb" <<<"$SCRIPT") == 3 && $SCRIPT != *"/dev/sdb9"* ]]'
 check "Name mit Backslash und leerer Name: kein Name im Skript" '[[ $SCRIPT != *"name="* ]]'
-check "im Protokoll steht, welcher Name nicht übernommen wurde" 'grep -q "Partitionsname von /dev/sda1 nicht übernommen" "$FRS_LOG"'
+check "im Protokoll steht, welcher Name nicht übernommen wurde" 'grep -q "Partitionsname von /dev/sda1 nicht übernommen" "$LF_LOG"'
 
 cd / || exit 1
 rm -rf "$T"

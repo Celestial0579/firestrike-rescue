@@ -1,5 +1,5 @@
 ---
-name: frs-carving
+name: lf-carving
 description: Dateien ohne funktionierendes Dateisystem anhand ihres Inhalts finden (PhotoRec), immer auf dem Image. Nutzen, wenn sich ein Dateisystem nicht einhängen lässt, Dateien gelöscht wurden oder nach der normalen Kopie noch etwas fehlt.
 ---
 
@@ -11,7 +11,7 @@ der erste.
 
 ## Voraussetzungen
 
-- Ein fertiges Image (Skill `frs-image-zuerst`). PhotoRec läuft nie auf der Quelle.
+- Ein fertiges Image (Skill `lf-image-zuerst`). PhotoRec läuft nie auf der Quelle.
 - Genug Platz auf dem Ziel. Carving findet oft viel mehr als erwartet, auch alte, gelöschte Dateien.
 
 ## Ablauf

@@ -16,17 +16,17 @@ cd "$(dirname "$0")/.." || exit 1
 export LC_ALL=C.UTF-8
 
 T=$(mktemp -d)
-FRS_RUN="$T/run"
-FRS_LOG="$T/frs.log"
-mkdir -p "$FRS_RUN"
+LF_RUN="$T/run"
+LF_LOG="$T/lf.log"
+mkdir -p "$LF_RUN"
 # shellcheck disable=SC1091
 . rescue/lib/common.sh
 # shellcheck disable=SC1091
 . rescue/lib/disks.sh
 # shellcheck disable=SC1091
 . rescue/lib/safety.sh
-FRS_RUN="$T/run"
-UI_BACKTITLE="Firestrike Rescue Test"
+LF_RUN="$T/run"
+UI_BACKTITLE="Leuchtfeuer Test"
 
 fails=0
 check() {

@@ -25,7 +25,7 @@ recover_wizard() {
 	name="$(date +%Y%m%d-%H%M)_${model}_${sid//[^A-Za-z0-9]/_}"
 	name=${name:0:200}
 	casefile_dirname_ok "$name" || name="$(date +%Y%m%d-%H%M)_Disk"
-	case="$FRS_TARGET_MNT/FRS/$name"
+	case="$LF_TARGET_MNT/LF/$name"
 	mkdir -p "$case" || { die "Kann $case nicht anlegen."; return 0; }
 	# Eine Kennung, die sich in der Falldatei nicht darstellen lässt, wird durch den Gerätepfad
 	# ersetzt. Die Disk wird darüber genauso gefunden, solange sie nicht umgesteckt wird.
@@ -42,19 +42,19 @@ recover_wizard() {
 
 # recover_run FALLORDNER QUELL-GERÄT
 # QUELL-GERÄT ist die Disk, die der Techniker in dieser Sitzung als Quelle gewählt hat.
-# frs-rescue-run liest nur von ihr und prüft sie selbst noch einmal gegen die Falldatei.
+# lf-rescue-run liest nur von ihr und prüft sie selbst noch einmal gegen die Falldatei.
 recover_run() {
 	local case=$1 sdev=$2 opts=()
-	# Der Name aus der frs.conf steht im Bericht. Er ist ein eigenes Argument, nie Befehlstext.
-	[[ -n ${FRS_TECHNIKER:-} ]] && opts=("--techniker=$FRS_TECHNIKER")
-	tmux_run "frs-rettung" sudo frs-rescue-run "$case" "$sdev" "${opts[@]}"
+	# Der Name aus der lf.conf steht im Bericht. Er ist ein eigenes Argument, nie Befehlstext.
+	[[ -n ${LF_TECHNIKER:-} ]] && opts=("--techniker=$LF_TECHNIKER")
+	tmux_run "lf-rettung" sudo lf-rescue-run "$case" "$sdev" "${opts[@]}"
 	# Läuft die Sitzung noch (Ansicht verlassen), zurück ins Hauptmenü.
-	if tmux has-session -t frs-rettung 2>/dev/null; then
-		ui_msg "Rettung läuft weiter" "Die Rettung läuft im Hintergrund weiter.\n\nZurück zur Ansicht: Hauptmenü > Laufende Rettung anzeigen\noder auf tty2 (Alt+F2): tmux attach -t frs-rettung"
+	if tmux has-session -t lf-rettung 2>/dev/null; then
+		ui_msg "Rettung läuft weiter" "Die Rettung läuft im Hintergrund weiter.\n\nZurück zur Ansicht: Hauptmenü > Laufende Rettung anzeigen\noder auf tty2 (Alt+F2): tmux attach -t lf-rettung"
 		return 0
 	fi
 	# Liegt im Fallordner schon etwas unter diesem Namen, wird es ersetzt und nie durchschrieben.
-	cp -f --remove-destination "$FRS_LOG" "$case/" 2>/dev/null || true
+	cp -f --remove-destination "$LF_LOG" "$case/" 2>/dev/null || true
 	local state
 	if ! state=$(casefile_peek "$case/case.env" STATE); then
 		recover_case_invalid "$case"
@@ -74,27 +74,29 @@ recover_case_invalid() {
 }
 
 recover_resume() {
-	if tmux has-session -t frs-rettung 2>/dev/null; then
-		tmux attach -t frs-rettung
+	if tmux has-session -t lf-rettung 2>/dev/null; then
+		tmux attach -t lf-rettung
 		return 0
 	fi
 	local tid
 	tid=$(disk_pick "Fortsetzen" "Auf welcher Ziel-Disk liegt die unterbrochene Rettung?") || return 0
-	target_find_cases "$tid" || { ui_msg "Fortsetzen" "Auf dieser Disk wurde kein Rettungsfall (Ordner FRS/) gefunden."; return 0; }
-	# Was unter FRS/ liegt, kommt von der Ziel-Disk. Angeboten werden nur echte Ordner mit einem
+	target_find_cases "$tid" || { ui_msg "Fortsetzen" "Auf dieser Disk wurde kein Rettungsfall (Ordner LF/) gefunden."; return 0; }
+	# Was unter LF/ liegt, kommt von der Ziel-Disk. Angeboten werden nur echte Ordner mit einem
 	# Namen, wie der Assistent ihn vergibt (casefile_dirname_ok). Jeder andere Name könnte als
 	# Option oder als Befehl gelesen werden, sobald er in einem Menü oder einer Befehlszeile
 	# steht. Solche Einträge werden gezählt, ihr Name wird nirgends ausgegeben.
 	# Bis hierher ist die Disk nur lesend eingehängt und auf Kernelebene schreibgeschützt
 	# (target_find_cases). Jeder Ausstieg vor der Wahl eines Falls endet mit target_search_end.
-	if [[ -L $FRS_TARGET_MNT/FRS ]]; then
-		log "Fortsetzen abgelehnt: FRS auf der Ziel-Disk ist eine Verknüpfung"
-		ui_msg "Fortsetzen" "Der Ordner FRS auf dieser Disk ist eine Verknüpfung. Der Assistent legt FRS immer als Ordner an und verwendet diese Disk so nicht.\n\nStammt die Disk aus fremder Hand, ist Vorsicht angebracht."
+	local root
+	root=$(target_cases_dir)
+	if [[ -L $LF_TARGET_MNT/$root ]]; then
+		log "Fortsetzen abgelehnt: $root auf der Ziel-Disk ist eine Verknüpfung"
+		ui_msg "Fortsetzen" "Der Ordner $root auf dieser Disk ist eine Verknüpfung. Der Assistent legt $root immer als Ordner an und verwendet diese Disk so nicht.\n\nStammt die Disk aus fremder Hand, ist Vorsicht angebracht."
 		target_search_end
 		return 0
 	fi
 	local items=() c name st skipped=0
-	for c in "$FRS_TARGET_MNT"/FRS/*/; do
+	for c in "$LF_TARGET_MNT/$root"/*/; do
 		c=${c%/}
 		name=${c##*/}
 		if [[ -L $c ]]; then
@@ -110,8 +112,8 @@ recover_resume() {
 		items+=("$name" "[$st]")
 	done
 	if ((skipped)); then
-		log "Fortsetzen: $skipped Einträge unter FRS/ nicht angeboten (unzulässiger Name oder Verknüpfung)"
-		ui_msg "Fortsetzen" "Nicht angebotene Einträge unter FRS/: $skipped\n\nIhr Name enthält andere Zeichen als Buchstaben, Ziffern, Punkt, Unterstrich und Bindestrich, beginnt nicht mit einem Buchstaben oder einer Ziffer, oder der Eintrag ist eine Verknüpfung. Der Assistent vergibt solche Namen nicht.\n\nStammt die Disk aus fremder Hand, ist Vorsicht angebracht. Hast du einen Fallordner selbst umbenannt, gib ihm einen Namen aus den erlaubten Zeichen."
+		log "Fortsetzen: $skipped Einträge unter $root/ nicht angeboten (unzulässiger Name oder Verknüpfung)"
+		ui_msg "Fortsetzen" "Nicht angebotene Einträge unter $root/: $skipped\n\nIhr Name enthält andere Zeichen als Buchstaben, Ziffern, Punkt, Unterstrich und Bindestrich, beginnt nicht mit einem Buchstaben oder einer Ziffer, oder der Eintrag ist eine Verknüpfung. Der Assistent vergibt solche Namen nicht.\n\nStammt die Disk aus fremder Hand, ist Vorsicht angebracht. Hast du einen Fallordner selbst umbenannt, gib ihm einen Namen aus den erlaubten Zeichen."
 	fi
 	if ((${#items[@]} == 0)); then
 		ui_msg "Fortsetzen" "Auf dieser Disk liegt kein Rettungsfall, den der Assistent verwenden kann."
@@ -134,7 +136,7 @@ recover_resume() {
 		die "Die Partition mit dem Rettungsfall ließ sich nicht beschreibbar einhängen. Details im Protokoll."
 		return 0
 	fi
-	c="$FRS_TARGET_MNT/FRS/$pick"
+	c="$LF_TARGET_MNT/$root/$pick"
 	if ! casefile_load "$c/case.env"; then
 		recover_case_invalid "$c"
 		return 0
@@ -195,7 +197,7 @@ recover_after() {
 		repair) image_repair "$case" "$img" ;;
 		carve) image_carve "$case" "$img" ;;
 		# Pfade sind eigene Argumente, nie Teil des Befehlstexts (auch unten bei rsync und cp).
-		vhdx) tmux_run "frs-vhdx" bash -c 'qemu-img convert -p -O vhdx -o subformat=dynamic "$1" "$2"; echo; read -r -p "Fertig. Enter … " _' _ "$img" "$case/image.vhdx" ;;
+		vhdx) tmux_run "lf-vhdx" bash -c 'qemu-img convert -p -O vhdx -o subformat=dynamic "$1" "$2"; echo; read -r -p "Fertig. Enter … " _' _ "$img" "$case/image.vhdx" ;;
 		report) ui_textfile "Bericht" "$case/report.txt" ;;
 		claude) claude_start "$case" ;;
 		done) return 0 ;;
@@ -271,11 +273,11 @@ part_mount_ro() {
 	BitLocker)
 		local key
 		key=$(ui_input "BitLocker" "$(basename "$part") ist mit BitLocker verschlüsselt.\n\nWiederherstellungsschlüssel (48 Ziffern, mit Bindestrichen):") || return 1
-		sudo install -d "$FRS_RUN/dislocker-$(basename "$part")"
-		run sudo dislocker -r -V "$part" -p"$key" -- "$FRS_RUN/dislocker-$(basename "$part")" ||
+		sudo install -d "$LF_RUN/dislocker-$(basename "$part")"
+		run sudo dislocker -r -V "$part" -p"$key" -- "$LF_RUN/dislocker-$(basename "$part")" ||
 			{ die "Entschlüsselung fehlgeschlagen. Schlüssel prüfen."; return 1; }
-		run sudo mount -o "$opts,loop" "$FRS_RUN/dislocker-$(basename "$part")/dislocker-file" "$mp" ||
-			run sudo ntfs-3g -o ro,nodev,nosuid,noexec "$FRS_RUN/dislocker-$(basename "$part")/dislocker-file" "$mp"
+		run sudo mount -o "$opts,loop" "$LF_RUN/dislocker-$(basename "$part")/dislocker-file" "$mp" ||
+			run sudo ntfs-3g -o ro,nodev,nosuid,noexec "$LF_RUN/dislocker-$(basename "$part")/dislocker-file" "$mp"
 		;;
 	ntfs) run sudo mount -t ntfs3 -o "$opts" "$part" "$mp" || run sudo ntfs-3g -o ro,nodev,nosuid,noexec,recover "$part" "$mp" ;;
 	ext2 | ext3 | ext4) run sudo mount -o "$opts,noload" "$part" "$mp" ;;
@@ -300,7 +302,7 @@ image_copy_files() {
 	local case=$1 img=$2 loop part mp dst mode
 	loop=$(image_attach "$img" ro)
 	part=$(image_pick_part "$loop") || return 0
-	mp="$FRS_IMAGE_MNT/$(basename "$part")"
+	mp="$LF_IMAGE_MNT/$(basename "$part")"
 	part_mount_ro "$part" "$mp" || { ui_msg "Einhängen" "$(basename "$part") ließ sich nicht einhängen.\nTipp: 'Dateisystem auf einer Kopie reparieren' oder PhotoRec."; return 0; }
 	mode=$(ui_menu "Dateien kopieren" "$part ist nur lesend unter $mp eingehängt." -- \
 		all "Alles kopieren (rsync) nach $case/dateien/" \
@@ -313,10 +315,10 @@ image_copy_files() {
 		local ropts="-aHAX"
 		[[ $(target_fs) == exfat || $(target_fs) == ntfs* || $(target_fs) == fuseblk ]] && ropts="-rt --modify-window=2"
 		# $1 sind die Optionen von rsync (fester Text von oben) und werden mit Absicht in Wörter zerlegt.
-		tmux_run "frs-kopie" bash -c 'sudo rsync $1 --info=progress2 --ignore-errors "$2/" "$3/" 2>&1 | tee -a "$4"; echo; read -r -p "Fertig. Enter … " _' _ "$ropts" "$mp" "$dst" "$case/kopie.log"
+		tmux_run "lf-kopie" bash -c 'sudo rsync $1 --info=progress2 --ignore-errors "$2/" "$3/" 2>&1 | tee -a "$4"; echo; read -r -p "Fertig. Enter … " _' _ "$ropts" "$mp" "$dst" "$case/kopie.log"
 		;;
 	mc) sudo mc "$mp" "$dst" ;;
-	shell) (cd "$mp" && PS1="[frs image] \w \$ " bash --norc -i) ;;
+	shell) (cd "$mp" && PS1="[lf image] \w \$ " bash --norc -i) ;;
 	esac
 }
 
@@ -333,7 +335,7 @@ image_repair() {
 	if [[ ! -f $copy ]]; then
 		(($(target_free) > need)) || { die "Für die Kopie fehlen $(human "$need") auf dem Ziel."; return 0; }
 		ui_yesno "Reparatur" "Das Original-Image bleibt unverändert. Repariert wird eine Kopie:\n$copy\n\nDas belegt etwa $(human "$need"). Kopie jetzt anlegen?" || return 0
-		tmux_run "frs-kopie" bash -c 'cp --sparse=always "$1" "$2" && echo Kopie fertig; read -r -p "Enter … " _' _ "$img" "$copy"
+		tmux_run "lf-kopie" bash -c 'cp --sparse=always "$1" "$2" && echo Kopie fertig; read -r -p "Enter … " _' _ "$img" "$copy"
 	fi
 	loop=$(image_attach "$copy" rw)
 	if [[ $(sudo blockdev --getro "$loop" 2>/dev/null) == 1 ]]; then
@@ -355,8 +357,8 @@ image_repair() {
 	esac
 	pause
 	ui_msg "Reparatur" "Fertig. Mit 'Dateien aus dem Image kopieren' kannst du jetzt aus der reparierten Kopie kopieren:\nwähle dort die Partition $(basename "$part")."
-	part_mount_ro "$part" "$FRS_IMAGE_MNT/repair-$(basename "$part")" &&
-		ui_msg "Eingehängt" "Reparierte Partition liegt nur lesend unter $FRS_IMAGE_MNT/repair-$(basename "$part")"
+	part_mount_ro "$part" "$LF_IMAGE_MNT/repair-$(basename "$part")" &&
+		ui_msg "Eingehängt" "Reparierte Partition liegt nur lesend unter $LF_IMAGE_MNT/repair-$(basename "$part")"
 }
 
 image_carve() {

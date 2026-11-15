@@ -82,7 +82,7 @@ casefile_clean_text() {
 # und in Befehlszeilen. Erlaubt sind deshalb nur Buchstaben, Ziffern, Punkt, Unterstrich und
 # Bindestrich, am Anfang ein Buchstabe oder eine Ziffer, höchstens 200 Zeichen. Damit kann ein
 # Name weder als Option gelesen werden (kein "-" am Anfang) noch als Befehl (keine Leerzeichen,
-# Anführungszeichen oder Steuerzeichen) noch aus FRS/ hinausführen (kein "/" und kein "..").
+# Anführungszeichen oder Steuerzeichen) noch aus LF/ hinausführen (kein "/" und kein "..").
 casefile_dirname_ok() {
 	local LC_ALL=C
 	[[ $1 =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$ ]]

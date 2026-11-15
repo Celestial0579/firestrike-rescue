@@ -34,16 +34,16 @@ jobs:
         run: |
           sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
           # Die Libs werden gemeinsam geladen, Variablen aus anderen Dateien (SC2034) sind kein Fehler.
-          # /run/frs gehört dem Benutzer rescue, Umleitungen hinter sudo (SC2024) sind dort gewollt.
+          # /run/lf gehört dem Benutzer rescue, Umleitungen hinter sudo (SC2024) sind dort gewollt.
           shellcheck -x -s bash --severity=warning -e SC2016,SC2024,SC2029,SC2034 \
-            build/build.sh build/chroot-setup.sh rescue/frs rescue/bin/* rescue/lib/*.sh tests/*.sh
+            build/build.sh build/chroot-setup.sh rescue/lf rescue/bin/* rescue/lib/*.sh tests/*.sh
       # Präparierte Falldateien: Nichts daraus darf ausgeführt werden.
       # Expertenwerkzeuge: kein Start ohne Ziel-Bestätigung.
       # Fortsetzen: Die Quelle wählt der Techniker, nie die Falldatei.
       # Ziel-Dateisysteme: Einhängen nur mit Schutzoptionen, am Einhängepunkt nachgeprüft.
       # Namen von der Ziel-Disk: nie Option, nie Befehl (auch mit echtem whiptail geprüft).
       # Claude: Texte von Datenträgern stehen in einer Datendatei, nie in einer CLAUDE.md.
-      # Persistenter Speicher: nur vom eigenen Stick, nie ungefragt, frs.conf als Daten.
+      # Persistenter Speicher: nur vom eigenen Stick, nie ungefragt, lf.conf als Daten.
       # Klon-Job: Label und Namen der Quelle werden nie zum Befehl.
       # Image-Partitionen: nur lesend und mit Schutzoptionen, am Einhängepunkt nachgeprüft.
       # Fortsetzen: Die Suche nach Rettungsfällen schreibt nicht.
@@ -53,7 +53,7 @@ jobs:
       # Disks: nur über eine eindeutige Kennung, bestätigt wird das Gerät, das beschrieben wird.
       # Boot: casper durchsucht keine fremden Disks. GRUB und initrd nehmen nur das geprüfte Medium.
       # Werkzeuge: Ein Fehler wird gemeldet, die Ausgabe erreicht das Terminal nur gefiltert.
-      # frs.conf: Was die Vorlage nennt, wirkt. Der Name im Bericht ist Text, nie Befehl.
+      # lf.conf: Was die Vorlage nennt, wirkt. Der Name im Bericht ist Text, nie Befehl.
       - name: Schutz-Tests
         run: |
           sudo apt-get install -y -qq jq whiptail
@@ -73,14 +73,14 @@ jobs:
           bash tests/dialog-disk-text.sh
           bash tests/unit-claude-guard.sh
           bash tests/unit-claude-wrapper.sh
-          bash tests/unit-frs-lesen.sh
-          bash tests/unit-frs-aufgabe.sh
+          bash tests/unit-lf-lesen.sh
+          bash tests/unit-lf-aufgabe.sh
           bash tests/unit-claude-skills.sh
           bash tests/unit-disk-identity.sh
           bash tests/unit-boot-config.sh
           bash tests/unit-boot-medium.sh
           bash tests/unit-runv.sh
-          bash tests/unit-frs-conf.sh
+          bash tests/unit-lf-conf.sh
       - name: Unit-Tests
         run: |
           sudo apt-get install -y -qq jq whiptail
@@ -111,8 +111,8 @@ jobs:
       - name: ISO bauen (Ubuntu 26.04 Container)
         run: |
           docker run --rm --privileged \
-            -v "$PWD:/src" -e FRS_VERSION="${{ steps.ver.outputs.version }}" \
-            -e WORK=/tmp/frs-work -e OUT=/src/out \
+            -v "$PWD:/src" -e LF_VERSION="${{ steps.ver.outputs.version }}" \
+            -e WORK=/tmp/lf-work -e OUT=/src/out \
             ubuntu:26.04 /src/build/build.sh
           sudo chown -R "$(id -u):$(id -g)" out
           ls -lh out
@@ -183,14 +183,14 @@ jobs:
           create() {
             gh release create "$tag" out/*.iso out/SHA256SUMS out/*.manifest \
               --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --prerelease \
-              --title "Firestrike Rescue $VERSION (Beta)" \
+              --title "Leuchtfeuer $VERSION (Beta)" \
               --notes "Ubuntu 26.04 LTS mit allen Updates bis $(date -u +%F). Mit Rufus (DD-Modus), balenaEtcher oder dd auf einen USB-Stick schreiben. Prüfsummen: SHA256SUMS. Herkunft prüfen: gh attestation verify <iso> --repo $GITHUB_REPOSITORY"
           }
           if ! create; then
             # Diagnose (#52): Eine Anfrage ohne tag_name lehnt die API ab (422), ohne etwas anzulegen.
             # Bei fehlenden Rechten antwortet sie 403 und nennt das verlangte Recht im Header.
             echo "::warning::gh release create fehlgeschlagen. Diagnose, dann ein zweiter Versuch in 60 s."
-            gh api -i -X POST "repos/$GITHUB_REPOSITORY/releases" -f name=frs-diagnose 2>&1 |
+            gh api -i -X POST "repos/$GITHUB_REPOSITORY/releases" -f name=lf-diagnose 2>&1 |
               grep -iE '^HTTP/|^x-accepted-github-permissions|^x-github-request-id|"message"' || true
             sleep 60
             # Ist beim ersten Versuch ein Release entstanden (etwa ohne alle Dateien), wird es nicht ersetzt.

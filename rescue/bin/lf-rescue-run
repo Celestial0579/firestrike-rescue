@@ -2,11 +2,11 @@
 # Führt die ddrescue-Phasen für einen Rettungsfall aus. Läuft als root, meist in tmux.
 # Wird ein Lauf unterbrochen, setzt ein erneuter Aufruf anhand von image.map fort.
 #
-#   frs-rescue-run CASE_DIR QUELLE [--no-pause] [--techniker=NAME]
+#   lf-rescue-run CASE_DIR QUELLE [--no-pause] [--techniker=NAME]
 #
 # CASE_DIR enthält case.env mit SRC_ID (Seriennummer/WWN/Pfad) und SRC_SIZE.
 # QUELLE ist der Gerätepfad der Disk, die der Techniker als Quelle gewählt hat.
-# NAME steht im Bericht. Der Assistent übergibt FRS_TECHNIKER aus der frs.conf.
+# NAME steht im Bericht. Der Assistent übergibt LF_TECHNIKER aus der lf.conf.
 #
 # Der Fallordner liegt auf der Ziel-Disk, also auf einem Datenträger, den jemand angeschlossen
 # hat. case.env wird deshalb als Daten gelesen und geprüft, nie als Shell-Code (lib/casefile.sh).
@@ -26,16 +26,16 @@ for a in "$@"; do
 	esac
 done
 if ((${#ARGS[@]} != 2)); then
-	echo "Aufruf: frs-rescue-run CASE_DIR QUELLE [--no-pause] [--techniker=NAME]" >&2
+	echo "Aufruf: lf-rescue-run CASE_DIR QUELLE [--no-pause] [--techniker=NAME]" >&2
 	echo "QUELLE ist der Gerätepfad der Quell-Disk, zum Beispiel /dev/sdb. Ohne sie wird nichts gelesen." >&2
 	exit 2
 fi
 CASE=${ARGS[0]%/}
 SRC=${ARGS[1]}
 
-# Je Fall läuft höchstens eine Rettung: Der Assistent und Claude (frs-aufgabe) können beide eine
+# Je Fall läuft höchstens eine Rettung: Der Assistent und Claude (lf-aufgabe) können beide eine
 # starten. Zwei ddrescue auf derselben Mapfile würden sie zerstören.
-lock_dir=/run/frs
+lock_dir=/run/lf
 [[ -d $lock_dir && -w $lock_dir ]] || lock_dir=${TMPDIR:-/tmp}
 exec 8>"$lock_dir/rettung-$(realpath -m -- "$CASE" | sha256sum | cut -c1-16).lock"
 if ! flock -n 8; then
@@ -48,17 +48,17 @@ IMG="$CASE/image.img"
 MAP="$CASE/image.map"
 LOG="$CASE/rescue.log"
 
-# Die Bibliothek liegt neben diesem Skript: installiert unter /usr/local/lib/frs, im Repository
+# Die Bibliothek liegt neben diesem Skript: installiert unter /usr/local/lib/lf, im Repository
 # unter rescue/lib. Bewusst ohne Umweg über die Umgebung, das Skript läuft als root.
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-LIB=$HERE/../lib/frs
+LIB=$HERE/../lib/lf
 [[ -r $LIB/casefile.sh ]] || LIB=$HERE/../lib
-[[ -r $LIB/casefile.sh ]] || { echo "frs-rescue-run: $LIB/casefile.sh fehlt." >&2; exit 2; }
+[[ -r $LIB/casefile.sh ]] || { echo "lf-rescue-run: $LIB/casefile.sh fehlt." >&2; exit 2; }
 # shellcheck disable=SC1090
 . "$LIB/casefile.sh"
 
 # Der Name steht nur im Bericht, als Text: höchstens 100 Zeichen, Steuerzeichen und die Zeichen
-# " $ ` \ werden zu "_". Dieselben Grenzen gelten für FRS_TECHNIKER in der frs.conf.
+# " $ ` \ werden zu "_". Dieselben Grenzen gelten für LF_TECHNIKER in der lf.conf.
 [[ -n $TECH ]] && TECH=$(casefile_clean_text "${TECH:0:100}")
 
 say() { printf '\n\033[1;33m%s\033[0m\n' "$*" | tee -a "$LOG"; }
@@ -142,7 +142,7 @@ setv SRC_PATH "$SRC"
 [[ -z $(casefile_get STARTED) ]] && setv STARTED "$(date -Is)"
 [[ -f $CASE/smart-before.txt ]] || smartctl -x "$SRC" >"$CASE/smart-before.txt" 2>&1
 
-say "Firestrike Rescue · Datenrettung von $SRC ($SRC_ID) nach $IMG"
+say "Leuchtfeuer · Datenrettung von $SRC ($SRC_ID) nach $IMG"
 [[ -n $NOTE ]] && say "Hinweis: $NOTE"
 echo "Mit Strg+B, D verlässt du die Ansicht; die Rettung läuft weiter." | tee -a "$LOG"
 
@@ -153,7 +153,7 @@ PHASES=(
 )
 DONE=$(casefile_get PHASE_DONE 0)
 
-# Phase 0 (#46): Liegen im Fall Domains (frs-aufgabe domain, aus der NTFS-Bitmap der Quelle),
+# Phase 0 (#46): Liegen im Fall Domains (lf-aufgabe domain, aus der NTFS-Bitmap der Quelle),
 # liest ddrescue zuerst nur sie: die MFT, dann die belegten Cluster. Danach holen die Phasen
 # 1 bis 3 den Rest in derselben Mapfile, ohne Gelesenes erneut zu lesen. Nach Phase 1 lohnt
 # eine Domain nicht mehr.
@@ -210,7 +210,7 @@ smartctl -x "$SRC" >"$CASE/smart-after.txt" 2>&1
 setv FINISHED "$(date -Is)"
 setv STATE "done"
 {
-	echo "Firestrike Rescue · Rettungsbericht"
+	echo "Leuchtfeuer · Rettungsbericht"
 	echo "==================================="
 	echo
 	echo "Quelle:      $SRC_LABEL"
@@ -219,7 +219,7 @@ setv STATE "done"
 	echo "Image:       $IMG"
 	echo "Begonnen:    $(casefile_get STARTED)"
 	echo "Beendet:     $(date -Is)"
-	echo "System:      Firestrike Rescue $(. /etc/frs-release 2>/dev/null; echo "${FRS_VERSION:-dev}")"
+	echo "System:      Leuchtfeuer $(. /etc/lf-release 2>/dev/null; echo "${LF_VERSION:-dev}")"
 	[[ -n $TECH ]] && echo "Techniker:   $TECH"
 	echo
 	echo "Ergebnis (ddrescuelog -t):"

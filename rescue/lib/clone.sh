@@ -79,7 +79,7 @@ clone_from_device() {
 		((tsize >= ssize)) || { die "Quelle ohne Partitionstabelle und Ziel ist kleiner. Das geht nicht."; return 0; }
 		safety_confirm_target "$tid" "Ziel wird mit dem Inhalt von $sdev überschrieben." "$tdev" || return 0
 		# Die Pfade sind eigene Argumente, nie Teil des Befehlstexts.
-		tmux_run "frs-klon" bash -c 'sudo dd if="$1" of="$2" bs=4M iflag=fullblock conv=fsync status=progress; echo; read -r -p "Fertig. Enter … " _' _ "$sdev" "$tdev"
+		tmux_run "lf-klon" bash -c 'sudo dd if="$1" of="$2" bs=4M iflag=fullblock conv=fsync status=progress; echo; read -r -p "Fertig. Enter … " _' _ "$sdev" "$tdev"
 		return 0
 	fi
 
@@ -96,7 +96,7 @@ clone_from_device() {
 
 	clone_write_table "$tdev" "$keep" || return 0
 	clone_copy "$sdev" "$tdev" || return 0
-	ui_msg "Klon fertig" "Der Klon ist abgeschlossen.\n\n$(clone_boot_hint "$keep")\n\nProtokoll: $FRS_LOG"
+	ui_msg "Klon fertig" "Der Klon ist abgeschlossen.\n\n$(clone_boot_hint "$keep")\n\nProtokoll: $LF_LOG"
 }
 
 # Liest die Partitionstabelle und berechnet das Ziel-Layout.
@@ -289,8 +289,8 @@ clone_ident() {
 
 clone_copy() {
 	local sdev=$1 tdev=$2 n=${#CLONE_PARTS[@]} i job status shash thash
-	job="$FRS_RUN/clone-job.sh"
-	status="$FRS_RUN/clone-status"
+	job="$LF_RUN/clone-job.sh"
+	status="$LF_RUN/clone-status"
 	rm -f "$status" "$job"
 	if ! clone_path_ok "$sdev" || ! clone_path_ok "$tdev" || ! shash=$(clone_ident "$sdev") || ! thash=$(clone_ident "$tdev"); then
 		log "Klon-Job nicht erzeugt: Quelle $sdev oder Ziel $tdev ließ sich nicht feststellen"
@@ -314,7 +314,7 @@ clone_copy() {
 	{
 		echo '#!/usr/bin/env bash'
 		echo 'set -u'
-		echo "exec > >(tee -a '$FRS_LOG') 2>&1"
+		echo "exec > >(tee -a '$LF_LOG') 2>&1"
 		echo 'step() { printf "\n\033[1;33m==> %s\033[0m\n" "$*"; }'
 		echo 'fail() { echo "FEHLER: $*"; echo FAIL > '"'$status'"'; read -r -p "Enter … " _; exit 1; }'
 		echo 'ident() { local id; id=$(lsblk -dnb -o SERIAL,WWN,SIZE "$1" 2>/dev/null); [[ -n ${id// /} ]] || return 1; printf "%s" "$id" | sha256sum | cut -c1-64; }'
@@ -342,11 +342,11 @@ clone_copy() {
 	} >"$job"
 	chmod +x "$job"
 	log "Klon-Job: $job"
-	tmux_run "frs-klon" sudo "$job"
-	while tmux has-session -t frs-klon 2>/dev/null; do
-		ui_msg "Klon läuft" "Der Klon läuft noch im Hintergrund.\n\nOK zeigt die Ansicht wieder an." && tmux attach -t frs-klon
+	tmux_run "lf-klon" sudo "$job"
+	while tmux has-session -t lf-klon 2>/dev/null; do
+		ui_msg "Klon läuft" "Der Klon läuft noch im Hintergrund.\n\nOK zeigt die Ansicht wieder an." && tmux attach -t lf-klon
 	done
-	[[ $(cat "$status" 2>/dev/null) == OK ]] || { die "Der Klon ist fehlgeschlagen. Details im Protokoll: $FRS_LOG"; return 1; }
+	[[ $(cat "$status" 2>/dev/null) == OK ]] || { die "Der Klon ist fehlgeschlagen. Details im Protokoll: $LF_LOG"; return 1; }
 }
 
 # Gibt Shell-Befehle aus, die eine Partition 1:1 (nur belegte Blöcke) kopieren.
@@ -403,9 +403,9 @@ clone_cmd_shrink() {
 	local src=$1 dst=$2 fs=$3 bytes=$4
 	cat <<-EOF
 		modprobe nbd max_part=0
-		install -d $FRS_RUN/cow
-		mountpoint -q $FRS_RUN/cow || mount -t tmpfs -o size=60% tmpfs $FRS_RUN/cow
-		TMPDIR=$FRS_RUN/cow qemu-nbd --snapshot --format=raw --fork -c /dev/nbd0 '$src' || fail 'qemu-nbd'
+		install -d $LF_RUN/cow
+		mountpoint -q $LF_RUN/cow || mount -t tmpfs -o size=60% tmpfs $LF_RUN/cow
+		TMPDIR=$LF_RUN/cow qemu-nbd --snapshot --format=raw --fork -c /dev/nbd0 '$src' || fail 'qemu-nbd'
 		sleep 1
 	EOF
 	case $fs in

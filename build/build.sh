@@ -1,16 +1,16 @@
 #!/usr/bin/env bash
-# Baut die Firestrike-Rescue-ISO.
+# Baut die Leuchtfeuer-ISO.
 # Läuft als root in einem Ubuntu-26.04-Container (privileged) oder auf einem Ubuntu-26.04-Host.
 #
 #   sudo build/build.sh            # vollständiger Build nach ./out
-#   WORK=/tmp/frs-work build/build.sh
+#   WORK=/tmp/lf-work build/build.sh
 #
 # Umgebungsvariablen:
 #   SUITE   Ubuntu-Codename (Standard: resolute = 26.04 LTS)
 #   MIRROR  Ubuntu-Archiv (Standard: http://archive.ubuntu.com/ubuntu)
 #   WORK    Arbeitsverzeichnis (Standard: ./work)
 #   OUT     Ausgabeverzeichnis (Standard: ./out)
-#   FRS_VERSION  Versionsstring (Standard: 26.04-JJJJMMTT)
+#   LF_VERSION  Versionsstring (Standard: 26.04-JJJJMMTT)
 
 set -Eeuo pipefail
 
@@ -19,12 +19,12 @@ SUITE="${SUITE:-resolute}"
 MIRROR="${MIRROR:-http://archive.ubuntu.com/ubuntu}"
 WORK="${WORK:-$SRC/work}"
 OUT="${OUT:-$SRC/out}"
-FRS_VERSION="${FRS_VERSION:-26.04-$(date -u +%Y%m%d)}"
-ISO_LABEL="FRS_RESCUE"
-ISO_NAME="firestrike-rescue-${FRS_VERSION}-amd64.iso"
+LF_VERSION="${LF_VERSION:-26.04-$(date -u +%Y%m%d)}"
+ISO_LABEL="LEUCHTFEUER"
+ISO_NAME="leuchtfeuer-${LF_VERSION}-amd64.iso"
 # UUID des ISO-Dateisystems, für jeden Build neu. xorriso leitet sie aus dem Änderungsdatum ab
 # (--modification-date). Daran erkennen der Start-Stub auf der EFI-Partition (build/grub/esp.cfg)
-# und die initrd (casper-premount/frs_medium) das eigene Medium. Ein Label kann jede Disk tragen.
+# und die initrd (casper-premount/lf_medium) das eigene Medium. Ein Label kann jede Disk tragen.
 ISO_DATE="$(date -u +%Y%m%d%H%M%S)00"
 ISO_UUID="${ISO_DATE:0:4}-${ISO_DATE:4:2}-${ISO_DATE:6:2}-${ISO_DATE:8:2}-${ISO_DATE:10:2}-${ISO_DATE:12:2}-${ISO_DATE:14:2}"
 
@@ -98,7 +98,7 @@ bootstrap() {
 		Components: main restricted universe multiverse
 		Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg
 	EOF
-	echo "frs" >"$CHROOT/etc/hostname"
+	echo "lf" >"$CHROOT/etc/hostname"
 }
 
 # ---------------------------------------------------------------------------
@@ -107,15 +107,22 @@ bootstrap() {
 configure() {
 	log "Kopiere Overlay und Assistent"
 	cp -a "$SRC/build/overlay/." "$CHROOT/"
-	install -d "$CHROOT/usr/local/lib/frs" "$CHROOT/usr/local/share/frs"
-	cp -a "$SRC/rescue/lib/." "$CHROOT/usr/local/lib/frs/"
-	cp -a "$SRC/rescue/theme" "$CHROOT/usr/local/share/frs/"
-	install -m 0755 "$SRC/rescue/frs" "$CHROOT/usr/local/bin/frs"
+	install -d "$CHROOT/usr/local/lib/lf" "$CHROOT/usr/local/share/lf"
+	cp -a "$SRC/rescue/lib/." "$CHROOT/usr/local/lib/lf/"
+	cp -a "$SRC/rescue/theme" "$CHROOT/usr/local/share/lf/"
+	install -m 0755 "$SRC/rescue/lf" "$CHROOT/usr/local/bin/lf"
 	for f in "$SRC"/rescue/bin/*; do
 		install -m 0755 "$f" "$CHROOT/usr/local/bin/$(basename "$f")"
 	done
+	# Übergang von firestrike-rescue, gilt eine Beta lang: Die alten frs-Befehle zeigen auf die
+	# lf-Befehle. sudo für Claude gilt nur für die lf-Namen (chroot-setup.sh).
+	ln -s lf "$CHROOT/usr/local/bin/frs"
+	for f in "$SRC"/rescue/bin/lf-*; do
+		f=$(basename "$f")
+		ln -s "$f" "$CHROOT/usr/local/bin/frs-${f#lf-}"
+	done
 	install -D -m 0644 "$SRC/rescue/claude/CLAUDE.md" "$CHROOT/etc/claude-code/CLAUDE.md"
-	# Verwaltete Einstellungen: die Sperre für Claude (Hook frs-claude-guard, Deny-Regeln, kein
+	# Verwaltete Einstellungen: die Sperre für Claude (Hook lf-claude-guard, Deny-Regeln, kein
 	# Auto-Modus, Hooks und Erlaubnis-Regeln nur von hier). Claude Code liest sie für jede
 	# Sitzung, kein Projekt und kein Benutzer überstimmt sie. Ob sie wirken, prüft der Selbsttest
 	# mit der CLI der ISO (selftest_claude).
@@ -130,11 +137,11 @@ configure() {
 	install -m 0644 "$SRC/build/packages.list" "$CHROOT/tmp/packages.list"
 	install -m 0755 "$SRC/build/chroot-setup.sh" "$CHROOT/tmp/chroot-setup.sh"
 
-	cat >"$CHROOT/etc/frs-release" <<-EOF
-		FRS_VERSION=$FRS_VERSION
-		FRS_BUILD_DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-		FRS_BASE="Ubuntu 26.04 LTS ($SUITE)"
-		FRS_SOURCE=https://github.com/Celestial0579/firestrike-rescue
+	cat >"$CHROOT/etc/lf-release" <<-EOF
+		LF_VERSION=$LF_VERSION
+		LF_BUILD_DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+		LF_BASE="Ubuntu 26.04 LTS ($SUITE)"
+		LF_SOURCE=https://github.com/Celestial0579/leuchtfeuer
 	EOF
 
 	log "Paketinstallation und Einrichtung im chroot"
@@ -196,12 +203,12 @@ boot_files() {
 	done
 
 	# Ubuntus signierter GRUB sucht /.disk/info und lädt dann /boot/grub/grub.cfg
-	echo "Firestrike Rescue $FRS_VERSION - Ubuntu 26.04 LTS amd64" >"$ISO/.disk/info"
-	sed "s/@VERSION@/$FRS_VERSION/g" "$SRC/build/grub/grub.cfg" >"$ISO/boot/grub/grub.cfg"
+	echo "Leuchtfeuer $LF_VERSION - Ubuntu 26.04 LTS amd64" >"$ISO/.disk/info"
+	sed "s/@VERSION@/$LF_VERSION/g" "$SRC/build/grub/grub.cfg" >"$ISO/boot/grub/grub.cfg"
 	cp "$ISO/boot/grub/grub.cfg" "$ISO/EFI/boot/grub.cfg"
 
-	log "GRUB-Theme (Firestrike-Farben)"
-	local theme="$ISO/boot/grub/themes/firestrike"
+	log "GRUB-Theme (Leuchtfeuer-Farben)"
+	local theme="$ISO/boot/grub/themes/leuchtfeuer"
 	install -d "$theme" "$ISO/boot/grub/fonts"
 	cp "$SRC/build/grub/theme/theme.txt" "$theme/theme.txt"
 	solid_png "$theme/select_c.png" "#AB5019"
@@ -224,7 +231,7 @@ boot_files() {
 	title_font="$(pf2_name "$theme/title.pf2")"
 	menu_font="$(pf2_name "$theme/menu.pf2")"
 	sed -i -e "s/@TITLE_FONT@/$title_font/" -e "s/@MENU_FONT@/$menu_font/" \
-		-e "s/@SMALL_FONT@/$(pf2_name "$theme/small.pf2")/" -e "s/@VERSION@/$FRS_VERSION/" \
+		-e "s/@SMALL_FONT@/$(pf2_name "$theme/small.pf2")/" -e "s/@VERSION@/$LF_VERSION/" \
 		"$theme/theme.txt"
 
 	log "BIOS-Bootloader"
@@ -250,12 +257,12 @@ boot_files() {
 	# FAT-Image für die El-Torito-UEFI-Bootoption und die angehängte ESP
 	local efi="$WORK/efi.img"
 	rm -f "$efi"
-	mkfs.vfat -C -n FRS_EFI "$efi" 8192 >/dev/null
+	mkfs.vfat -C -n LF_EFI "$efi" 8192 >/dev/null
 	mmd -i "$efi" ::/EFI ::/EFI/boot
 	mcopy -i "$efi" "$ISO"/EFI/boot/* ::/EFI/boot/
 	# Start-Stub: Der signierte GRUB findet /boot/grub auf der EFI-Partition und durchsucht keine
 	# anderen Disks nach /.disk/info. Der Stub nimmt das ISO-Dateisystem nur von derselben Disk.
-	sed -e "s/@VERSION@/$FRS_VERSION/g" -e "s/@ISO_UUID@/$ISO_UUID/g" "$SRC/build/grub/esp.cfg" >"$WORK/esp.cfg"
+	sed -e "s/@VERSION@/$LF_VERSION/g" -e "s/@ISO_UUID@/$ISO_UUID/g" "$SRC/build/grub/esp.cfg" >"$WORK/esp.cfg"
 	mmd -i "$efi" ::/boot ::/boot/grub ::/boot/grub/x86_64-efi
 	mcopy -i "$efi" "$WORK/esp.cfg" ::/boot/grub/grub.cfg
 	mcopy -i "$efi" "$WORK/esp.cfg" ::/boot/grub/x86_64-efi/grub.cfg
@@ -275,18 +282,18 @@ squash() {
 		-wildcards -e 'proc/*' 'sys/*' 'dev/*' 'run/*' 'tmp/*' 'boot/*' 'var/cache/apt/archives/*.deb'
 	du -sx --block-size=1 "$CHROOT" | cut -f1 >"$ISO/casper/filesystem.size"
 
-	# UUID der ISO und Prüfsumme des squashfs für die initrd (casper-premount/frs_medium). Die
+	# UUID der ISO und Prüfsumme des squashfs für die initrd (casper-premount/lf_medium). Die
 	# Summe gibt es erst jetzt. Sie kommt als eigenes, unkomprimiertes cpio-Archiv vor die initrd:
 	# Der Kernel packt alle Archive nacheinander aus, unmkinitramfs findet es als frühes Archiv.
 	log "UUID und Prüfsumme des squashfs in die initrd"
-	local sum conf="$WORK/frs-medium"
+	local sum conf="$WORK/lf-medium"
 	sum=$(sha256sum "$ISO/casper/filesystem.squashfs" | cut -d' ' -f1)
 	rm -rf "$conf"
 	install -d "$conf/conf"
-	printf 'FRS_ISO_UUID=%s\nFRS_SQUASHFS_SHA256=%s\n' "$ISO_UUID" "$sum" >"$conf/conf/frs-medium.conf"
-	(cd "$conf" && printf '%s\n' conf conf/frs-medium.conf | cpio -o -H newc --quiet) >"$WORK/frs-medium.cpio"
-	truncate -s %4 "$WORK/frs-medium.cpio"
-	cat "$WORK/frs-medium.cpio" "$ISO/casper/initrd" >"$WORK/initrd.neu"
+	printf 'LF_ISO_UUID=%s\nLF_SQUASHFS_SHA256=%s\n' "$ISO_UUID" "$sum" >"$conf/conf/lf-medium.conf"
+	(cd "$conf" && printf '%s\n' conf conf/lf-medium.conf | cpio -o -H newc --quiet) >"$WORK/lf-medium.cpio"
+	truncate -s %4 "$WORK/lf-medium.cpio"
+	cat "$WORK/lf-medium.cpio" "$ISO/casper/initrd" >"$WORK/initrd.neu"
 	mv "$WORK/initrd.neu" "$ISO/casper/initrd"
 }
 

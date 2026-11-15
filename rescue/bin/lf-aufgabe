@@ -1,44 +1,44 @@
 #!/bin/bash
-# Firestrike Rescue: Rettungsaufgaben für Claude (Benutzer frs-claude).
+# Leuchtfeuer: Rettungsaufgaben für Claude (Benutzer lf-claude).
 #
-# Claude läuft als eigener Benutzer ohne Zugriff auf Blockgeräte. sudo erlaubt ihm nur frs-lesen
-# (Diagnose) und dieses Programm (/etc/sudoers.d/frs-claude). Damit erledigt Claude die
+# Claude läuft als eigener Benutzer ohne Zugriff auf Blockgeräte. sudo erlaubt ihm nur lf-lesen
+# (Diagnose) und dieses Programm (/etc/sudoers.d/lf-claude). Damit erledigt Claude die
 # Rettungsaufgaben selbständig, aber nur auf die Art, die auch der Assistent hat:
 #   - Eine Quelle wird vor allem anderen schreibgeschützt und nur lesend eingehängt.
 #   - Geschrieben wird nur auf das bestätigte Ziel: die Partition, die der Assistent nach der
-#     Bestätigung des Technikers unter /mnt/frs-target eingehängt hat. Claude kann dort nichts
+#     Bestätigung des Technikers unter /mnt/lf-target eingehängt hat. Claude kann dort nichts
 #     einhängen und kein anderes Ziel wählen.
 #   - Formatieren, Partitionieren und beliebige Befehle als root gibt es hier nicht.
 # Jedes Argument wird geprüft, bevor etwas geschieht. Jede Aufgabe steht im Protokoll.
 #
-#   frs-aufgabe einhaengen GERÄT        Partition nur lesend unter /mnt/frs-image/NAME einhängen
-#   frs-aufgabe aushaengen NAME         /mnt/frs-image/NAME aushängen
-#   frs-aufgabe image FALL              image.img eines Rettungsfalls nur lesend einbinden
-#   frs-aufgabe kopieren PFAD [ORDNER]  aus /mnt/frs-image aufs Ziel nach FRS/claude/ORDNER kopieren
-#   frs-aufgabe pruefen PFAD [ORDNER]   die Kopie per Prüfsumme gegen PFAD prüfen, Ergebnis aufs Ziel
-#   frs-aufgabe timeout GERÄT SEKUNDEN  kurze Timeouts für eine schreibgeschützte Quelle (3 bis 120)
-#   frs-aufgabe ablegen FALL DATEI      Textdatei aus dem Home von Claude in den Rettungsfall legen
-#   frs-aufgabe retten GERÄT [--domain PARTITION]
+#   lf-aufgabe einhaengen GERÄT        Partition nur lesend unter /mnt/lf-image/NAME einhängen
+#   lf-aufgabe aushaengen NAME         /mnt/lf-image/NAME aushängen
+#   lf-aufgabe image FALL              image.img eines Rettungsfalls nur lesend einbinden
+#   lf-aufgabe kopieren PFAD [ORDNER]  aus /mnt/lf-image aufs Ziel nach LF/claude/ORDNER kopieren
+#   lf-aufgabe pruefen PFAD [ORDNER]   die Kopie per Prüfsumme gegen PFAD prüfen, Ergebnis aufs Ziel
+#   lf-aufgabe timeout GERÄT SEKUNDEN  kurze Timeouts für eine schreibgeschützte Quelle (3 bis 120)
+#   lf-aufgabe ablegen FALL DATEI      Textdatei aus dem Home von Claude in den Rettungsfall legen
+#   lf-aufgabe retten GERÄT [--domain PARTITION]
 #                                       Rettungsfall auf dem Ziel anlegen, ddrescue im Hintergrund.
 #                                       Mit --domain zuerst MFT und belegte Cluster dieser NTFS-Partition
-#   frs-aufgabe domain FALL PARTITION   Domain für einen Fall, der noch nicht über Phase 1 hinaus ist
-#   frs-aufgabe fortsetzen FALL GERÄT   unterbrochene Rettung im Hintergrund fortsetzen
-#   frs-aufgabe stand                   laufende Rettungen und letzte Aufgaben
-#   frs-aufgabe notiz TEXT              Eintrag ins Protokoll des Assistenten
+#   lf-aufgabe domain FALL PARTITION   Domain für einen Fall, der noch nicht über Phase 1 hinaus ist
+#   lf-aufgabe fortsetzen FALL GERÄT   unterbrochene Rettung im Hintergrund fortsetzen
+#   lf-aufgabe stand                   laufende Rettungen und letzte Aufgaben
+#   lf-aufgabe notiz TEXT              Eintrag ins Protokoll des Assistenten
 #
-# GERÄT ist /dev/NAME, FALL der Name eines Ordners unter <Ziel>/FRS/.
+# GERÄT ist /dev/NAME, FALL der Name eines Ordners unter <Ziel>/LF/.
 set -u
 PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 export LC_ALL=C.UTF-8
 umask 022
-FRS_LIB=/usr/local/lib/frs
+LF_LIB=/usr/local/lib/lf
 for f in common disks safety casefile target recover; do
 	# shellcheck disable=SC1090
-	. "$FRS_LIB/$f.sh"
+	. "$LF_LIB/$f.sh"
 done
 
-AUFGABEN_LOG=$FRS_RUN/claude-aufgaben.log
-FRS_LOG=$AUFGABEN_LOG
+AUFGABEN_LOG=$LF_RUN/claude-aufgaben.log
+LF_LOG=$AUFGABEN_LOG
 # Es gibt keine Oberfläche: Was eine Rückfrage bräuchte, geht nur über den Assistenten.
 log() { printf '%s %s\n' "$(date '+%F %T')" "$*" >>"$AUFGABEN_LOG"; }
 ui_msg() { printf '%s: %b\n' "$1" "$2" >&2; }
@@ -48,12 +48,12 @@ ui_input() { return 1; }
 ui_menu() { return 1; }
 
 fail() {
-	echo "frs-aufgabe: $*" >&2
+	echo "lf-aufgabe: $*" >&2
 	log "abgelehnt: $*"
 	exit 2
 }
 
-# dev GERÄT   wie in frs-lesen: nur /dev/NAME eines Blockgeräts, das der Kernel kennt.
+# dev GERÄT   wie in lf-lesen: nur /dev/NAME eines Blockgeräts, das der Kernel kennt.
 dev() {
 	[[ ${1:-} =~ ^/dev/([a-z][a-z0-9]{0,31})$ ]] || fail "kein Gerät: '${1:-}' (erwartet /dev/NAME)"
 	[[ -e /sys/class/block/${BASH_REMATCH[1]} && -b $1 && ! -L $1 ]] || fail "kein Blockgerät: $1"
@@ -67,11 +67,11 @@ disk_of() {
 	if [[ -n $p ]]; then echo "/dev/$p"; else echo "$1"; fi
 }
 
-# target_disk   Die Disk unter /mnt/frs-target, leer ohne bestätigtes Ziel.
+# target_disk   Die Disk unter /mnt/lf-target, leer ohne bestätigtes Ziel.
 target_disk() {
 	local src
-	mountpoint -q "$FRS_TARGET_MNT" || return 0
-	src=$(findmnt -no SOURCE -M "$FRS_TARGET_MNT" 2>/dev/null)
+	mountpoint -q "$LF_TARGET_MNT" || return 0
+	src=$(findmnt -no SOURCE -M "$LF_TARGET_MNT" 2>/dev/null)
 	[[ -b $src ]] && disk_of "$src"
 }
 
@@ -87,7 +87,7 @@ source_ok() {
 	d=$(disk_of "$1")
 	bd=$(boot_disk 2>/dev/null || true)
 	td=$(target_disk)
-	[[ -n $bd && $d == "$bd" ]] && fail "$1 liegt auf dem Firestrike-Stick."
+	[[ -n $bd && $d == "$bd" ]] && fail "$1 liegt auf dem Leuchtfeuer-Stick."
 	[[ -n $td && $d == "$td" ]] && fail "$1 liegt auf dem Ziel. Das Ziel ist keine Quelle."
 	return 0
 }
@@ -95,24 +95,24 @@ source_ok() {
 # case_dir FALL   Ordner eines Rettungsfalls auf dem Ziel.
 case_dir() {
 	casefile_dirname_ok "${1:-}" || fail "kein gültiger Fallname: '${1:-}'"
-	local c=$FRS_TARGET_MNT/FRS/$1
+	local c=$LF_TARGET_MNT/LF/$1
 	[[ -d $c && ! -L $c && -f $c/case.env && ! -L $c/case.env ]] || fail "Rettungsfall $1 nicht gefunden"
 	printf '%s\n' "$c"
 }
 
-# image_src PFAD   PFAD liegt auf einer nur lesend eingehängten Quelle unter /mnt/frs-image.
+# image_src PFAD   PFAD liegt auf einer nur lesend eingehängten Quelle unter /mnt/lf-image.
 image_src() {
 	local src
 	src=$(realpath -e -- "$1" 2>/dev/null) || fail "gibt es nicht: $1"
-	[[ $src == "$FRS_IMAGE_MNT"/?* ]] || fail "Gelesen wird nur aus $FRS_IMAGE_MNT (nur lesend eingehängte Quellen)."
+	[[ $src == "$LF_IMAGE_MNT"/?* ]] || fail "Gelesen wird nur aus $LF_IMAGE_MNT (nur lesend eingehängte Quellen)."
 	[[ ,$(findmnt -no OPTIONS -T "$src"), == *,ro,* ]] || fail "$src liegt nicht auf einem nur lesend eingehängten Dateisystem."
 	printf '%s\n' "$src"
 }
 
-# claude_dir NAME   Ordner unter FRS/claude auf dem Ziel, NAME ohne Pfad.
+# claude_dir NAME   Ordner unter LF/claude auf dem Ziel, NAME ohne Pfad.
 claude_dir() {
 	[[ $1 =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$ ]] || fail "kein gültiger Ordnername: '$1'"
-	printf '%s\n' "$FRS_TARGET_MNT/FRS/claude/$1"
+	printf '%s\n' "$LF_TARGET_MNT/LF/claude/$1"
 }
 
 # make_domain FALLORDNER DISK PARTITION   Domains aus der NTFS-Bitmap (#46): domain-mft.map
@@ -125,7 +125,7 @@ make_domain() {
 	[[ $(blkid -p -o value -s TYPE "$part" 2>/dev/null) == ntfs ]] || fail "$part ist kein NTFS. Domains gibt es nur für NTFS."
 	command -v ddru_ntfsbitmap >/dev/null || fail "ddru_ntfsbitmap (ddrutility) ist in diesem Image nicht installiert."
 	off=$(($(cat "/sys/class/block/$(basename "$part")/start") * 512))
-	work=$(mktemp -d "$FRS_RUN/domain.XXXXXX") || fail "Arbeitsordner fehlt."
+	work=$(mktemp -d "$LF_RUN/domain.XXXXXX") || fail "Arbeitsordner fehlt."
 	log "domain: $part (Offset $off) auf $disk für $c"
 	(cd "$work" && ddru_ntfsbitmap -i "$off" -m domain-mft.map "$disk" domain.map) >>"$AUFGABEN_LOG" 2>&1
 	rc=$?
@@ -139,16 +139,16 @@ make_domain() {
 	echo "Domain angelegt: zuerst die MFT, dann die belegten Cluster von $part."
 }
 
-# start_rescue FALLORDNER QUELLE   frs-rescue-run im Hintergrund, als eigene systemd-Einheit.
+# start_rescue FALLORDNER QUELLE   lf-rescue-run im Hintergrund, als eigene systemd-Einheit.
 start_rescue() {
 	local unit
-	unit="frs-claude-rettung-$(printf '%s' "$1" | sha256sum | cut -c1-12)"
+	unit="lf-claude-rettung-$(printf '%s' "$1" | sha256sum | cut -c1-12)"
 	systemctl is-active -q "$unit" && fail "Für diesen Fall läuft schon eine Rettung ($unit)."
-	systemd-run --quiet --collect --unit="$unit" --description="Firestrike Rescue: Rettung $(basename "$1")" \
-		/usr/local/bin/frs-rescue-run "$1" "$2" --no-pause ${FRS_TECHNIKER:+"--techniker=$FRS_TECHNIKER"} ||
+	systemd-run --quiet --collect --unit="$unit" --description="Leuchtfeuer: Rettung $(basename "$1")" \
+		/usr/local/bin/lf-rescue-run "$1" "$2" --no-pause ${LF_TECHNIKER:+"--techniker=$LF_TECHNIKER"} ||
 		fail "Die Rettung ließ sich nicht starten."
 	log "Rettung gestartet: $1 von $2 ($unit)"
-	echo "Rettung läuft im Hintergrund ($unit). Stand: sudo frs-aufgabe stand"
+	echo "Rettung läuft im Hintergrund ($unit). Stand: sudo lf-aufgabe stand"
 }
 
 [[ $# -ge 1 ]] || fail "Aktion fehlt (einhaengen, aushaengen, image, kopieren, pruefen, retten, domain, fortsetzen, timeout, ablegen, stand, notiz)"
@@ -165,14 +165,14 @@ einhaengen)
 	safety_is_ro "$disk" || safety_set_ro "$disk"
 	safety_is_ro "$part" || fail "$part ließ sich nicht schreibschützen."
 	[[ $(sudo blkid -o value -s TYPE "$part") == BitLocker ]] && fail "BitLocker braucht den Wiederherstellungsschlüssel. Das macht der Techniker im Assistenten."
-	mp="$FRS_IMAGE_MNT/$(basename "$part")"
+	mp="$LF_IMAGE_MNT/$(basename "$part")"
 	part_mount_ro "$part" "$mp" || fail "$part ließ sich nicht nur lesend einhängen. Protokoll: $AUFGABEN_LOG"
 	echo "$part ist nur lesend unter $mp eingehängt."
 	;;
 aushaengen)
 	(($# == 1)) || fail "aushaengen erwartet einen Namen"
 	[[ $1 =~ ^[a-z][a-z0-9]{0,31}$ ]] || fail "kein gültiger Name: '$1'"
-	mp=$FRS_IMAGE_MNT/$1
+	mp=$LF_IMAGE_MNT/$1
 	mountpoint -q "$mp" || fail "$mp ist nicht eingehängt"
 	umount "$mp" || fail "$mp ist noch in Benutzung"
 	echo "$mp ausgehängt."
@@ -184,14 +184,14 @@ image)
 	[[ -f $c/image.img && ! -L $c/image.img ]] || fail "Im Fall $1 gibt es kein image.img"
 	loop=$(image_attach "$c/image.img" ro)
 	[[ $(blockdev --getro "$loop") == 1 ]] || fail "Das Image ist nicht nur lesend eingebunden."
-	echo "$c/image.img ist nur lesend als $loop eingebunden. Partitionen: sudo frs-lesen disks"
+	echo "$c/image.img ist nur lesend als $loop eingebunden. Partitionen: sudo lf-lesen disks"
 	;;
 kopieren)
 	(($# == 1 || $# == 2)) || fail "kopieren erwartet PFAD [ORDNER]"
 	target_ok
 	src=$(image_src "$1") || exit 2
 	dst=$(claude_dir "${2:-$(basename "$src")}") || exit 2
-	install -d "$FRS_TARGET_MNT/FRS" "$FRS_TARGET_MNT/FRS/claude" "$dst" || fail "Kann $dst nicht anlegen."
+	install -d "$LF_TARGET_MNT/LF" "$LF_TARGET_MNT/LF/claude" "$dst" || fail "Kann $dst nicht anlegen."
 	ropts=(-aHAX --no-devices --no-specials)
 	case $(target_fs) in exfat | ntfs* | fuseblk) ropts=(-rt --modify-window=2) ;; esac
 	log "kopieren: $src -> $dst"
@@ -240,16 +240,16 @@ ablegen)
 	(($# == 2)) || fail "ablegen erwartet FALL DATEI"
 	target_ok
 	c=$(case_dir "$1") || exit 2
-	home=$(getent passwd frs-claude | cut -d: -f6)
-	[[ -n $home ]] || fail "Benutzer frs-claude fehlt."
+	home=$(getent passwd lf-claude | cut -d: -f6)
+	[[ -n $home ]] || fail "Benutzer lf-claude fehlt."
 	f=$(realpath -e -- "$2" 2>/dev/null) || fail "gibt es nicht: $2"
 	[[ $f == "$home"/?* && -f $f ]] || fail "Abgelegt werden nur Dateien aus $home."
 	name=$(basename "$f")
 	[[ $name =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$ ]] || fail "kein gültiger Dateiname: '$name'"
-	# Gelesen wird mit den Rechten von frs-claude, nie als root: Eine Verknüpfung, die nach der
+	# Gelesen wird mit den Rechten von lf-claude, nie als root: Eine Verknüpfung, die nach der
 	# Prüfung an die Stelle der Datei tritt, kann so nur auf etwas zeigen, das Claude ohnehin lesen darf.
 	tmp=$(mktemp "$c/.claude-ablage.XXXXXX") || fail "Ablegen fehlgeschlagen."
-	runuser -u frs-claude -- head -c $((10 * 1024 * 1024 + 1)) -- "$f" >"$tmp" 2>/dev/null
+	runuser -u lf-claude -- head -c $((10 * 1024 * 1024 + 1)) -- "$f" >"$tmp" 2>/dev/null
 	if (($(stat -c %s "$tmp") > 10 * 1024 * 1024)) || ! grep -qI . "$tmp"; then
 		rm -f "$tmp"
 		fail "nur Textdateien bis 10 MB"
@@ -286,9 +286,9 @@ retten)
 	name="$(date +%Y%m%d-%H%M)_${model}_${sid//[^A-Za-z0-9]/_}"
 	name=${name:0:200}
 	casefile_dirname_ok "$name" || name="$(date +%Y%m%d-%H%M)_Disk"
-	c="$FRS_TARGET_MNT/FRS/$name"
+	c="$LF_TARGET_MNT/LF/$name"
 	[[ -e $c ]] && fail "Den Fall $name gibt es schon."
-	install -d "$FRS_TARGET_MNT/FRS" "$c" || fail "Kann $c nicht anlegen."
+	install -d "$LF_TARGET_MNT/LF" "$c" || fail "Kann $c nicht anlegen."
 	casefile_value_ok SRC_ID "$sid" || sid=$sdev
 	tid=$(target_disk)
 	casefile_create "$c/case.env" "SRC_ID=$sid" "SRC_SIZE=$size" \
@@ -307,13 +307,13 @@ domain)
 	source_ok "$disk"
 	casefile_load "$c/case.env" || fail "Die Falldatei ist ungültig."
 	[[ $(casefile_get PHASE_DONE 0) == 0 ]] || fail "Der Fall ist schon über Phase 1 hinaus. Eine Domain spart dann nichts mehr."
-	# Die Disk muss die Quelle dieses Falls sein, geprüft wie in frs-rescue-run.
+	# Die Disk muss die Quelle dieses Falls sein, geprüft wie in lf-rescue-run.
 	info=$(lsblk -J -b -d -o SERIAL,WWN,SIZE "$disk" 2>/dev/null | jq -c '.blockdevices[0] // empty')
 	casefile_source_check "$(jq -r '(.serial // "") | gsub("^\\s+|\\s+$"; "")' <<<"$info")" "$(jq -r '.wwn // ""' <<<"$info")" "$(jq -r '.size // ""' <<<"$info")" ||
 		[[ $? == 3 ]] || fail "$disk ist nicht die Quelle dieses Falls: $CASEFILE_ERROR"
 	safety_is_ro "$disk" || safety_set_ro "$disk"
 	make_domain "$c" "$disk" "$part"
-	echo "Weiter mit: sudo frs-aufgabe fortsetzen $1 $disk"
+	echo "Weiter mit: sudo lf-aufgabe fortsetzen $1 $disk"
 	;;
 fortsetzen)
 	(($# == 2)) || fail "fortsetzen erwartet FALL GERÄT"
@@ -322,15 +322,15 @@ fortsetzen)
 	sdev=$(dev "$2") || exit 2
 	source_ok "$sdev"
 	safety_set_ro "$sdev"
-	# Ob die Disk zum Fall gehört, prüft frs-rescue-run selbst gegen die Falldatei.
+	# Ob die Disk zum Fall gehört, prüft lf-rescue-run selbst gegen die Falldatei.
 	start_rescue "$c" "$sdev"
 	;;
 stand)
 	(($# == 0)) || fail "stand erwartet keine Argumente"
 	echo "## Rettungen im Hintergrund"
-	systemctl list-units --all --plain --no-legend 'frs-claude-rettung-*' 2>/dev/null || true
+	systemctl list-units --all --plain --no-legend 'lf-claude-rettung-*' 2>/dev/null || true
 	if [[ -n $(target_disk) ]]; then
-		for m in "$FRS_TARGET_MNT"/FRS/*/image.map; do
+		for m in "$LF_TARGET_MNT"/LF/*/image.map; do
 			[[ -f $m && ! -L $m ]] || continue
 			echo
 			echo "## $(basename "$(dirname "$m")")"
@@ -344,7 +344,7 @@ stand)
 notiz)
 	(($# == 1)) || fail "notiz erwartet einen Text (in Anführungszeichen)"
 	text=$(printf '%s' "$1" | jq -Rr --arg re "$TEXT_UNSAFE_RE" '.[0:300] | gsub($re; "?")')
-	main_log=$(ls -t "$FRS_PERSIST"/logs/frs-*.log "$FRS_RUN"/logs/frs-*.log 2>/dev/null | head -n 1)
+	main_log=$(ls -t "$LF_PERSIST"/logs/lf-*.log "$LF_RUN"/logs/lf-*.log 2>/dev/null | head -n 1)
 	[[ -n $main_log && ! -L $main_log ]] && printf '%s [Claude] %s\n' "$(date '+%F %T')" "$text" >>"$main_log"
 	echo "Notiert."
 	;;

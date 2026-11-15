@@ -14,7 +14,7 @@ check() {
 }
 
 T=$(mktemp -d)
-FRS_LOG=/dev/null
+LF_LOG=/dev/null
 # shellcheck disable=SC1091
 . rescue/lib/recover.sh
 log() { :; }
@@ -56,7 +56,7 @@ check "das vorhandene Gerät wird genommen, sein Schutz bleibt" '[[ $out == /dev
 
 echo "Einbau:"
 check "die Reparatur bricht ab, wenn die Kopie nur lesend eingebunden ist" 'grep -q "Die Kopie ist nur lesend eingebunden" rescue/lib/recover.sh'
-check "der Selbsttest prüft das Wiederverwenden" 'grep -q "selftest_loop_rw \"\$dir\" || ok=0" rescue/frs'
+check "der Selbsttest prüft das Wiederverwenden" 'grep -q "selftest_loop_rw \"\$dir\" || ok=0" rescue/lf'
 
 rm -rf "$T"
 ((fails == 0)) && echo "Alle Tests bestanden." || { echo "$fails Test(s) fehlgeschlagen."; exit 1; }

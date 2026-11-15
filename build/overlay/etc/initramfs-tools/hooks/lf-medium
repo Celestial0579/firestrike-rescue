@@ -1,5 +1,5 @@
 #!/bin/sh
-# Firestrike Rescue: Werkzeuge für scripts/casper-premount/frs_medium in die initrd.
+# Leuchtfeuer: Werkzeuge für scripts/casper-premount/lf_medium in die initrd.
 # Die UUID der ISO und die Prüfsumme des squashfs kommen erst nach dem squashfs dazu
 # (build/build.sh, Schritt "SquashFS"), als eigenes cpio-Archiv vor der initrd.
 PREREQ=""
