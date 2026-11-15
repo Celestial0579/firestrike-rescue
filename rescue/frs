@@ -69,6 +69,7 @@ selftest() {
 	selftest_search "$dir" || ok=0
 	selftest_boot "$dir" || ok=0
 	selftest_tmux "$dir" || ok=0
+	selftest_loop_rw "$dir" || ok=0
 	selftest_claude "$dir" || ok=0
 	selftest_claude_user "$dir" || ok=0
 	# Werkzeuge vorhanden?
@@ -350,6 +351,36 @@ selftest_tmux() {
 		echo "FRS-SELFTEST: tmux: Argumente kamen verändert an oder wurden ausgeführt"
 		return 1
 	fi
+}
+
+# Ein Loop-Gerät, das schreibgeschützt war und wiederverwendet wird, bindet image_attach
+# beschreibbar ein (#48). Die Gegenprobe zeigt, dass der Kernel den Schutz sonst behält.
+selftest_loop_rw() {
+	local dir=$1 img=$1/loop-rw.raw loop again good=1
+	truncate -s 8M "$img"
+	loop=$(losetup --find --show "$img")
+	blockdev --setro "$loop"
+	losetup -d "$loop"
+	again=$(losetup --find --show "$img")
+	if [[ $again == "$loop" && $(blockdev --getro "$again") == 1 ]]; then
+		echo "FRS-SELFTEST: Loop-Gerät: Der Kernel behält den Schreibschutz beim Wiederverwenden (Gegenprobe)"
+	else
+		echo "FRS-SELFTEST: Loop-Gerät: Gegenprobe ohne Befund ($again, ro=$(blockdev --getro "$again"))"
+	fi
+	losetup -d "$again"
+	again=$(image_attach "$img" rw)
+	if [[ -n $again && $(blockdev --getro "$again") == 0 ]] && dd if=/dev/zero of="$again" bs=4k count=1 conv=notrunc status=none 2>/dev/null; then
+		echo "FRS-SELFTEST: Loop-Gerät: image_attach rw ist beschreibbar, auch nach altem Schreibschutz"
+	else
+		echo "FRS-SELFTEST: Loop-Gerät: image_attach rw ist nicht beschreibbar ($again)"
+		good=0
+	fi
+	losetup -d "$again" 2>/dev/null
+	again=$(image_attach "$img" ro)
+	[[ $(blockdev --getro "$again") == 1 ]] || { echo "FRS-SELFTEST: Loop-Gerät: image_attach ro ist beschreibbar"; good=0; }
+	losetup -d "$again" 2>/dev/null
+	rm -f "$img"
+	((good))
 }
 
 # Sperre für Claude im gebooteten System. Die Claude-Code-CLI der ISO läuft gegen eine Attrappe

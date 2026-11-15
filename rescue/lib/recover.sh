@@ -205,17 +205,34 @@ recover_after() {
 
 # Image als Loop-Device einbinden (nur lesend, mit Partitionen). Gibt /dev/loopN aus.
 image_attach() {
-	local img=$1 mode=${2:-ro} loop
+	local img=$1 mode=${2:-ro} loop new=0
 	loop=$(sudo losetup -j "$img" | cut -d: -f1 | head -n1)
 	if [[ -z $loop ]]; then
 		if [[ $mode == ro ]]; then
 			loop=$(sudo losetup --find --show -P -r "$img")
 		else
 			loop=$(sudo losetup --find --show -P "$img")
+			new=1
 		fi
 	fi
 	sleep 1
+	((new)) && image_attach_clear_ro "$loop"
 	echo "$loop"
+}
+
+# image_attach_clear_ro LOOP   Ein Loop-Gerät, das der Kernel wiederverwendet, behält einen
+#   Schreibschutz, den blockdev --setro früher auf ihm gesetzt hat (#48). Das gilt auch für seine
+#   Partitionen. Aufgehoben wird er nur hier, für ein Gerät, das image_attach gerade selbst
+#   beschreibbar eingebunden hat. Quellen sind nie Loop-Geräte, die so entstehen.
+image_attach_clear_ro() {
+	local p
+	local -a parts
+	mapfile -t parts < <(lsblk -nr -o PATH "$1" 2>/dev/null | tail -n +2)
+	for p in "$1" "${parts[@]}"; do
+		[[ $(sudo blockdev --getro "$p" 2>/dev/null) == 1 ]] || continue
+		log "Loop-Gerät $p trug noch einen alten Schreibschutz, aufgehoben"
+		run sudo blockdev --setrw "$p"
+	done
 }
 
 # Schutzoptionen für jede Partition aus einem Image. Ein Image ist der Inhalt einer fremden
@@ -319,6 +336,10 @@ image_repair() {
 		tmux_run "frs-kopie" bash -c 'cp --sparse=always "$1" "$2" && echo Kopie fertig; read -r -p "Enter … " _' _ "$img" "$copy"
 	fi
 	loop=$(image_attach "$copy" rw)
+	if [[ $(sudo blockdev --getro "$loop" 2>/dev/null) == 1 ]]; then
+		die "Die Kopie ist nur lesend eingebunden ($loop). Sie ist schon anderswo nur lesend eingebunden, oder das Gerät lässt sich nicht beschreibbar machen."
+		return 0
+	fi
 	part=$(image_pick_part "$loop") || return 0
 	fs=$(sudo blkid -o value -s TYPE "$part")
 	clear
