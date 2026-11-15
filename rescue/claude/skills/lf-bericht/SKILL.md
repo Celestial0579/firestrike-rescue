@@ -1,5 +1,5 @@
 ---
-name: frs-bericht
+name: lf-bericht
 description: Verständlicher Bericht an den Kunden über eine Datenrettung, mit Befund, Ergebnis, betroffenen Dateien und Empfehlungen. Nutzen am Ende einer Rettung oder wenn der Techniker einen Zwischenstand für den Kunden braucht.
 ---
 
@@ -12,7 +12,7 @@ Kunden erklärt in einfachen Worten, was passiert ist und was das für ihn heiß
 
 1. **Ergebnis in Kürze:** gerettet in Prozent der belegten Daten, Anzahl unlesbarer Bereiche, ob
    wichtige Ordner vollständig sind.
-2. **Befund der Disk** (aus `frs-diagnose`): Modell, Firmware, SMART-Auffälligkeiten, bekannte
+2. **Befund der Disk** (aus `lf-diagnose`): Modell, Firmware, SMART-Auffälligkeiten, bekannte
    Problemfassung ja/nein. Empfehlung, ob die Disk weiter verwendet werden kann. Bei Fehlern: nein.
 3. **Ablauf:** Quelle schreibgeschützt, Image mit Mapfile in Phasen, Kopie aus dem Image,
    Prüfsummen. Hänger und Neustarts erwähnen, wenn es welche gab.
@@ -20,7 +20,7 @@ Kunden erklärt in einfachen Worten, was passiert ist und was das für ihn heiß
    beschädigt. Die Liste nennt Dateien, keine Sektoren. Unkritische (Temp, Cache, Systemdateien) von
    wichtigen trennen. Die Zuordnung Sektor zu Datei braucht die Mapfile und die Lage der Dateien im
    Dateisystem. Kann Claude sie nicht sicher herstellen, das so sagen und nichts vermuten.
-5. **Prüfungen:** Prüfsummenvergleich (Ergebnis von `frs-aufgabe pruefen`), Virenscan (wenn der
+5. **Prüfungen:** Prüfsummenvergleich (Ergebnis von `lf-aufgabe pruefen`), Virenscan (wenn der
    Techniker einen gemacht hat, mit Datum und Ergebnis).
 6. **Empfehlungen:** Backup. Disk ersetzen. Bei Windows-Systemen nach einer Wiederherstellung
    Systemdateien prüfen lassen (`sfc /scannow`, `DISM /Online /Cleanup-Image /RestoreHealth`).
@@ -34,6 +34,6 @@ Kunden erklärt in einfachen Worten, was passiert ist und was das für ihn heiß
 - Den Bericht schreibt Claude als Entwurf in eine Datei im eigenen Home (etwa `~/bericht.md`).
   **Der Techniker liest ihn und gibt ihn frei.** Er entscheidet auch, ob er ihn ausdruckt oder als
   Datei übergibt.
-- Ablage nach der Freigabe: `sudo frs-aufgabe ablegen FALL ~/bericht.md`. Die Datei landet als
+- Ablage nach der Freigabe: `sudo lf-aufgabe ablegen FALL ~/bericht.md`. Die Datei landet als
   `claude-bericht.md` im Rettungsfall auf dem Ziel. Abgelegt werden nur Textdateien bis 10 MB aus
   dem Home von Claude.

@@ -4,7 +4,7 @@
 # Der Fallordner liegt auf der Ziel-Disk. Eine präparierte Falldatei kann als Quelle eine Disk
 # nennen, die der Techniker nie gewählt hat, zum Beispiel die interne. Beim Fortsetzen landete
 # deren Abbild dann auf der fremden Ziel-Disk. Der Test prüft beide Stellen:
-#   - frs-rescue-run (läuft als root) liest nur von der Disk, die der Aufruf nennt, und nur,
+#   - lf-rescue-run (läuft als root) liest nur von der Disk, die der Aufruf nennt, und nur,
 #     wenn Kennung und Größe aus der Falldatei zu ihr passen.
 #   - recover_resume (Assistent) fragt den Techniker nach der Quelle und setzt nur fort, wenn
 #     die Falldatei seiner Wahl nicht widerspricht.
@@ -18,6 +18,8 @@ T=$(mktemp -d)
 . rescue/lib/casefile.sh
 # shellcheck disable=SC1091
 . rescue/lib/recover.sh
+# shellcheck disable=SC1091
+. rescue/lib/target.sh
 
 fails=0
 check() {
@@ -33,7 +35,7 @@ NAMENLOS='{"path":"/dev/sdw","serial":"","wwn":null,"size":500107862016,"model":
 ZWILLING='{"path":"/dev/sdv","serial":"ZWILLING-0003","wwn":"0x5000c500cccccccc","size":1000204886016,"model":"Defekte Disk","tran":"usb"}'
 
 # ---------------------------------------------------------------------------
-# Teil 1: frs-rescue-run
+# Teil 1: lf-rescue-run
 # ---------------------------------------------------------------------------
 mkdir -p "$T/attrappen"
 # "lsblk … GERÄT" nennt genau dieses Gerät, ohne Gerät alle.
@@ -70,7 +72,7 @@ rescue() {
 	local name=$1
 	shift
 	: >"$T/aufrufe"
-	OUT=$(PATH="$T/attrappen:$PATH" DDRESCUE_CALLS="$T/aufrufe" bash rescue/bin/frs-rescue-run "$T/$name" "$@" --no-pause 2>&1 </dev/null)
+	OUT=$(PATH="$T/attrappen:$PATH" DDRESCUE_CALLS="$T/aufrufe" bash rescue/bin/lf-rescue-run "$T/$name" "$@" --no-pause 2>&1 </dev/null)
 	RC=$?
 	READ=$(cat "$T/aufrufe")
 }
@@ -84,7 +86,7 @@ check "Abbruch mit Rückgabe 2" '[[ $RC == 2 && $OUT == *"nicht die Quelle diese
 check "von keiner Disk gelesen" '[[ -z $READ ]]'
 check "kein Image, kein Protokoll, Falldatei unverändert" '[[ ! -e $T/fremd/image.img && ! -e $T/fremd/rescue.log && $(md5sum <"$T/fremd/case.env") == "$sum" ]]'
 rescue fremd
-check "ohne Quelle im Aufruf: Abbruch, die Falldatei wählt keine Disk" '[[ $RC == 2 && -z $READ && $OUT == *"Aufruf: frs-rescue-run CASE_DIR QUELLE"* ]]'
+check "ohne Quelle im Aufruf: Abbruch, die Falldatei wählt keine Disk" '[[ $RC == 2 && -z $READ && $OUT == *"Aufruf: lf-rescue-run CASE_DIR QUELLE"* ]]'
 fall fremdpfad /dev/sdy 2000398934016
 rescue fremdpfad /dev/sdx
 check "Falldatei nennt den Pfad der internen Disk: Abbruch, nichts gelesen" '[[ $RC == 2 && -z $READ ]]'
@@ -151,12 +153,12 @@ check "nichts wurde ausgeführt: keine Markerdatei" '! compgen -G "$T/MARKE-*" >
 # ---------------------------------------------------------------------------
 # Teil 2: Assistent (recover_resume)
 # ---------------------------------------------------------------------------
-FRS_TARGET_MNT="$T/ziel"
-mkdir -p "$FRS_TARGET_MNT/FRS"
+LF_TARGET_MNT="$T/ziel"
+mkdir -p "$LF_TARGET_MNT/LF"
 # zielfall NAME KENNUNG GRÖSSE [ZUSTAND]   Rettungsfall auf der gedachten Ziel-Disk.
 zielfall() {
-	mkdir -p "$FRS_TARGET_MNT/FRS/$1"
-	casefile_create "$FRS_TARGET_MNT/FRS/$1/case.env" "SRC_ID=$2" "SRC_SIZE=$3" "SRC_LABEL=Testdisk" "STATE=${4:-interrupted}"
+	mkdir -p "$LF_TARGET_MNT/LF/$1"
+	casefile_create "$LF_TARGET_MNT/LF/$1/case.env" "SRC_ID=$2" "SRC_SIZE=$3" "SRC_LABEL=Testdisk" "STATE=${4:-interrupted}"
 }
 zielfall fremd INTERN-0002 2000398934016
 zielfall echt DEFEKT-0001 1000204886016
@@ -230,7 +232,7 @@ check "die Frage nach der Quelle gibt nichts aus der Falldatei wieder" '[[ $(sed
 echo "Assistent, der Techniker wählt die Quelle des Falls:"
 resume echt DEFEKT-0001
 check "Quelle schreibgeschützt" '[[ $RO == /dev/sdx ]]'
-check "Rettung mit der gewählten Disk gestartet" '[[ $RUN == "$FRS_TARGET_MNT/FRS/echt|/dev/sdx" ]]'
+check "Rettung mit der gewählten Disk gestartet" '[[ $RUN == "$LF_TARGET_MNT/LF/echt|/dev/sdx" ]]'
 check "keine Rückfrage, keine Meldung" '[[ -z $YESNO && -z $MSG ]]'
 resume echt ""
 check "Auswahl der Quelle abgebrochen: nichts gestartet, nichts angefasst" '[[ -z $RUN && -z $RO ]]'
@@ -244,13 +246,13 @@ check "Rückfrage, weil nur die Größe geprüft ist" '[[ $YESNO == "Quelle nur 
 check "Nein: nichts gestartet, nichts angefasst" '[[ -z $RUN && -z $RO ]]'
 YESNO_RC=0
 resume pfad /dev/sdw
-check "Ja: Rettung mit der gewählten Disk gestartet" '[[ $RO == /dev/sdw && $RUN == "$FRS_TARGET_MNT/FRS/pfad|/dev/sdw" ]]'
+check "Ja: Rettung mit der gewählten Disk gestartet" '[[ $RO == /dev/sdw && $RUN == "$LF_TARGET_MNT/LF/pfad|/dev/sdw" ]]'
 resume pfad DEFEKT-0001
 check "andere Größe: keine Rückfrage, nichts gestartet" '[[ -z $YESNO && -z $RUN && -z $RO ]]'
 
 echo "Assistent, abgeschlossener Fall:"
 resume fertig ""
-check "weiter mit dem Image, ohne Frage nach einer Quelle" '[[ $AFTER == "$FRS_TARGET_MNT/FRS/fertig" && $PICKS == 1 && -z $RUN ]]'
+check "weiter mit dem Image, ohne Frage nach einer Quelle" '[[ $AFTER == "$LF_TARGET_MNT/LF/fertig" && $PICKS == 1 && -z $RUN ]]'
 
 rm -rf "$T"
 ((fails == 0)) && echo "Alle Tests bestanden." || { echo "$fails Test(s) fehlgeschlagen."; exit 1; }

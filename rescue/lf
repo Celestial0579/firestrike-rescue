@@ -1,17 +1,17 @@
 #!/usr/bin/env bash
-# Firestrike Rescue – Assistent für Datenrettung, Klonen und Disk-Anpassung.
+# Leuchtfeuer – Assistent für Datenrettung, Klonen und Disk-Anpassung.
 #
-#   frs              Assistent starten (startet nach dem Boot automatisch auf tty1)
-#   frs --selftest   Selbsttest mit simulierter defekter Disk (root, ohne Oberfläche)
-#   frs --version
+#   lf              Assistent starten (startet nach dem Boot automatisch auf tty1)
+#   lf --selftest   Selbsttest mit simulierter defekter Disk (root, ohne Oberfläche)
+#   lf --version
 
 set -u
 
-FRS_LIB="${FRS_LIB:-/usr/local/lib/frs}"
-[[ -d $FRS_LIB ]] || FRS_LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib"
+LF_LIB="${LF_LIB:-/usr/local/lib/lf}"
+[[ -d $LF_LIB ]] || LF_LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib"
 for f in common disks safety casefile target recover clone resize persist claude claude-check tools; do
 	# shellcheck disable=SC1090
-	. "$FRS_LIB/$f.sh"
+	. "$LF_LIB/$f.sh"
 done
 
 # ---------------------------------------------------------------------------
@@ -20,19 +20,19 @@ done
 # ---------------------------------------------------------------------------
 selftest() {
 	set -e
-	local dir=/run/frs/selftest src loop map ok=1 other rc
-	echo "FRS-SELFTEST: start ($FRS_VERSION)"
+	local dir=/run/lf/selftest src loop map ok=1 other rc
+	echo "LF-SELFTEST: start ($LF_VERSION)"
 	rm -rf "$dir"
 	mkdir -p "$dir/case"
 	head -c $((64 * 1024 * 1024)) /dev/urandom >"$dir/disk.raw"
 	loop=$(losetup --find --show -r "$dir/disk.raw")
 	# 64 MiB = 131072 Sektoren; Sektoren 40960–41983 (512 KiB) liefern Lesefehler
-	dmsetup create frs-bad --readonly <<-EOF
+	dmsetup create lf-bad --readonly <<-EOF
 		0 40960 linear $loop 0
 		40960 1024 error
 		41984 89088 linear $loop 41984
 	EOF
-	src=/dev/mapper/frs-bad
+	src=/dev/mapper/lf-bad
 	casefile_create "$dir/case/case.env" "SRC_ID=$src" "SRC_SIZE=$((64 * 1024 * 1024))" \
 		"SRC_LABEL=Selbsttest (dm-error)" "STATE=new"
 	set +e
@@ -40,28 +40,28 @@ selftest() {
 	# zum Fall passt (hier: andere Größe), wird auch als root nicht angefasst.
 	head -c $((1024 * 1024)) /dev/zero >"$dir/fremd.raw"
 	other=$(losetup --find --show -r "$dir/fremd.raw")
-	frs-rescue-run "$dir/case" "$other" --no-pause
+	lf-rescue-run "$dir/case" "$other" --no-pause
 	rc=$?
 	if [[ $rc == 2 && ! -e $dir/case/image.img ]]; then
-		echo "FRS-SELFTEST: fremde Disk als Quelle abgelehnt, nichts gelesen"
+		echo "LF-SELFTEST: fremde Disk als Quelle abgelehnt, nichts gelesen"
 	else
-		echo "FRS-SELFTEST: fremde Disk als Quelle nicht abgelehnt (rc=$rc)"
+		echo "LF-SELFTEST: fremde Disk als Quelle nicht abgelehnt (rc=$rc)"
 		ok=0
 	fi
 	losetup -d "$other"
-	frs-rescue-run "$dir/case" "$src" --no-pause
+	lf-rescue-run "$dir/case" "$src" --no-pause
 	rc=$?
 	map="$dir/case/image.map"
 	local bad
 	bad=$(ddrescuelog -l- -b512 "$map" 2>/dev/null | wc -l)
-	echo "FRS-SELFTEST: ddrescue rc=$rc, fehlerhafte Sektoren=$bad (erwartet 1024)"
+	echo "LF-SELFTEST: ddrescue rc=$rc, fehlerhafte Sektoren=$bad (erwartet 1024)"
 	[[ $rc == 0 ]] || ok=0
 	[[ $bad == 1024 ]] || ok=0
 	if cmp -n $((40960 * 512)) "$dir/disk.raw" "$dir/case/image.img" >/dev/null &&
 		cmp -i $((41984 * 512)) "$dir/disk.raw" "$dir/case/image.img" >/dev/null; then
-		echo "FRS-SELFTEST: gerettete Daten stimmen mit dem Original überein"
+		echo "LF-SELFTEST: gerettete Daten stimmen mit dem Original überein"
 	else
-		echo "FRS-SELFTEST: gerettete Daten weichen ab"
+		echo "LF-SELFTEST: gerettete Daten weichen ab"
 		ok=0
 	fi
 	[[ $(casefile_peek "$dir/case/case.env" STATE) == "done" ]] || ok=0
@@ -76,12 +76,23 @@ selftest() {
 	local t
 	for t in ddrescue partclone.ntfs partclone.extfs ntfsresize smartctl nvme sgdisk sfdisk cryptsetup dislocker \
 		photorec qemu-img qemu-nbd whiptail tmux jq claude claude-desktop cage gnome-keyring-daemon; do
-		command -v "$t" >/dev/null || { echo "FRS-SELFTEST: Werkzeug fehlt: $t"; ok=0; }
+		command -v "$t" >/dev/null || { echo "LF-SELFTEST: Werkzeug fehlt: $t"; ok=0; }
 	done
-	claude --version 2>/dev/null | sed 's/^/FRS-SELFTEST: claude /'
-	dmsetup remove frs-bad
+	# Übergang von firestrike-rescue, gilt eine Beta lang: Die alten frs-Befehle zeigen auf die
+	# lf-Befehle (build.sh).
+	local old good=1
+	for t in /usr/local/bin/lf /usr/local/bin/lf-*; do
+		old=/usr/local/bin/frs${t#/usr/local/bin/lf}
+		if [[ ! -L $old || $(readlink -f "$old") != "$t" ]]; then
+			echo "LF-SELFTEST: Übergang: $old zeigt nicht auf $t"
+			good=0 ok=0
+		fi
+	done
+	((good)) && echo "LF-SELFTEST: Übergang: die frs-Befehle zeigen auf die lf-Befehle"
+	claude --version 2>/dev/null | sed 's/^/LF-SELFTEST: claude /'
+	dmsetup remove lf-bad
 	losetup -d "$loop"
-	if ((ok)); then echo "FRS-SELFTEST: PASS"; else echo "FRS-SELFTEST: FAIL"; fi
+	if ((ok)); then echo "LF-SELFTEST: PASS"; else echo "LF-SELFTEST: FAIL"; fi
 	((ok))
 }
 
@@ -115,56 +126,56 @@ selftest_target() {
 			chmod 4755 "$dir/roh/programm"
 			# Gegenprobe: Ohne Schutzoptionen wirkt der Inhalt. Sonst bewiese der Test nichts.
 			if cat "$dir/roh/verknuepfung" >/dev/null 2>&1 && { echo x >"$dir/roh/geraet"; } 2>/dev/null && "$dir/roh/programm" 2>/dev/null; then
-				echo "FRS-SELFTEST: Ziel ext4 ohne Schutzoptionen: Verknüpfung, Gerätedatei und Programm wirken (Gegenprobe)"
+				echo "LF-SELFTEST: Ziel ext4 ohne Schutzoptionen: Verknüpfung, Gerätedatei und Programm wirken (Gegenprobe)"
 			else
-				echo "FRS-SELFTEST: Ziel ext4: Gegenprobe ohne Schutzoptionen gescheitert"
+				echo "LF-SELFTEST: Ziel ext4: Gegenprobe ohne Schutzoptionen gescheitert"
 				good=0
 			fi
 			umount "$dir/roh"
 		fi
 		if [[ $fs == ntfs-3g ]]; then
-			install -d "$FRS_TARGET_MNT"
+			install -d "$LF_TARGET_MNT"
 			target_mount_ntfs3g "$loop" && target_mount_secure
 		else
 			target_mount_part "$loop"
 		fi || {
-			echo "FRS-SELFTEST: Ziel $fs lässt sich nicht geschützt einhängen. Protokoll:"
-			tail -n 8 "$FRS_LOG" | sed 's/^/FRS-SELFTEST:   /'
+			echo "LF-SELFTEST: Ziel $fs lässt sich nicht geschützt einhängen. Protokoll:"
+			tail -n 8 "$LF_LOG" | sed 's/^/LF-SELFTEST:   /'
 			good=0
 			losetup -d "$loop" 2>/dev/null
 			rm -f "$img"
 			continue
 		}
-		echo "FRS-SELFTEST: Ziel $fs eingehängt als $(findmnt -n -o FSTYPE,VFS-OPTIONS -M "$FRS_TARGET_MNT" | tr -s ' \n' ' ')"
-		target_mount_has_opts || { echo "FRS-SELFTEST: Ziel $fs: Schutzoptionen gelten nicht"; good=0; }
-		# Claude (frs-claude) schreibt auf kein Ziel.
-		if sudo -u frs-claude -n touch "$FRS_TARGET_MNT/claude-probe" 2>/dev/null; then
-			echo "FRS-SELFTEST: Ziel $fs: frs-claude konnte schreiben"
-			rm -f "$FRS_TARGET_MNT/claude-probe"
+		echo "LF-SELFTEST: Ziel $fs eingehängt als $(findmnt -n -o FSTYPE,VFS-OPTIONS -M "$LF_TARGET_MNT" | tr -s ' \n' ' ')"
+		target_mount_has_opts || { echo "LF-SELFTEST: Ziel $fs: Schutzoptionen gelten nicht"; good=0; }
+		# Claude (lf-claude) schreibt auf kein Ziel.
+		if sudo -u lf-claude -n touch "$LF_TARGET_MNT/claude-probe" 2>/dev/null; then
+			echo "LF-SELFTEST: Ziel $fs: lf-claude konnte schreiben"
+			rm -f "$LF_TARGET_MNT/claude-probe"
 			good=0
 		fi
 		# Schreiben muss gehen, Ausführen nicht.
-		printf '#!/bin/sh\nexit 0\n' >"$FRS_TARGET_MNT/neu" || { echo "FRS-SELFTEST: Ziel $fs: nicht beschreibbar"; good=0; }
-		chmod 755 "$FRS_TARGET_MNT/neu" 2>/dev/null
-		if "$FRS_TARGET_MNT/neu" 2>/dev/null; then
-			echo "FRS-SELFTEST: Ziel $fs: Programm vom Ziel wurde ausgeführt"
+		printf '#!/bin/sh\nexit 0\n' >"$LF_TARGET_MNT/neu" || { echo "LF-SELFTEST: Ziel $fs: nicht beschreibbar"; good=0; }
+		chmod 755 "$LF_TARGET_MNT/neu" 2>/dev/null
+		if "$LF_TARGET_MNT/neu" 2>/dev/null; then
+			echo "LF-SELFTEST: Ziel $fs: Programm vom Ziel wurde ausgeführt"
 			good=0
 		fi
 		if [[ $fs == ext4 ]]; then
-			if cat "$FRS_TARGET_MNT/verknuepfung" >/dev/null 2>&1; then
-				echo "FRS-SELFTEST: Ziel ext4: Verknüpfung wurde verfolgt"
+			if cat "$LF_TARGET_MNT/verknuepfung" >/dev/null 2>&1; then
+				echo "LF-SELFTEST: Ziel ext4: Verknüpfung wurde verfolgt"
 				good=0
 			fi
-			if { echo x >"$FRS_TARGET_MNT/geraet"; } 2>/dev/null; then
-				echo "FRS-SELFTEST: Ziel ext4: Gerätedatei wurde geöffnet"
+			if { echo x >"$LF_TARGET_MNT/geraet"; } 2>/dev/null; then
+				echo "LF-SELFTEST: Ziel ext4: Gerätedatei wurde geöffnet"
 				good=0
 			fi
-			if "$FRS_TARGET_MNT/programm" 2>/dev/null; then
-				echo "FRS-SELFTEST: Ziel ext4: mitgebrachtes Programm wurde ausgeführt"
+			if "$LF_TARGET_MNT/programm" 2>/dev/null; then
+				echo "LF-SELFTEST: Ziel ext4: mitgebrachtes Programm wurde ausgeführt"
 				good=0
 			fi
 		fi
-		umount "$FRS_TARGET_MNT"
+		umount "$LF_TARGET_MNT"
 		# Dasselbe Abbild noch einmal als Partition aus einem Image: nur lesend, dieselben Sperren.
 		if [[ $fs == ext4 ]]; then
 			selftest_image "$loop" || good=0
@@ -173,9 +184,9 @@ selftest_target() {
 		rm -f "$img"
 	done
 	if ((good)); then
-		echo "FRS-SELFTEST: Ziel-Dateisysteme: Schutzoptionen wirken (ext4, exfat, ntfs, ntfs-3g)"
+		echo "LF-SELFTEST: Ziel-Dateisysteme: Schutzoptionen wirken (ext4, exfat, ntfs, ntfs-3g)"
 	else
-		echo "FRS-SELFTEST: Ziel-Dateisysteme: Schutzoptionen wirken nicht überall"
+		echo "LF-SELFTEST: Ziel-Dateisysteme: Schutzoptionen wirken nicht überall"
 	fi
 	((good))
 }
@@ -183,33 +194,33 @@ selftest_target() {
 # Partition aus einem Image im gebooteten System: nur lesend und ohne Sonderrechte. Das Abbild
 # enthält die Verknüpfung, die Gerätedatei und das Programm aus selftest_target.
 selftest_image() {
-	local part=$1 mp="$FRS_IMAGE_MNT/selbsttest" good=1
+	local part=$1 mp="$LF_IMAGE_MNT/selbsttest" good=1
 	if ! part_mount_ro "$part" "$mp"; then
-		echo "FRS-SELFTEST: Image-Partition lässt sich nicht geschützt einhängen. Protokoll:"
-		tail -n 8 "$FRS_LOG" | sed 's/^/FRS-SELFTEST:   /'
+		echo "LF-SELFTEST: Image-Partition lässt sich nicht geschützt einhängen. Protokoll:"
+		tail -n 8 "$LF_LOG" | sed 's/^/LF-SELFTEST:   /'
 		return 1
 	fi
-	echo "FRS-SELFTEST: Image-Partition eingehängt als $(findmnt -n -o FSTYPE,VFS-OPTIONS -M "$mp" | tr -s ' \n' ' ')"
-	mount_has_opts "$mp" "${IMAGE_MOUNT_OPTS[@]}" || { echo "FRS-SELFTEST: Image-Partition: Schutzoptionen gelten nicht"; good=0; }
-	[[ -s $mp/neu ]] || { echo "FRS-SELFTEST: Image-Partition: Datei ist nicht lesbar"; good=0; }
+	echo "LF-SELFTEST: Image-Partition eingehängt als $(findmnt -n -o FSTYPE,VFS-OPTIONS -M "$mp" | tr -s ' \n' ' ')"
+	mount_has_opts "$mp" "${IMAGE_MOUNT_OPTS[@]}" || { echo "LF-SELFTEST: Image-Partition: Schutzoptionen gelten nicht"; good=0; }
+	[[ -s $mp/neu ]] || { echo "LF-SELFTEST: Image-Partition: Datei ist nicht lesbar"; good=0; }
 	if { echo x >"$mp/schreibprobe"; } 2>/dev/null; then
-		echo "FRS-SELFTEST: Image-Partition: Schreiben war möglich"
+		echo "LF-SELFTEST: Image-Partition: Schreiben war möglich"
 		good=0
 	fi
 	if cat "$mp/verknuepfung" >/dev/null 2>&1; then
-		echo "FRS-SELFTEST: Image-Partition: Verknüpfung wurde verfolgt"
+		echo "LF-SELFTEST: Image-Partition: Verknüpfung wurde verfolgt"
 		good=0
 	fi
 	if { echo x >"$mp/geraet"; } 2>/dev/null; then
-		echo "FRS-SELFTEST: Image-Partition: Gerätedatei wurde geöffnet"
+		echo "LF-SELFTEST: Image-Partition: Gerätedatei wurde geöffnet"
 		good=0
 	fi
 	if "$mp/programm" 2>/dev/null; then
-		echo "FRS-SELFTEST: Image-Partition: Programm aus dem Image wurde ausgeführt"
+		echo "LF-SELFTEST: Image-Partition: Programm aus dem Image wurde ausgeführt"
 		good=0
 	fi
 	umount "$mp"
-	((good)) && echo "FRS-SELFTEST: Image-Partition: nur lesend, Schutzoptionen wirken"
+	((good)) && echo "LF-SELFTEST: Image-Partition: nur lesend, Schutzoptionen wirken"
 	((good))
 }
 
@@ -227,8 +238,8 @@ selftest_search() {
 	mkfs.ext4 -q -F "${loop}p2"
 	mkdir -p "$dir/roh"
 	mount "${loop}p2" "$dir/roh"
-	mkdir -p "$dir/roh/FRS/20261112-0900_Selbsttest"
-	casefile_create "$dir/roh/FRS/20261112-0900_Selbsttest/case.env" "SRC_ID=ABC" "SRC_SIZE=1" "STATE=done"
+	mkdir -p "$dir/roh/LF/20261112-0900_Selbsttest"
+	casefile_create "$dir/roh/LF/20261112-0900_Selbsttest/case.env" "SRC_ID=ABC" "SRC_SIZE=1" "STATE=done"
 	umount "$dir/roh"
 	for i in 1 2 3 4 5 6 7 8 9 10; do
 		udevadm settle
@@ -237,37 +248,37 @@ selftest_search() {
 	done
 	before=$(md5sum <"$loop")
 	if target_find_cases_on "$loop"; then
-		echo "FRS-SELFTEST: Suche: Rettungsfall auf $TARGET_CASE_PART, eingehängt als $(findmnt -n -o FSTYPE,VFS-OPTIONS -M "$FRS_TARGET_MNT" | tr -s ' \n' ' ')"
-		[[ $TARGET_CASE_PART == "${loop}p2" ]] || { echo "FRS-SELFTEST: Suche: falsche Partition"; good=0; }
-		mount_has_opts "$FRS_TARGET_MNT" "${TARGET_SEARCH_OPTS[@]}" || { echo "FRS-SELFTEST: Suche: nicht nur lesend oder ohne Schutzoptionen eingehängt"; good=0; }
-		[[ $(blockdev --getro "${loop}p2") == 1 ]] || { echo "FRS-SELFTEST: Suche: Partition ist nicht schreibgeschützt"; good=0; }
-		[[ $(blockdev --getro "${loop}p1") == 0 ]] || { echo "FRS-SELFTEST: Suche: Schreibschutz der Partition ohne Rettungsfall blieb zurück"; good=0; }
-		if { echo x >"$FRS_TARGET_MNT/schreibprobe"; } 2>/dev/null; then
-			echo "FRS-SELFTEST: Suche: Schreiben war möglich"
+		echo "LF-SELFTEST: Suche: Rettungsfall auf $TARGET_CASE_PART, eingehängt als $(findmnt -n -o FSTYPE,VFS-OPTIONS -M "$LF_TARGET_MNT" | tr -s ' \n' ' ')"
+		[[ $TARGET_CASE_PART == "${loop}p2" ]] || { echo "LF-SELFTEST: Suche: falsche Partition"; good=0; }
+		mount_has_opts "$LF_TARGET_MNT" "${TARGET_SEARCH_OPTS[@]}" || { echo "LF-SELFTEST: Suche: nicht nur lesend oder ohne Schutzoptionen eingehängt"; good=0; }
+		[[ $(blockdev --getro "${loop}p2") == 1 ]] || { echo "LF-SELFTEST: Suche: Partition ist nicht schreibgeschützt"; good=0; }
+		[[ $(blockdev --getro "${loop}p1") == 0 ]] || { echo "LF-SELFTEST: Suche: Schreibschutz der Partition ohne Rettungsfall blieb zurück"; good=0; }
+		if { echo x >"$LF_TARGET_MNT/schreibprobe"; } 2>/dev/null; then
+			echo "LF-SELFTEST: Suche: Schreiben war möglich"
 			good=0
 		fi
 		target_search_end
 		after=$(md5sum <"$loop")
 		if [[ $before == "$after" ]]; then
-			echo "FRS-SELFTEST: Suche: Disk Byte für Byte unverändert"
+			echo "LF-SELFTEST: Suche: Disk Byte für Byte unverändert"
 		else
-			echo "FRS-SELFTEST: Suche: Disk wurde verändert"
+			echo "LF-SELFTEST: Suche: Disk wurde verändert"
 			good=0
 		fi
-		[[ $(blockdev --getro "${loop}p2") == 0 ]] || { echo "FRS-SELFTEST: Suche: Schreibschutz blieb nach dem Abbruch zurück"; good=0; }
+		[[ $(blockdev --getro "${loop}p2") == 0 ]] || { echo "LF-SELFTEST: Suche: Schreibschutz blieb nach dem Abbruch zurück"; good=0; }
 		# Zweiter Durchlauf: Der Rettungsfall wird gewählt, jetzt muss Schreiben gehen.
-		if target_find_cases_on "$loop" && target_case_writable && { echo x >"$FRS_TARGET_MNT/schreibprobe"; } 2>/dev/null &&
+		if target_find_cases_on "$loop" && target_case_writable && { echo x >"$LF_TARGET_MNT/schreibprobe"; } 2>/dev/null &&
 			target_mount_has_opts; then
-			echo "FRS-SELFTEST: Suche: nach der Wahl des Rettungsfalls beschreibbar, mit Schutzoptionen"
+			echo "LF-SELFTEST: Suche: nach der Wahl des Rettungsfalls beschreibbar, mit Schutzoptionen"
 		else
-			echo "FRS-SELFTEST: Suche: nach der Wahl des Rettungsfalls nicht beschreibbar. Protokoll:"
-			tail -n 8 "$FRS_LOG" | sed 's/^/FRS-SELFTEST:   /'
+			echo "LF-SELFTEST: Suche: nach der Wahl des Rettungsfalls nicht beschreibbar. Protokoll:"
+			tail -n 8 "$LF_LOG" | sed 's/^/LF-SELFTEST:   /'
 			good=0
 		fi
-		mountpoint -q "$FRS_TARGET_MNT" && umount "$FRS_TARGET_MNT"
+		mountpoint -q "$LF_TARGET_MNT" && umount "$LF_TARGET_MNT"
 	else
-		echo "FRS-SELFTEST: Suche: Rettungsfall nicht gefunden. Protokoll:"
-		tail -n 8 "$FRS_LOG" | sed 's/^/FRS-SELFTEST:   /'
+		echo "LF-SELFTEST: Suche: Rettungsfall nicht gefunden. Protokoll:"
+		tail -n 8 "$LF_LOG" | sed 's/^/LF-SELFTEST:   /'
 		good=0
 	fi
 	losetup -d "$loop" 2>/dev/null
@@ -281,52 +292,52 @@ selftest_search() {
 selftest_boot() {
 	local dir=$1/initrd good=1 f
 	if [[ ! -f /cdrom/casper/initrd ]]; then
-		echo "FRS-SELFTEST: Boot: initrd auf dem Live-Medium nicht gefunden"
+		echo "LF-SELFTEST: Boot: initrd auf dem Live-Medium nicht gefunden"
 		return 1
 	fi
 	rm -rf "$dir"
 	if ! unmkinitramfs /cdrom/casper/initrd "$dir" >/dev/null 2>&1; then
-		echo "FRS-SELFTEST: Boot: initrd ließ sich nicht auspacken"
+		echo "LF-SELFTEST: Boot: initrd ließ sich nicht auspacken"
 		rm -rf "$dir"
 		return 1
 	fi
 	f=$(find "$dir" -path '*/etc/casper.conf' | head -n 1)
 	if [[ -n $f ]] && grep -Eq '^export LIVEMEDIA_TIMEOUT=[0-9]{3,}$' "$f"; then
-		echo "FRS-SELFTEST: Boot: casper sucht nur das benannte Medium ($(grep LIVEMEDIA_TIMEOUT "$f"))"
+		echo "LF-SELFTEST: Boot: casper sucht nur das benannte Medium ($(grep LIVEMEDIA_TIMEOUT "$f"))"
 	else
-		echo "FRS-SELFTEST: Boot: LIVEMEDIA_TIMEOUT fehlt in der initrd, casper würde alle Disks durchsuchen"
+		echo "LF-SELFTEST: Boot: LIVEMEDIA_TIMEOUT fehlt in der initrd, casper würde alle Disks durchsuchen"
 		good=0
 	fi
-	if grep -q 'live-media=/run/frs-medium' /proc/cmdline; then
-		echo "FRS-SELFTEST: Boot: gestartet mit live-media=/run/frs-medium"
+	if grep -q 'live-media=/run/lf-medium' /proc/cmdline; then
+		echo "LF-SELFTEST: Boot: gestartet mit live-media=/run/lf-medium"
 	else
-		echo "FRS-SELFTEST: Boot: live-media=/run/frs-medium fehlt in der Kernel-Befehlszeile"
+		echo "LF-SELFTEST: Boot: live-media=/run/lf-medium fehlt in der Kernel-Befehlszeile"
 		good=0
 	fi
-	# Das Medium wählt und prüft casper-premount/frs_medium, bevor casper es benutzt.
+	# Das Medium wählt und prüft casper-premount/lf_medium, bevor casper es benutzt.
 	local order want got src
 	order=$(find "$dir" -path '*/scripts/casper-premount/ORDER' | head -n 1)
-	if [[ -n $order ]] && grep -q '/frs_medium' "$order"; then
-		echo "FRS-SELFTEST: Boot: frs_medium läuft vor der Suche von casper"
+	if [[ -n $order ]] && grep -q '/lf_medium' "$order"; then
+		echo "LF-SELFTEST: Boot: lf_medium läuft vor der Suche von casper"
 	else
-		echo "FRS-SELFTEST: Boot: frs_medium fehlt unter casper-premount"
+		echo "LF-SELFTEST: Boot: lf_medium fehlt unter casper-premount"
 		good=0
 	fi
-	f=$(find "$dir" -path '*/conf/frs-medium.conf' | head -n 1)
-	want=$(sed -n 's/^FRS_SQUASHFS_SHA256=\([0-9a-f]\{64\}\)$/\1/p' "$f" 2>/dev/null)
+	f=$(find "$dir" -path '*/conf/lf-medium.conf' | head -n 1)
+	want=$(sed -n 's/^LF_SQUASHFS_SHA256=\([0-9a-f]\{64\}\)$/\1/p' "$f" 2>/dev/null)
 	got=$(sha256sum /cdrom/casper/filesystem.squashfs 2>/dev/null | cut -d' ' -f1)
 	if [[ -n $want && $got == "$want" ]]; then
-		echo "FRS-SELFTEST: Boot: Die initrd kennt die Prüfsumme des squashfs"
+		echo "LF-SELFTEST: Boot: Die initrd kennt die Prüfsumme des squashfs"
 	else
-		echo "FRS-SELFTEST: Boot: Prüfsumme des squashfs fehlt in der initrd oder stimmt nicht"
+		echo "LF-SELFTEST: Boot: Prüfsumme des squashfs fehlt in der initrd oder stimmt nicht"
 		good=0
 	fi
 	src=$(findmnt -n -o SOURCE /cdrom 2>/dev/null | head -n 1)
-	if [[ -n $want && -n $src ]] && grep -qx "FRS_BOOT_DEV=$src" /run/frs-boot.env 2>/dev/null &&
-		grep -qx "FRS_SQUASHFS_SHA256=$want" /run/frs-boot.env; then
-		echo "FRS-SELFTEST: Boot: Live-Medium geprüft ($src), Disks mit der UUID der ISO: $(sed -n 's/^FRS_BOOT_DISKS=//p' /run/frs-boot.env)"
+	if [[ -n $want && -n $src ]] && grep -qx "LF_BOOT_DEV=$src" /run/lf-boot.env 2>/dev/null &&
+		grep -qx "LF_SQUASHFS_SHA256=$want" /run/lf-boot.env; then
+		echo "LF-SELFTEST: Boot: Live-Medium geprüft ($src), Disks mit der UUID der ISO: $(sed -n 's/^LF_BOOT_DISKS=//p' /run/lf-boot.env)"
 	else
-		echo "FRS-SELFTEST: Boot: Das Live-Medium ($src) hat frs_medium nicht geprüft"
+		echo "LF-SELFTEST: Boot: Das Live-Medium ($src) hat lf_medium nicht geprüft"
 		good=0
 	fi
 	rm -rf "$dir"
@@ -339,16 +350,16 @@ selftest_boot() {
 selftest_tmux() {
 	local dir=$1 out="$1/tmux-argumente" a="ein Pfad mit ' und \"" b="zwei; touch $1/MARKE-tmux" i
 	rm -f "$out" "$dir/MARKE-tmux"
-	tmux new-session -d -s frs-selftest -x 80 -y 24 bash -c 'printf "%s|" "$1" "$2" >"$3"' _ "$a" "$b" "$out"
+	tmux new-session -d -s lf-selftest -x 80 -y 24 bash -c 'printf "%s|" "$1" "$2" >"$3"' _ "$a" "$b" "$out"
 	for ((i = 0; i < 50; i++)); do
 		[[ -s $out ]] && break
 		sleep 0.1
 	done
-	tmux kill-session -t frs-selftest 2>/dev/null
+	tmux kill-session -t lf-selftest 2>/dev/null
 	if [[ $(cat "$out" 2>/dev/null) == "$a|$b|" && ! -e $dir/MARKE-tmux ]]; then
-		echo "FRS-SELFTEST: tmux: Pfade kommen als Argumente an, nichts daraus wird ausgeführt"
+		echo "LF-SELFTEST: tmux: Pfade kommen als Argumente an, nichts daraus wird ausgeführt"
 	else
-		echo "FRS-SELFTEST: tmux: Argumente kamen verändert an oder wurden ausgeführt"
+		echo "LF-SELFTEST: tmux: Argumente kamen verändert an oder wurden ausgeführt"
 		return 1
 	fi
 }
@@ -376,23 +387,23 @@ selftest_loop_rw() {
 	selftest_loop_free "$img"
 	again=$(losetup --find --show "$img")
 	if [[ $again == "$loop" && $(blockdev --getro "$again") == 1 ]]; then
-		echo "FRS-SELFTEST: Loop-Gerät: Der Kernel behält den Schreibschutz beim Wiederverwenden (Gegenprobe)"
+		echo "LF-SELFTEST: Loop-Gerät: Der Kernel behält den Schreibschutz beim Wiederverwenden (Gegenprobe)"
 	else
-		echo "FRS-SELFTEST: Loop-Gerät: Gegenprobe ohne Befund ($again, ro=$(blockdev --getro "$again"))"
+		echo "LF-SELFTEST: Loop-Gerät: Gegenprobe ohne Befund ($again, ro=$(blockdev --getro "$again"))"
 	fi
 	losetup -d "$again"
-	selftest_loop_free "$img" || { echo "FRS-SELFTEST: Loop-Gerät: $img hängt nach losetup -d noch an einem Gerät"; good=0; }
+	selftest_loop_free "$img" || { echo "LF-SELFTEST: Loop-Gerät: $img hängt nach losetup -d noch an einem Gerät"; good=0; }
 	again=$(image_attach "$img" rw)
 	if [[ -n $again && $(blockdev --getro "$again") == 0 ]] && dd if=/dev/zero of="$again" bs=4k count=1 conv=notrunc status=none 2>/dev/null; then
-		echo "FRS-SELFTEST: Loop-Gerät: image_attach rw ist beschreibbar, auch nach altem Schreibschutz"
+		echo "LF-SELFTEST: Loop-Gerät: image_attach rw ist beschreibbar, auch nach altem Schreibschutz"
 	else
-		echo "FRS-SELFTEST: Loop-Gerät: image_attach rw ist nicht beschreibbar ($again)"
+		echo "LF-SELFTEST: Loop-Gerät: image_attach rw ist nicht beschreibbar ($again)"
 		good=0
 	fi
 	losetup -d "$again" 2>/dev/null
 	selftest_loop_free "$img"
 	again=$(image_attach "$img" ro)
-	[[ $(blockdev --getro "$again") == 1 ]] || { echo "FRS-SELFTEST: Loop-Gerät: image_attach ro ist beschreibbar"; good=0; }
+	[[ $(blockdev --getro "$again") == 1 ]] || { echo "LF-SELFTEST: Loop-Gerät: image_attach ro ist beschreibbar"; good=0; }
 	losetup -d "$again" 2>/dev/null
 	rm -f "$img"
 	((good))
@@ -406,7 +417,7 @@ selftest_loop_rw() {
 # Start im Rettungssystem. Wo der Test die CLI ohne das Skript braucht (Gegenproben), setzt er
 # SELFTEST_ROH=1.
 SELFTEST_CLAUDE=(/usr/local/bin/claude)
-SELFTEST_CLAUDE_ROH=(/usr/local/lib/frs/claude-cli)
+SELFTEST_CLAUDE_ROH=(/usr/local/lib/lf/claude-cli)
 
 # selftest_claude_run VERZEICHNIS NAME BEFEHL [ARBEITSVERZEICHNIS [ARGUMENTE …]]
 #   Ein Lauf der CLI gegen die Attrappe (claude_check_run in claude-check.sh).
@@ -419,10 +430,10 @@ selftest_claude_answer() { claude_check_answer "$@"; }
 selftest_claude_started() { claude_check_started "$@"; }
 
 selftest_claude() {
-	local dir=$1/claude loop good=1 token answer fremd=/mnt/frs-selftest-fremd
+	local dir=$1/claude loop good=1 token answer fremd=/mnt/lf-selftest-fremd
 	rm -rf "$fremd"
 	mkdir -p "$dir/arbeit" "$dir/home" "$fremd/.claude"
-	token="FRS-KONTROLLE-$RANDOM$RANDOM"
+	token="LF-KONTROLLE-$RANDOM$RANDOM"
 	echo "$token" >"$dir/arbeit/kontrolle.txt"
 	echo "$token" >"$fremd/kontrolle.txt"
 	# Eine CLAUDE.md im Arbeitsordner des Tests: Kontrolle dafür, dass so eine Datei beim Modell
@@ -439,13 +450,13 @@ selftest_claude() {
 	SELFTEST_ROH=1 selftest_claude_run "$dir" kontrolle "cat $dir/arbeit/kontrolle.txt"
 	answer=$(selftest_claude_answer "$dir" kontrolle)
 	# Was die CLI beim Start meldet, etwa einen Eintrag der Einstellungen, den sie nicht versteht.
-	head -n 5 "$dir/kontrolle.fehler" 2>/dev/null | cut -c1-200 | sed 's/^/FRS-SELFTEST:   CLI meldet: /'
+	head -n 5 "$dir/kontrolle.fehler" 2>/dev/null | cut -c1-200 | sed 's/^/LF-SELFTEST:   CLI meldet: /'
 	if [[ $answer == *"$token"* ]] && grep -q "MERKWORT-EIGEN-$token" "$dir/kontrolle.anfrage" 2>/dev/null; then
-		echo "FRS-SELFTEST: Claude-Sperre: Kontrolle, ein lesender Befehl läuft, die CLAUDE.md des Arbeitsordners kommt an"
+		echo "LF-SELFTEST: Claude-Sperre: Kontrolle, ein lesender Befehl läuft, die CLAUDE.md des Arbeitsordners kommt an"
 	else
 		# Eine Sperre, die sich nicht prüfen lässt, gilt als Fehler.
-		echo "FRS-SELFTEST: Claude-Sperre: nicht prüfbar, die CLI führt keinen Befehl der Attrappe aus"
-		echo "FRS-SELFTEST:   Antwort: ${answer:0:200}"
+		echo "LF-SELFTEST: Claude-Sperre: nicht prüfbar, die CLI führt keinen Befehl der Attrappe aus"
+		echo "LF-SELFTEST:   Antwort: ${answer:0:200}"
 		losetup -d "$loop" 2>/dev/null
 		return 1
 	fi
@@ -455,10 +466,10 @@ selftest_claude() {
 	selftest_claude_run "$dir" setrw "blockdev --setrw $loop"
 	answer=$(selftest_claude_answer "$dir" setrw)
 	if [[ $(blockdev --getro "$loop") == 1 && $answer == *"Gesperrt vom Rettungssystem"* ]]; then
-		echo "FRS-SELFTEST: Claude-Sperre: blockdev --setrw gesperrt, die Disk bleibt schreibgeschützt"
+		echo "LF-SELFTEST: Claude-Sperre: blockdev --setrw gesperrt, die Disk bleibt schreibgeschützt"
 	else
-		echo "FRS-SELFTEST: Claude-Sperre: blockdev --setrw nicht vom Sperr-Skript gesperrt (ro=$(blockdev --getro "$loop"))"
-		echo "FRS-SELFTEST:   Antwort: ${answer:0:200}"
+		echo "LF-SELFTEST: Claude-Sperre: blockdev --setrw nicht vom Sperr-Skript gesperrt (ro=$(blockdev --getro "$loop"))"
+		echo "LF-SELFTEST:   Antwort: ${answer:0:200}"
 		good=0
 	fi
 	blockdev --setro "$loop"
@@ -467,10 +478,10 @@ selftest_claude() {
 	selftest_claude_run "$dir" verschleiert "blockdev --set''rw $loop"
 	answer=$(selftest_claude_answer "$dir" verschleiert)
 	if [[ $(blockdev --getro "$loop") == 1 && $answer == *"Gesperrt vom Rettungssystem"* ]]; then
-		echo "FRS-SELFTEST: Claude-Sperre: blockdev --set''rw gesperrt"
+		echo "LF-SELFTEST: Claude-Sperre: blockdev --set''rw gesperrt"
 	else
-		echo "FRS-SELFTEST: Claude-Sperre: blockdev --set''rw nicht vom Sperr-Skript gesperrt (ro=$(blockdev --getro "$loop"))"
-		echo "FRS-SELFTEST:   Antwort: ${answer:0:200}"
+		echo "LF-SELFTEST: Claude-Sperre: blockdev --set''rw nicht vom Sperr-Skript gesperrt (ro=$(blockdev --getro "$loop"))"
+		echo "LF-SELFTEST:   Antwort: ${answer:0:200}"
 		good=0
 	fi
 	blockdev --setro "$loop"
@@ -480,10 +491,10 @@ selftest_claude() {
 	selftest_claude_run "$dir" dd "dd if=/dev/zero of=$dir/ziel.raw bs=1M count=1 conv=notrunc"
 	answer=$(selftest_claude_answer "$dir" dd)
 	if cmp -s "$dir/disk.raw" "$dir/ziel.raw" && [[ $answer == *"Rettungssystem: dd schreibt"* ]]; then
-		echo "FRS-SELFTEST: Claude-Sperre: dd of= verlangt die Bestätigung des Technikers"
+		echo "LF-SELFTEST: Claude-Sperre: dd of= verlangt die Bestätigung des Technikers"
 	else
-		echo "FRS-SELFTEST: Claude-Sperre: dd of= lief oder das Sperr-Skript hat nicht nachgefragt"
-		echo "FRS-SELFTEST:   Antwort: ${answer:0:200}"
+		echo "LF-SELFTEST: Claude-Sperre: dd of= lief oder das Sperr-Skript hat nicht nachgefragt"
+		echo "LF-SELFTEST:   Antwort: ${answer:0:200}"
 		good=0
 	fi
 
@@ -492,24 +503,24 @@ selftest_claude() {
 	selftest_claude_run "$dir" erlaubt "touch $dir/arbeit/lief-erlaubt" "$dir/arbeit" --allowedTools Bash
 	answer=$(selftest_claude_answer "$dir" erlaubt)
 	if selftest_claude_started "$dir" erlaubt && [[ ! -e $dir/arbeit/lief-erlaubt ]]; then
-		echo "FRS-SELFTEST: Claude-Sperre: eine Erlaubnis von außen schaltet keine Rückfrage ab"
+		echo "LF-SELFTEST: Claude-Sperre: eine Erlaubnis von außen schaltet keine Rückfrage ab"
 	else
-		echo "FRS-SELFTEST: Claude-Sperre: Mit einer Erlaubnis von außen lief ein Befehl ohne Rückfrage, oder der Lauf kam nicht zustande"
+		echo "LF-SELFTEST: Claude-Sperre: Mit einer Erlaubnis von außen lief ein Befehl ohne Rückfrage, oder der Lauf kam nicht zustande"
 		good=0
 	fi
-	echo "FRS-SELFTEST:   Antwort: ${answer:0:120}"
+	echo "LF-SELFTEST:   Antwort: ${answer:0:120}"
 
 	# Auto-Modus: Dort entscheidet ein Klassifikator statt des Technikers, Befehle laufen ohne
 	# Rückfrage. Er ist abgeschaltet.
 	selftest_claude_run "$dir" auto "touch $dir/arbeit/lief-auto" "$dir/arbeit" --permission-mode auto
 	answer=$(selftest_claude_answer "$dir" auto)
 	if selftest_claude_started "$dir" auto && [[ ! -e $dir/arbeit/lief-auto ]]; then
-		echo "FRS-SELFTEST: Claude-Sperre: kein Auto-Modus, Modus der Sitzung: $(jq -r 'select(.type == "system" and .subtype == "init") | .permissionMode' "$dir/auto.json" 2>/dev/null | head -n 1)"
+		echo "LF-SELFTEST: Claude-Sperre: kein Auto-Modus, Modus der Sitzung: $(jq -r 'select(.type == "system" and .subtype == "init") | .permissionMode' "$dir/auto.json" 2>/dev/null | head -n 1)"
 	else
-		echo "FRS-SELFTEST: Claude-Sperre: Im Auto-Modus lief ein Befehl ohne Rückfrage, oder der Lauf kam nicht zustande"
+		echo "LF-SELFTEST: Claude-Sperre: Im Auto-Modus lief ein Befehl ohne Rückfrage, oder der Lauf kam nicht zustande"
 		good=0
 	fi
-	echo "FRS-SELFTEST:   Antwort: ${answer:0:120}"
+	echo "LF-SELFTEST:   Antwort: ${answer:0:120}"
 
 	# Ein Projektordner, wie er auf einem fremden Datenträger liegt: unter einem Einhängepunkt,
 	# mit eigenen Hooks, einem eigenen MCP-Server, einer CLAUDE.md, Umgebungsvariablen und einem
@@ -520,39 +531,39 @@ selftest_claude() {
 		hooks: {
 			SessionStart: [{hooks: [{type: "command", command: $c}]}],
 			PreToolUse: [{matcher: "*", hooks: [{type: "command", command: $c}]}]},
-		env: {ANTHROPIC_MODEL: "frs-fremdes-modell"},
+		env: {ANTHROPIC_MODEL: "lf-fremdes-modell"},
 		apiKeyHelper: $h}' >"$fremd/.claude/settings.json"
 	jq -n --arg m "$dir/fremder-mcp" '{mcpServers: {fremd: {command: "touch", args: [$m]}}}' >"$fremd/.mcp.json"
 	echo "Anweisung vom Datenträger: MERKWORT-FREMD-$token" >"$fremd/CLAUDE.md"
 	SELFTEST_ROH=1 selftest_claude_run "$dir" fremd "cat $fremd/kontrolle.txt" "$fremd"
 	answer=$(selftest_claude_answer "$dir" fremd)
 	if [[ $answer != *"$token"* ]]; then
-		echo "FRS-SELFTEST: Claude-Sperre: Der Lauf im fremden Projektordner kam nicht zustande"
-		echo "FRS-SELFTEST:   Antwort: ${answer:0:200}"
+		echo "LF-SELFTEST: Claude-Sperre: Der Lauf im fremden Projektordner kam nicht zustande"
+		echo "LF-SELFTEST:   Antwort: ${answer:0:200}"
 		good=0
 	else
 		if [[ ! -e $dir/fremder-hook ]]; then
-			echo "FRS-SELFTEST: Claude-Sperre: Hooks aus einem Projektordner laufen nicht"
+			echo "LF-SELFTEST: Claude-Sperre: Hooks aus einem Projektordner laufen nicht"
 		else
-			echo "FRS-SELFTEST: Claude-Sperre: Ein Hook aus einem Projektordner lief"
+			echo "LF-SELFTEST: Claude-Sperre: Ein Hook aus einem Projektordner lief"
 			good=0
 		fi
 		if [[ ! -e $dir/fremder-mcp ]]; then
-			echo "FRS-SELFTEST: Claude-Sperre: Ein MCP-Server aus einem Projektordner startet nicht"
+			echo "LF-SELFTEST: Claude-Sperre: Ein MCP-Server aus einem Projektordner startet nicht"
 		else
-			echo "FRS-SELFTEST: Claude-Sperre: Ein MCP-Server aus einem Projektordner wurde gestartet"
+			echo "LF-SELFTEST: Claude-Sperre: Ein MCP-Server aus einem Projektordner wurde gestartet"
 			good=0
 		fi
 		if [[ -s $dir/fremd.anfrage ]] && ! grep -q "MERKWORT-FREMD-$token" "$dir/fremd.anfrage"; then
-			echo "FRS-SELFTEST: Claude-Sperre: Eine CLAUDE.md unter einem Einhängepunkt erreicht das Modell nicht"
+			echo "LF-SELFTEST: Claude-Sperre: Eine CLAUDE.md unter einem Einhängepunkt erreicht das Modell nicht"
 		else
-			echo "FRS-SELFTEST: Claude-Sperre: Der Text einer CLAUDE.md unter /mnt stand in der Anfrage an das Modell"
+			echo "LF-SELFTEST: Claude-Sperre: Der Text einer CLAUDE.md unter /mnt stand in der Anfrage an das Modell"
 			good=0
 		fi
-		if [[ $(jq -r .model "$dir/fremd.anfrage" 2>/dev/null) == frs-fremdes-modell ]]; then
-			echo "FRS-SELFTEST: Claude-Sperre: Ohne das Skript gelten Umgebungsvariablen eines Projektordners (Gegenprobe)"
+		if [[ $(jq -r .model "$dir/fremd.anfrage" 2>/dev/null) == lf-fremdes-modell ]]; then
+			echo "LF-SELFTEST: Claude-Sperre: Ohne das Skript gelten Umgebungsvariablen eines Projektordners (Gegenprobe)"
 		else
-			echo "FRS-SELFTEST: Claude-Sperre: Gegenprobe gescheitert, ohne das Skript galt der env-Block des Projektordners nicht"
+			echo "LF-SELFTEST: Claude-Sperre: Gegenprobe gescheitert, ohne das Skript galt der env-Block des Projektordners nicht"
 			good=0
 		fi
 	fi
@@ -564,15 +575,15 @@ selftest_claude() {
 	selftest_claude_run "$dir" fremd-skript "cat $fremd/kontrolle.txt" "$fremd"
 	answer=$(selftest_claude_answer "$dir" fremd-skript)
 	if [[ $answer != *"$token"* || ! -s $dir/fremd-skript.anfrage ]]; then
-		echo "FRS-SELFTEST: Claude-Sperre: Der Lauf mit dem Skript im fremden Projektordner kam nicht zustande"
-		echo "FRS-SELFTEST:   Antwort: ${answer:0:200}"
+		echo "LF-SELFTEST: Claude-Sperre: Der Lauf mit dem Skript im fremden Projektordner kam nicht zustande"
+		echo "LF-SELFTEST:   Antwort: ${answer:0:200}"
 		good=0
-	elif [[ $(jq -r .model "$dir/fremd-skript.anfrage" 2>/dev/null) != frs-fremdes-modell && ! -e $dir/fremder-helfer && ! -e $dir/fremder-hook ]] &&
+	elif [[ $(jq -r .model "$dir/fremd-skript.anfrage" 2>/dev/null) != lf-fremdes-modell && ! -e $dir/fremder-helfer && ! -e $dir/fremder-hook ]] &&
 		! grep -q "MERKWORT-FREMD-$token" "$dir/fremd-skript.anfrage" &&
-		grep -qF '/run/frs/readonly' "$dir/fremd-skript.anfrage"; then
-		echo "FRS-SELFTEST: Claude-Sperre: Mit dem Skript gelten keine Projekt-Einstellungen (env, apiKeyHelper, CLAUDE.md), die Regeln des Rettungssystems kommen an"
+		grep -qF '/run/lf/readonly' "$dir/fremd-skript.anfrage"; then
+		echo "LF-SELFTEST: Claude-Sperre: Mit dem Skript gelten keine Projekt-Einstellungen (env, apiKeyHelper, CLAUDE.md), die Regeln des Rettungssystems kommen an"
 	else
-		echo "FRS-SELFTEST: Claude-Sperre: Mit dem Skript galt etwas aus dem Projektordner, oder die CLAUDE.md des Rettungssystems fehlte" \
+		echo "LF-SELFTEST: Claude-Sperre: Mit dem Skript galt etwas aus dem Projektordner, oder die CLAUDE.md des Rettungssystems fehlte" \
 			"(Modell $(jq -r .model "$dir/fremd-skript.anfrage" 2>/dev/null), Helfer $([[ -e $dir/fremder-helfer ]] && echo lief || echo nein))"
 		good=0
 	fi
@@ -581,28 +592,28 @@ selftest_claude() {
 	losetup -d "$loop" 2>/dev/null
 
 	# Dieselben Prüfungen ohne root, die eine neue Version der CLI vor ihrem ersten Start besteht
-	# (frs-claude-check). Mit der CLI der ISO müssen sie bestehen, sonst würde jede neue Version
+	# (lf-claude-check). Mit der CLI der ISO müssen sie bestehen, sonst würde jede neue Version
 	# abgelehnt oder die Prüfung bewiese nichts.
 	local out
-	# Als frs-claude, wie im Betrieb.
-	if out=$(sudo -u frs-claude -H frs-claude-check --ohne-merken /usr/local/lib/frs/claude-cli 2>&1 </dev/null); then
-		echo "FRS-SELFTEST: Claude-Sperre: frs-claude-check besteht mit der CLI der ISO, als frs-claude"
+	# Als lf-claude, wie im Betrieb.
+	if out=$(sudo -u lf-claude -H lf-claude-check --ohne-merken /usr/local/lib/lf/claude-cli 2>&1 </dev/null); then
+		echo "LF-SELFTEST: Claude-Sperre: lf-claude-check besteht mit der CLI der ISO, als lf-claude"
 	else
-		echo "FRS-SELFTEST: Claude-Sperre: frs-claude-check besteht mit der CLI der ISO nicht (als frs-claude)"
+		echo "LF-SELFTEST: Claude-Sperre: lf-claude-check besteht mit der CLI der ISO nicht (als lf-claude)"
 		good=0
 	fi
-	sed 's/^/FRS-SELFTEST:   frs-claude-check: /' <<<"$out"
+	sed 's/^/LF-SELFTEST:   lf-claude-check: /' <<<"$out"
 	((good))
 }
 
-# selftest_as BEFEHL …   BEFEHL als frs-claude, ohne Eingabe und ohne Passwortabfrage.
+# selftest_as BEFEHL …   BEFEHL als lf-claude, ohne Eingabe und ohne Passwortabfrage.
 selftest_as() {
-	sudo -u frs-claude -H -n "$@" </dev/null
+	sudo -u lf-claude -H -n "$@" </dev/null
 }
 
-# Claude läuft als eigener Benutzer (frs-claude). Er liest Disks nur über frs-lesen und schreibt
+# Claude läuft als eigener Benutzer (lf-claude). Er liest Disks nur über lf-lesen und schreibt
 # gar nicht. Geprüft wird das Betriebssystem, nicht Claude Code: Die Befehle laufen direkt als
-# frs-claude, ohne Hook und ohne Rückfrage.
+# lf-claude, ohne Hook und ohne Rückfrage.
 selftest_claude_user() {
 	local dir=$1/benutzer good=1 loop want got a
 	mkdir -p "$dir"
@@ -610,33 +621,33 @@ selftest_claude_user() {
 	loop=$(losetup --find --show "$dir/disk.raw")
 	blockdev --setro "$loop"
 
-	if [[ $(id -Gn frs-claude 2>/dev/null | tr ' ' '\n' | sort | tr '\n' ' ') == "frs-claude render " ]]; then
-		echo "FRS-SELFTEST: frs-claude: Gruppen frs-claude und render, sonst keine (kein sudo, disk, video, input)"
+	if [[ $(id -Gn lf-claude 2>/dev/null | tr ' ' '\n' | sort | tr '\n' ' ') == "lf-claude render " ]]; then
+		echo "LF-SELFTEST: lf-claude: Gruppen lf-claude und render, sonst keine (kein sudo, disk, video, input)"
 	else
-		echo "FRS-SELFTEST: frs-claude: Gruppen '$(id -Gn frs-claude 2>&1)'"
+		echo "LF-SELFTEST: lf-claude: Gruppen '$(id -Gn lf-claude 2>&1)'"
 		good=0
 	fi
 	got=$(selftest_as sudo -n -l 2>&1)
-	if [[ $got == *"(root) NOPASSWD: /usr/local/bin/frs-lesen, /usr/local/bin/frs-aufgabe"* && $got != *"ALL) ALL"* &&
+	if [[ $got == *"(root) NOPASSWD: /usr/local/bin/lf-lesen, /usr/local/bin/lf-aufgabe"* && $got != *"ALL) ALL"* &&
 		$got != *"NOPASSWD: ALL"* ]] && [[ $(grep -c 'NOPASSWD' <<<"$got") == 1 ]]; then
-		echo "FRS-SELFTEST: frs-claude: sudo nur für frs-lesen und frs-aufgabe"
+		echo "LF-SELFTEST: lf-claude: sudo nur für lf-lesen und lf-aufgabe"
 	else
-		echo "FRS-SELFTEST: frs-claude: sudo erlaubt mehr als frs-lesen und frs-aufgabe:"
-		sed 's/^/FRS-SELFTEST:   /' <<<"$got" | tail -n 6
+		echo "LF-SELFTEST: lf-claude: sudo erlaubt mehr als lf-lesen und lf-aufgabe:"
+		sed 's/^/LF-SELFTEST:   /' <<<"$got" | tail -n 6
 		good=0
 	fi
 
-	# Lesen über frs-lesen: genau die Bytes der Disk.
+	# Lesen über lf-lesen: genau die Bytes der Disk.
 	want=$(head -c 1024 "$dir/disk.raw" | od -A x -t x1z -v)
-	got=$(selftest_as sudo -n /usr/local/bin/frs-lesen sektoren "$loop" 0 2 2>&1)
+	got=$(selftest_as sudo -n /usr/local/bin/lf-lesen sektoren "$loop" 0 2 2>&1)
 	if [[ -n $want && $got == "$want" ]]; then
-		echo "FRS-SELFTEST: frs-claude: frs-lesen sektoren liest die Disk"
+		echo "LF-SELFTEST: lf-claude: lf-lesen sektoren liest die Disk"
 	else
-		echo "FRS-SELFTEST: frs-claude: frs-lesen sektoren liefert nicht den Inhalt der Disk: ${got:0:160}"
+		echo "LF-SELFTEST: lf-claude: lf-lesen sektoren liefert nicht den Inhalt der Disk: ${got:0:160}"
 		good=0
 	fi
 
-	# frs-lesen nimmt nur, was zur Aktion passt.
+	# lf-lesen nimmt nur, was zur Aktion passt.
 	local -a args bad=(
 		"sektoren|$loop|0|65" "sektoren|/etc/shadow|0|1" "sektoren|$loop|-1" "sektoren|$loop|0x10"
 		"smart|$loop -s on" "smart|--scan" "smart|/dev/../etc/shadow" "partitionen|$loop|--delete"
@@ -644,30 +655,30 @@ selftest_claude_user() {
 	)
 	for a in "${bad[@]}"; do
 		IFS='|' read -ra args <<<"$a"
-		got=$(selftest_as sudo -n /usr/local/bin/frs-lesen "${args[@]}" 2>/dev/null)
+		got=$(selftest_as sudo -n /usr/local/bin/lf-lesen "${args[@]}" 2>/dev/null)
 		if [[ $? == 0 || -n $got ]]; then
-			echo "FRS-SELFTEST: frs-claude: frs-lesen nahm ${a//|/ } an"
+			echo "LF-SELFTEST: lf-claude: lf-lesen nahm ${a//|/ } an"
 			good=0
 		fi
 	done
-	((good)) && echo "FRS-SELFTEST: frs-claude: frs-lesen lehnt Optionen, fremde Pfade und zu viele Sektoren ab"
+	((good)) && echo "LF-SELFTEST: lf-claude: lf-lesen lehnt Optionen, fremde Pfade und zu viele Sektoren ab"
 
-	# Ohne frs-lesen: kein Lesen der Disk, kein Aufheben des Schreibschutzes, kein anderes sudo.
+	# Ohne lf-lesen: kein Lesen der Disk, kein Aufheben des Schreibschutzes, kein anderes sudo.
 	if selftest_as dd if="$loop" of=/dev/null count=1 status=none 2>/dev/null; then
-		echo "FRS-SELFTEST: frs-claude: konnte das Blockgerät direkt lesen"
+		echo "LF-SELFTEST: lf-claude: konnte das Blockgerät direkt lesen"
 		good=0
 	fi
 	selftest_as sudo -n blockdev --setrw "$loop" 2>/dev/null
 	if [[ $(blockdev --getro "$loop") != 1 ]]; then
-		echo "FRS-SELFTEST: frs-claude: konnte den Schreibschutz aufheben"
+		echo "LF-SELFTEST: lf-claude: konnte den Schreibschutz aufheben"
 		good=0
 	fi
 	if selftest_as sudo -n dd if="$loop" of=/dev/null count=1 status=none 2>/dev/null ||
 		selftest_as sudo -n -u rescue true 2>/dev/null; then
-		echo "FRS-SELFTEST: frs-claude: sudo erlaubte einen anderen Befehl"
+		echo "LF-SELFTEST: lf-claude: sudo erlaubte einen anderen Befehl"
 		good=0
 	fi
-	((good)) && echo "FRS-SELFTEST: frs-claude: kein direkter Zugriff auf Blockgeräte, kein anderes sudo"
+	((good)) && echo "LF-SELFTEST: lf-claude: kein direkter Zugriff auf Blockgeräte, kein anderes sudo"
 
 	losetup -d "$loop" 2>/dev/null
 	rm -f "$dir/disk.raw"
@@ -678,42 +689,42 @@ selftest_claude_user() {
 	((good))
 }
 
-# selftest_claude_skills   Claude Code lädt für frs-claude genau die Skills aus
+# selftest_claude_skills   Claude Code lädt für lf-claude genau die Skills aus
 #   /etc/claude-code/.claude/skills. Ein Probe-Skill, der nur für diesen Lauf dort liegt, muss
-#   dabei sein (dann kommen sie wirklich von dort), ein Skill im Home von frs-claude nicht.
+#   dabei sein (dann kommen sie wirklich von dort), ein Skill im Home von lf-claude nicht.
 selftest_claude_skills() {
 	local good=1 sk=/etc/claude-code/.claude/skills d token want got s probe
 	token="$RANDOM$RANDOM"
-	probe=frs-selbsttest-probe-$token
+	probe=lf-selbsttest-probe-$token
 	install -d "$sk/$probe"
 	printf -- '---\nname: %s\ndescription: Probe des Selbsttests %s\n---\n\nNur für den Selbsttest.\n' "$probe" "$token" >"$sk/$probe/SKILL.md"
-	d=$(selftest_as mktemp -d /tmp/frs-skills.XXXXXX)
-	selftest_as mkdir -p "$d/arbeit" "$d/home/.claude/skills/frs-fremd-$token"
-	selftest_as sh -c 'printf -- "---\nname: %s\ndescription: fremd\n---\n\nfremd\n" "$1" >"$2"' _ "frs-fremd-$token" "$d/home/.claude/skills/frs-fremd-$token/SKILL.md"
+	d=$(selftest_as mktemp -d /tmp/lf-skills.XXXXXX)
+	selftest_as mkdir -p "$d/arbeit" "$d/home/.claude/skills/lf-fremd-$token"
+	selftest_as sh -c 'printf -- "---\nname: %s\ndescription: fremd\n---\n\nfremd\n" "$1" >"$2"' _ "lf-fremd-$token" "$d/home/.claude/skills/lf-fremd-$token/SKILL.md"
 	echo "kontrolle" | selftest_as tee "$d/arbeit/k.txt" >/dev/null
-	selftest_as env FRS_LIB="$FRS_LIB" bash -c '. "$FRS_LIB/claude-check.sh"; claude_check_run /usr/local/bin/claude "$1" skills "cat $1/arbeit/k.txt" "$1/arbeit"' _ "$d"
+	selftest_as env LF_LIB="$LF_LIB" bash -c '. "$LF_LIB/claude-check.sh"; claude_check_run /usr/local/bin/claude "$1" skills "cat $1/arbeit/k.txt" "$1/arbeit"' _ "$d"
 	got=$(jq -r 'select(.type == "system" and .subtype == "init") | .skills[]?' "$d/skills.json" 2>/dev/null | sort)
 	want=$(for s in "$sk"/*/SKILL.md; do basename "$(dirname "$s")"; done | sort)
 	if [[ -z $got ]]; then
-		echo "FRS-SELFTEST: Skills: Der Lauf als frs-claude meldet keine Skills"
+		echo "LF-SELFTEST: Skills: Der Lauf als lf-claude meldet keine Skills"
 		good=0
 	else
 		for s in $want; do
-			grep -qx "$s" <<<"$got" || { echo "FRS-SELFTEST: Skills: $s aus $sk fehlt"; good=0; }
+			grep -qx "$s" <<<"$got" || { echo "LF-SELFTEST: Skills: $s aus $sk fehlt"; good=0; }
 		done
-		grep -qx "frs-fremd-$token" <<<"$got" && { echo "FRS-SELFTEST: Skills: ein Skill aus dem Home von frs-claude wurde geladen"; good=0; }
-		# Nur frs-Skills stammen aus dem Rettungssystem. Andere Namen sind mitgelieferte Skills der CLI.
-		for s in $(grep '^frs-' <<<"$got"); do
-			grep -qx "$s" <<<"$want" || { echo "FRS-SELFTEST: Skills: $s stammt nicht aus $sk"; good=0; }
+		grep -qx "lf-fremd-$token" <<<"$got" && { echo "LF-SELFTEST: Skills: ein Skill aus dem Home von lf-claude wurde geladen"; good=0; }
+		# Nur lf-Skills stammen aus dem Rettungssystem. Andere Namen sind mitgelieferte Skills der CLI.
+		for s in $(grep '^lf-' <<<"$got"); do
+			grep -qx "$s" <<<"$want" || { echo "LF-SELFTEST: Skills: $s stammt nicht aus $sk"; good=0; }
 		done
 	fi
 	rm -rf "${sk:?}/$probe"
 	selftest_as rm -rf "$d"
-	((good)) && echo "FRS-SELFTEST: Skills: frs-claude bekommt genau die Skills aus $sk ($(grep -c . <<<"$want") mit Probe), keine aus dem eigenen Home"
+	((good)) && echo "LF-SELFTEST: Skills: lf-claude bekommt genau die Skills aus $sk ($(grep -c . <<<"$want") mit Probe), keine aus dem eigenen Home"
 	((good))
 }
 
-# selftest_claude_aufgabe VERZEICHNIS   frs-aufgabe als frs-claude: Quelle nur lesend einhängen,
+# selftest_claude_aufgabe VERZEICHNIS   lf-aufgabe als lf-claude: Quelle nur lesend einhängen,
 #   Kopieren und Retten nur auf das bestätigte Ziel, alles andere abgelehnt.
 selftest_claude_aufgabe() {
 	local dir=$1 good=1 src tgt res sloop tloop rloop mp got c i bd a
@@ -739,64 +750,64 @@ selftest_claude_aufgabe() {
 	done
 
 	# Ohne bestätigtes Ziel wird nichts kopiert und nichts gerettet.
-	mountpoint -q "$FRS_TARGET_MNT" && umount "$FRS_TARGET_MNT"
-	if selftest_as sudo -n frs-aufgabe retten "$rloop" >/dev/null 2>&1; then
-		echo "FRS-SELFTEST: frs-aufgabe: retten lief ohne bestätigtes Ziel"
+	mountpoint -q "$LF_TARGET_MNT" && umount "$LF_TARGET_MNT"
+	if selftest_as sudo -n lf-aufgabe retten "$rloop" >/dev/null 2>&1; then
+		echo "LF-SELFTEST: lf-aufgabe: retten lief ohne bestätigtes Ziel"
 		good=0
 	fi
 
 	# Quelle einhängen: erst schreibgeschützt, dann nur lesend.
-	mp="$FRS_IMAGE_MNT/$(basename "$sloop")"
-	got=$(selftest_as sudo -n frs-aufgabe einhaengen "$sloop" 2>&1)
+	mp="$LF_IMAGE_MNT/$(basename "$sloop")"
+	got=$(selftest_as sudo -n lf-aufgabe einhaengen "$sloop" 2>&1)
 	if [[ $(blockdev --getro "$sloop") == 1 ]] && mount_has_opts "$mp" "${IMAGE_MOUNT_OPTS[@]}" && cmp -s "$mp/probe.txt" "$dir/probe.txt"; then
-		echo "FRS-SELFTEST: frs-aufgabe: einhaengen schützt die Quelle und hängt sie nur lesend ein"
+		echo "LF-SELFTEST: lf-aufgabe: einhaengen schützt die Quelle und hängt sie nur lesend ein"
 	else
-		echo "FRS-SELFTEST: frs-aufgabe: einhaengen ohne Schreibschutz oder Schutzoptionen: ${got:0:160}"
+		echo "LF-SELFTEST: lf-aufgabe: einhaengen ohne Schreibschutz oder Schutzoptionen: ${got:0:160}"
 		good=0
 	fi
 
 	# Das Ziel bestätigt der Techniker im Assistenten. Hier hängt es der Selbsttest ein, wie der Assistent.
-	install -d "$FRS_TARGET_MNT"
-	target_mount_part "$tloop" || { echo "FRS-SELFTEST: frs-aufgabe: Testziel ließ sich nicht einhängen"; good=0; }
-	got=$(selftest_as sudo -n frs-aufgabe kopieren "$mp/probe.txt" selbsttest 2>&1)
-	if cmp -s "$FRS_TARGET_MNT/FRS/claude/selbsttest/probe.txt" "$dir/probe.txt"; then
-		echo "FRS-SELFTEST: frs-aufgabe: kopieren schreibt die Datei aufs bestätigte Ziel"
+	install -d "$LF_TARGET_MNT"
+	target_mount_part "$tloop" || { echo "LF-SELFTEST: lf-aufgabe: Testziel ließ sich nicht einhängen"; good=0; }
+	got=$(selftest_as sudo -n lf-aufgabe kopieren "$mp/probe.txt" selbsttest 2>&1)
+	if cmp -s "$LF_TARGET_MNT/LF/claude/selbsttest/probe.txt" "$dir/probe.txt"; then
+		echo "LF-SELFTEST: lf-aufgabe: kopieren schreibt die Datei aufs bestätigte Ziel"
 	else
-		echo "FRS-SELFTEST: frs-aufgabe: kopieren hat nicht aufs Ziel geschrieben: ${got:0:160}"
+		echo "LF-SELFTEST: lf-aufgabe: kopieren hat nicht aufs Ziel geschrieben: ${got:0:160}"
 		good=0
 	fi
 
 	# Abgelehnt: fremde Quellen, Ordnernamen mit Pfad, das Ziel oder der Stick als Quelle.
 	bd=$(boot_disk 2>/dev/null || true)
 	bad=("kopieren|/etc/hostname|x" "kopieren|$mp/probe.txt|../x" "kopieren|$mp/probe.txt|a/b"
-		"kopieren|$FRS_TARGET_MNT/FRS|x" "einhaengen|$tloop" "retten|$tloop" "einhaengen|/etc/shadow"
+		"kopieren|$LF_TARGET_MNT/LF|x" "einhaengen|$tloop" "retten|$tloop" "einhaengen|/etc/shadow"
 		"retten|$sloop -x" "fortsetzen|../x|$rloop" "aushaengen|../x" "image|../../etc" "loeschen|$tloop")
 	[[ -n $bd ]] && bad+=("einhaengen|$bd" "retten|$bd")
 	for a in "${bad[@]}"; do
 		IFS='|' read -ra args <<<"$a"
-		if selftest_as sudo -n frs-aufgabe "${args[@]}" >/dev/null 2>&1; then
-			echo "FRS-SELFTEST: frs-aufgabe: nahm ${a//|/ } an"
+		if selftest_as sudo -n lf-aufgabe "${args[@]}" >/dev/null 2>&1; then
+			echo "LF-SELFTEST: lf-aufgabe: nahm ${a//|/ } an"
 			good=0
 		fi
 	done
-	[[ -e $FRS_TARGET_MNT/x || -e $FRS_TARGET_MNT/FRS/x ]] && { echo "FRS-SELFTEST: frs-aufgabe: schrieb außerhalb von FRS/claude"; good=0; }
-	[[ $(blockdev --getro "$tloop") == 0 ]] || { echo "FRS-SELFTEST: frs-aufgabe: Ziel wurde schreibgeschützt"; good=0; }
+	[[ -e $LF_TARGET_MNT/x || -e $LF_TARGET_MNT/LF/x ]] && { echo "LF-SELFTEST: lf-aufgabe: schrieb außerhalb von LF/claude"; good=0; }
+	[[ $(blockdev --getro "$tloop") == 0 ]] || { echo "LF-SELFTEST: lf-aufgabe: Ziel wurde schreibgeschützt"; good=0; }
 
 	# Retten: Rettungsfall auf dem Ziel, ddrescue im Hintergrund, Abbild gleich der Quelle.
-	got=$(selftest_as sudo -n frs-aufgabe retten "$rloop" 2>&1)
+	got=$(selftest_as sudo -n lf-aufgabe retten "$rloop" 2>&1)
 	for ((i = 0; i < 90; i++)); do
-		systemctl list-units --plain --no-legend --state=active,activating 'frs-claude-rettung-*' 2>/dev/null | grep -q . || break
+		systemctl list-units --plain --no-legend --state=active,activating 'lf-claude-rettung-*' 2>/dev/null | grep -q . || break
 		sleep 1
 	done
-	c=$(ls -d "$FRS_TARGET_MNT"/FRS/*_Disk_* 2>/dev/null | head -n 1)
+	c=$(ls -d "$LF_TARGET_MNT"/LF/*_Disk_* 2>/dev/null | head -n 1)
 	if [[ -n $c ]] && cmp -s "$c/image.img" "$res" && [[ $(casefile_peek "$c/case.env" STATE) == "done" && $(blockdev --getro "$rloop") == 1 ]]; then
-		echo "FRS-SELFTEST: frs-aufgabe: retten schützt die Quelle und legt das Abbild auf dem Ziel ab ($(basename "$c"))"
+		echo "LF-SELFTEST: lf-aufgabe: retten schützt die Quelle und legt das Abbild auf dem Ziel ab ($(basename "$c"))"
 	else
-		echo "FRS-SELFTEST: frs-aufgabe: retten hat kein vollständiges Abbild abgelegt: ${got:0:200}"
+		echo "LF-SELFTEST: lf-aufgabe: retten hat kein vollständiges Abbild abgelegt: ${got:0:200}"
 		good=0
 	fi
-	got=$(selftest_as sudo -n frs-aufgabe stand 2>&1)
-	[[ $got == *"Letzte Aufgaben"* ]] || { echo "FRS-SELFTEST: frs-aufgabe: stand ohne Ausgabe"; good=0; }
+	got=$(selftest_as sudo -n lf-aufgabe stand 2>&1)
+	[[ $got == *"Letzte Aufgaben"* ]] || { echo "LF-SELFTEST: lf-aufgabe: stand ohne Ausgabe"; good=0; }
 
 	# Retten mit Domain (#46): eine Disk mit GPT und NTFS. Zuerst MFT und belegte Cluster, danach
 	# der Rest. Die Domain liegt ganz in der Partition, das Abbild gleicht am Ende der Disk.
@@ -810,18 +821,18 @@ selftest_claude_aufgabe() {
 		[[ -b ${dloop}p1 ]] && break
 		sleep 0.5
 	done
-	[[ -b ${dloop}p1 ]] || echo "FRS-SELFTEST: frs-aufgabe: Testdisk für die Domain hat keine Partition ($(sgdisk -p "$nt" 2>&1 | tail -n 2 | tr '\n' ' '))"
+	[[ -b ${dloop}p1 ]] || echo "LF-SELFTEST: lf-aufgabe: Testdisk für die Domain hat keine Partition ($(sgdisk -p "$nt" 2>&1 | tail -n 2 | tr '\n' ' '))"
 	blockdev --setrw "${dloop}p1" 2>/dev/null
 	mkfs.ntfs -Q -F "${dloop}p1" >/dev/null 2>&1
 	mkdir -p "$dir/ntfs-mnt"
 	ntfs-3g "${dloop}p1" "$dir/ntfs-mnt" && head -c $((3 * 1024 * 1024)) /dev/urandom >"$dir/ntfs-mnt/daten.bin"
 	umount "$dir/ntfs-mnt" 2>/dev/null
-	got=$(selftest_as sudo -n frs-aufgabe retten "$dloop" --domain "${dloop}p1" 2>&1)
+	got=$(selftest_as sudo -n lf-aufgabe retten "$dloop" --domain "${dloop}p1" 2>&1)
 	for ((i = 0; i < 120; i++)); do
-		systemctl list-units --plain --no-legend --state=active,activating 'frs-claude-rettung-*' 2>/dev/null | grep -q . || break
+		systemctl list-units --plain --no-legend --state=active,activating 'lf-claude-rettung-*' 2>/dev/null | grep -q . || break
 		sleep 1
 	done
-	c2=$(dirname "$(ls -d "$FRS_TARGET_MNT"/FRS/*/domain.map 2>/dev/null | head -n 1)")
+	c2=$(dirname "$(ls -d "$LF_TARGET_MNT"/LF/*/domain.map 2>/dev/null | head -n 1)")
 	off=$((2048 * 512)) size=$((40 * 1024 * 1024))
 	# ddru_ntfsbitmap nimmt den Anfang der Disk (Partitionstabelle) mit auf. Kein Bereich darf über
 	# das Ende der Partition reichen, und belegte Bereiche müssen in ihr liegen: Dann bezieht sich
@@ -837,101 +848,101 @@ selftest_claude_aufgabe() {
 	if [[ -s $c2/domain.map && -s $c2/domain-mft.map && -z $bad ]] && cmp -s "$c2/image.img" "$nt" &&
 		[[ $(casefile_peek "$c2/case.env" STATE) == "done" ]] &&
 		[[ $(grep -n 'Phase 0: nur die MFT' "$c2/rescue.log" | cut -d: -f1) -lt $(grep -n 'Phase 1/3' "$c2/rescue.log" | cut -d: -f1) ]]; then
-		echo "FRS-SELFTEST: frs-aufgabe: retten --domain liest zuerst MFT und belegte Cluster (innerhalb der Partition), danach den Rest, Abbild vollständig"
+		echo "LF-SELFTEST: lf-aufgabe: retten --domain liest zuerst MFT und belegte Cluster (innerhalb der Partition), danach den Rest, Abbild vollständig"
 	else
-		echo "FRS-SELFTEST: frs-aufgabe: retten --domain ohne gültige Domain oder ohne vollständiges Abbild: ${got:0:200}"
-		[[ -n $bad ]] && echo "FRS-SELFTEST:   Domain: ${bad:0:160}"
-		cmp -s "$c2/image.img" "$nt" || echo "FRS-SELFTEST:   Abbild weicht von der Disk ab"
-		echo "FRS-SELFTEST:   Zustand $(casefile_peek "$c2/case.env" STATE), Phasen: $(grep -o 'Phase [0-9][^:]*' "$c2/rescue.log" 2>/dev/null | tr '\n' ',')"
+		echo "LF-SELFTEST: lf-aufgabe: retten --domain ohne gültige Domain oder ohne vollständiges Abbild: ${got:0:200}"
+		[[ -n $bad ]] && echo "LF-SELFTEST:   Domain: ${bad:0:160}"
+		cmp -s "$c2/image.img" "$nt" || echo "LF-SELFTEST:   Abbild weicht von der Disk ab"
+		echo "LF-SELFTEST:   Zustand $(casefile_peek "$c2/case.env" STATE), Phasen: $(grep -o 'Phase [0-9][^:]*' "$c2/rescue.log" 2>/dev/null | tr '\n' ',')"
 		good=0
 	fi
-	if selftest_as sudo -n frs-aufgabe domain "$(basename "$c2")" "${dloop}p1" >/dev/null 2>&1 ||
-		selftest_as sudo -n frs-aufgabe retten "$rloop" --domain "${dloop}p1" >/dev/null 2>&1; then
-		echo "FRS-SELFTEST: frs-aufgabe: domain nahm einen fertigen Fall oder eine fremde Partition an"
+	if selftest_as sudo -n lf-aufgabe domain "$(basename "$c2")" "${dloop}p1" >/dev/null 2>&1 ||
+		selftest_as sudo -n lf-aufgabe retten "$rloop" --domain "${dloop}p1" >/dev/null 2>&1; then
+		echo "LF-SELFTEST: lf-aufgabe: domain nahm einen fertigen Fall oder eine fremde Partition an"
 		good=0
 	fi
 	losetup -d "$dloop" 2>/dev/null
 	rm -f "$nt"
 
 	# Prüfen: gleiche Kopie ohne Abweichung, eine veränderte Kopie wird gemeldet.
-	if selftest_as sudo -n frs-aufgabe pruefen "$mp/probe.txt" selbsttest >/dev/null 2>&1 &&
-		grep -q '^rsync rc=0$' "$FRS_TARGET_MNT/FRS/claude/selbsttest.pruefung.txt"; then
-		echo x >>"$FRS_TARGET_MNT/FRS/claude/selbsttest/probe.txt"
-		if ! selftest_as sudo -n frs-aufgabe pruefen "$mp/probe.txt" selbsttest >/dev/null 2>&1 &&
-			grep -q '^ABWEICHUNG: probe.txt$' "$FRS_TARGET_MNT/FRS/claude/selbsttest.pruefung.txt"; then
-			echo "FRS-SELFTEST: frs-aufgabe: pruefen bestätigt eine gleiche Kopie und meldet eine veränderte"
+	if selftest_as sudo -n lf-aufgabe pruefen "$mp/probe.txt" selbsttest >/dev/null 2>&1 &&
+		grep -q '^rsync rc=0$' "$LF_TARGET_MNT/LF/claude/selbsttest.pruefung.txt"; then
+		echo x >>"$LF_TARGET_MNT/LF/claude/selbsttest/probe.txt"
+		if ! selftest_as sudo -n lf-aufgabe pruefen "$mp/probe.txt" selbsttest >/dev/null 2>&1 &&
+			grep -q '^ABWEICHUNG: probe.txt$' "$LF_TARGET_MNT/LF/claude/selbsttest.pruefung.txt"; then
+			echo "LF-SELFTEST: lf-aufgabe: pruefen bestätigt eine gleiche Kopie und meldet eine veränderte"
 		else
-			echo "FRS-SELFTEST: frs-aufgabe: pruefen hat eine veränderte Kopie nicht gemeldet"
+			echo "LF-SELFTEST: lf-aufgabe: pruefen hat eine veränderte Kopie nicht gemeldet"
 			good=0
 		fi
 	else
-		echo "FRS-SELFTEST: frs-aufgabe: pruefen meldet bei einer gleichen Kopie Abweichungen"
+		echo "LF-SELFTEST: lf-aufgabe: pruefen meldet bei einer gleichen Kopie Abweichungen"
 		good=0
 	fi
 
 	# Ablegen: eine Textdatei aus dem Home von Claude in den Fall, nichts anderes.
 	selftest_as sh -c 'echo "Bericht des Selbsttests" >"$HOME/selbsttest-bericht.md"; ln -sf /etc/shadow "$HOME/selbsttest-link.md"; head -c 4096 /dev/urandom >"$HOME/selbsttest-binaer.md"'
-	if [[ -n $c ]] && selftest_as sudo -n frs-aufgabe ablegen "$(basename "$c")" /var/lib/frs-claude/selbsttest-bericht.md >/dev/null 2>&1 &&
-		cmp -s "$c/claude-selbsttest-bericht.md" /var/lib/frs-claude/selbsttest-bericht.md &&
-		! selftest_as sudo -n frs-aufgabe ablegen "$(basename "$c")" /var/lib/frs-claude/selbsttest-link.md >/dev/null 2>&1 &&
-		! selftest_as sudo -n frs-aufgabe ablegen "$(basename "$c")" /var/lib/frs-claude/selbsttest-binaer.md >/dev/null 2>&1 &&
+	if [[ -n $c ]] && selftest_as sudo -n lf-aufgabe ablegen "$(basename "$c")" /var/lib/lf-claude/selbsttest-bericht.md >/dev/null 2>&1 &&
+		cmp -s "$c/claude-selbsttest-bericht.md" /var/lib/lf-claude/selbsttest-bericht.md &&
+		! selftest_as sudo -n lf-aufgabe ablegen "$(basename "$c")" /var/lib/lf-claude/selbsttest-link.md >/dev/null 2>&1 &&
+		! selftest_as sudo -n lf-aufgabe ablegen "$(basename "$c")" /var/lib/lf-claude/selbsttest-binaer.md >/dev/null 2>&1 &&
 		[[ ! -e $c/claude-selbsttest-link.md && ! -e $c/claude-selbsttest-binaer.md && ! -e $c/claude-shadow ]]; then
-		echo "FRS-SELFTEST: frs-aufgabe: ablegen legt Textdateien aus dem Home von Claude in den Fall, keine Verknüpfungen, nichts Binäres"
+		echo "LF-SELFTEST: lf-aufgabe: ablegen legt Textdateien aus dem Home von Claude in den Fall, keine Verknüpfungen, nichts Binäres"
 	else
-		echo "FRS-SELFTEST: frs-aufgabe: ablegen nahm eine Verknüpfung oder Binärdatei an oder legte nichts ab"
+		echo "LF-SELFTEST: lf-aufgabe: ablegen nahm eine Verknüpfung oder Binärdatei an oder legte nichts ab"
 		good=0
 	fi
 	selftest_as sh -c 'rm -f "$HOME"/selbsttest-*.md'
 
 	# Timeout: nur für Disks mit einstellbarem Timeout. Ein Loop-Gerät hat keinen.
-	if selftest_as sudo -n frs-aufgabe timeout "$rloop" 5 >/dev/null 2>&1; then
-		echo "FRS-SELFTEST: frs-aufgabe: timeout nahm ein Gerät ohne einstellbaren Timeout an"
+	if selftest_as sudo -n lf-aufgabe timeout "$rloop" 5 >/dev/null 2>&1; then
+		echo "LF-SELFTEST: lf-aufgabe: timeout nahm ein Gerät ohne einstellbaren Timeout an"
 		good=0
 	fi
 
-	selftest_as sudo -n frs-aufgabe aushaengen "$(basename "$sloop")" >/dev/null 2>&1
-	mountpoint -q "$mp" && { echo "FRS-SELFTEST: frs-aufgabe: aushaengen hat nicht ausgehängt"; good=0; umount "$mp"; }
-	umount "$FRS_TARGET_MNT" 2>/dev/null
+	selftest_as sudo -n lf-aufgabe aushaengen "$(basename "$sloop")" >/dev/null 2>&1
+	mountpoint -q "$mp" && { echo "LF-SELFTEST: lf-aufgabe: aushaengen hat nicht ausgehängt"; good=0; umount "$mp"; }
+	umount "$LF_TARGET_MNT" 2>/dev/null
 	losetup -d "$sloop" "$tloop" "$rloop" 2>/dev/null
 	rm -f "$src" "$tgt" "$res"
-	((good)) && echo "FRS-SELFTEST: frs-aufgabe: lehnt fremde Quellen, Pfade im Ordnernamen und das Ziel als Quelle ab"
+	((good)) && echo "LF-SELFTEST: lf-aufgabe: lehnt fremde Quellen, Pfade im Ordnernamen und das Ziel als Quelle ab"
 	((good))
 }
 
 # selftest_claude_freigabe   Volles sudo nur nach Freischalten durch den Techniker, mit Ablauf.
 selftest_claude_freigabe() {
 	local good=1
-	frs-freigabe aus >/dev/null 2>&1
-	if selftest_as sudo -n frs-freigabe an 30 >/dev/null 2>&1 || SUDO_USER=frs-claude frs-freigabe an 30 >/dev/null 2>&1 ||
-		[[ $(frs-freigabe status) != aus ]]; then
-		echo "FRS-SELFTEST: Freigabe: frs-claude konnte sich selbst freischalten"
+	lf-freigabe aus >/dev/null 2>&1
+	if selftest_as sudo -n lf-freigabe an 30 >/dev/null 2>&1 || SUDO_USER=lf-claude lf-freigabe an 30 >/dev/null 2>&1 ||
+		[[ $(lf-freigabe status) != aus ]]; then
+		echo "LF-SELFTEST: Freigabe: lf-claude konnte sich selbst freischalten"
 		good=0
 	fi
-	SUDO_USER=rescue frs-freigabe an 1 >/dev/null 2>&1
-	if [[ $(frs-freigabe status) == "an bis "* ]] && selftest_as sudo -n true 2>/dev/null &&
-		systemctl is-active -q frs-claude-freigabe-ende.timer && [[ $(frs-freigabe zeile </dev/null) == ACHTUNG* ]]; then
-		echo "FRS-SELFTEST: Freigabe: nach dem Freischalten hat frs-claude volles sudo, der Ablauf ist gesetzt, die Statuszeile zeigt es"
+	SUDO_USER=rescue lf-freigabe an 1 >/dev/null 2>&1
+	if [[ $(lf-freigabe status) == "an bis "* ]] && selftest_as sudo -n true 2>/dev/null &&
+		systemctl is-active -q lf-claude-freigabe-ende.timer && [[ $(lf-freigabe zeile </dev/null) == ACHTUNG* ]]; then
+		echo "LF-SELFTEST: Freigabe: nach dem Freischalten hat lf-claude volles sudo, der Ablauf ist gesetzt, die Statuszeile zeigt es"
 	else
-		echo "FRS-SELFTEST: Freigabe: Freischalten wirkt nicht ($(frs-freigabe status))"
+		echo "LF-SELFTEST: Freigabe: Freischalten wirkt nicht ($(lf-freigabe status))"
 		good=0
 	fi
 	# Ablauf wie nach der gesetzten Zeit: Der Timer startet diesen Dienst.
-	systemctl start frs-claude-freigabe-ende.service
-	if [[ $(frs-freigabe status) == aus ]] && ! selftest_as sudo -n true 2>/dev/null && [[ ! -e /etc/sudoers.d/frs-claude-freigabe ]]; then
-		echo "FRS-SELFTEST: Freigabe: nach Ablauf gilt wieder nur frs-lesen und frs-aufgabe"
+	systemctl start lf-claude-freigabe-ende.service
+	if [[ $(lf-freigabe status) == aus ]] && ! selftest_as sudo -n true 2>/dev/null && [[ ! -e /etc/sudoers.d/lf-claude-freigabe ]]; then
+		echo "LF-SELFTEST: Freigabe: nach Ablauf gilt wieder nur lf-lesen und lf-aufgabe"
 	else
-		echo "FRS-SELFTEST: Freigabe: nach Ablauf hat frs-claude weiter volles sudo"
-		frs-freigabe aus >/dev/null 2>&1
+		echo "LF-SELFTEST: Freigabe: nach Ablauf hat lf-claude weiter volles sudo"
+		lf-freigabe aus >/dev/null 2>&1
 		good=0
 	fi
-	grep -q "abgelaufen" /run/frs/claude-aufgaben.log 2>/dev/null || { echo "FRS-SELFTEST: Freigabe: Ablauf steht nicht im Protokoll"; good=0; }
+	grep -q "abgelaufen" /run/lf/claude-aufgaben.log 2>/dev/null || { echo "LF-SELFTEST: Freigabe: Ablauf steht nicht im Protokoll"; good=0; }
 	((good))
 }
 
-# selftest_claude_wayland VERZEICHNIS   Claude Desktop (frs-claude) bekommt nur den Socket von cage.
+# selftest_claude_wayland VERZEICHNIS   Claude Desktop (lf-claude) bekommt nur den Socket von cage.
 selftest_claude_wayland() {
 	local good=1 sock srv i
-	claude_wayland_dir || { echo "FRS-SELFTEST: Wayland: Verzeichnis ließ sich nicht anlegen"; return 1; }
+	claude_wayland_dir || { echo "LF-SELFTEST: Wayland: Verzeichnis ließ sich nicht anlegen"; return 1; }
 	sock=$CLAUDE_WAYLAND_DIR/wayland-selbsttest
 	rm -f "$sock"
 	python3 -I -c 'import socket, sys, time
@@ -940,22 +951,22 @@ s = socket.socket(socket.AF_UNIX); s.bind(sys.argv[1]); s.listen(4); time.sleep(
 	for ((i = 0; i < 50; i++)); do [[ -S $sock ]] && break; sleep 0.1; done
 	local conn='import socket, sys; s = socket.socket(socket.AF_UNIX); s.connect(sys.argv[1])'
 	if selftest_as python3 -I -c "$conn" "$sock" 2>/dev/null; then
-		echo "FRS-SELFTEST: Wayland: frs-claude erreichte den Socket vor der Freigabe"
+		echo "LF-SELFTEST: Wayland: lf-claude erreichte den Socket vor der Freigabe"
 		good=0
 	fi
-	claude_wayland_share "$sock" || { echo "FRS-SELFTEST: Wayland: claude_wayland_share schlug fehl"; good=0; }
+	claude_wayland_share "$sock" || { echo "LF-SELFTEST: Wayland: claude_wayland_share schlug fehl"; good=0; }
 	if ! selftest_as python3 -I -c "$conn" "$sock" 2>/dev/null; then
-		echo "FRS-SELFTEST: Wayland: frs-claude erreicht den freigegebenen Socket nicht"
+		echo "LF-SELFTEST: Wayland: lf-claude erreicht den freigegebenen Socket nicht"
 		good=0
 	fi
 	if sudo -u nobody -n python3 -I -c "$conn" "$sock" </dev/null 2>/dev/null; then
-		echo "FRS-SELFTEST: Wayland: ein anderer Benutzer erreichte den Socket"
+		echo "LF-SELFTEST: Wayland: ein anderer Benutzer erreichte den Socket"
 		good=0
 	fi
 	kill "$srv" 2>/dev/null
 	wait "$srv" 2>/dev/null
 	rm -f "$sock"
-	((good)) && echo "FRS-SELFTEST: Wayland: frs-claude erreicht nur den freigegebenen Socket von cage, andere Benutzer nicht"
+	((good)) && echo "LF-SELFTEST: Wayland: lf-claude erreicht nur den freigegebenen Socket von cage, andere Benutzer nicht"
 	((good))
 }
 
@@ -965,14 +976,14 @@ s = socket.socket(socket.AF_UNIX); s.bind(sys.argv[1]); s.listen(4); time.sleep(
 main_menu() {
 	local overview default choice hint extra=()
 	while true; do
-		ui_info "Firestrike Rescue" "Prüfe angeschlossene Disks (SMART) …"
+		ui_info "Leuchtfeuer" "Prüfe angeschlossene Disks (SMART) …"
 		overview=$(disks_overview)
 		default=clone
 		((DISKS_ANY_BAD)) && default=rescue
 		extra=()
-		tmux has-session -t frs-rettung 2>/dev/null && extra=(running "» Laufende Rettung anzeigen")
+		tmux has-session -t lf-rettung 2>/dev/null && extra=(running "» Laufende Rettung anzeigen")
 		hint=$(claude_freigabe_hinweis)
-		choice=$(ui_menu "Firestrike Rescue" "${hint:+$hint\n\n}$overview\n\nEmpfehlung: $([[ $default == rescue ]] && echo "Datenrettung (auffällige Disk gefunden)" || echo "alle Disks unauffällig")" \
+		choice=$(ui_menu "Leuchtfeuer" "${hint:+$hint\n\n}$overview\n\nEmpfehlung: $([[ $default == rescue ]] && echo "Datenrettung (auffällige Disk gefunden)" || echo "alle Disks unauffällig")" \
 			--default-item "$default" -- \
 			"${extra[@]}" \
 			rescue "Datenrettung von defekter Disk (Image auf Ziel-Disk)" \
@@ -987,7 +998,7 @@ main_menu() {
 		[[ $? -ne 0 ]] && choice=power
 		log "Menü: $choice"
 		case $choice in
-		running) tmux attach -t frs-rettung ;;
+		running) tmux attach -t lf-rettung ;;
 		rescue) recover_wizard ;;
 		clone) clone_wizard ;;
 		resize) resize_wizard ;;
@@ -995,7 +1006,7 @@ main_menu() {
 		claude) claude_start ;;
 		desktop) claude_desktop ;;
 		tools) tools_menu ;;
-		refresh) rm -f "$FRS_RUN"/smart-* ;;
+		refresh) rm -f "$LF_RUN"/smart-* ;;
 		power) power_menu && return 0 ;;
 		esac
 	done
@@ -1004,13 +1015,13 @@ main_menu() {
 power_menu() {
 	local c
 	c=$(ui_menu "Beenden" "" -- \
-		shell "Zur Shell (Assistent mit 'frs' wieder starten)" \
+		shell "Zur Shell (Assistent mit 'lf' wieder starten)" \
 		reboot "Neustart" \
 		poweroff "Ausschalten") || return 1
 	case $c in
 	shell) return 0 ;;
 	reboot | poweroff)
-		if tmux has-session -t frs-rettung 2>/dev/null; then
+		if tmux has-session -t lf-rettung 2>/dev/null; then
 			ui_yesno "Rettung läuft" "Eine Rettung läuft noch. Sie kann später fortgesetzt werden.\nTrotzdem $c?" --defaultno || return 1
 		fi
 		persist_close
@@ -1023,30 +1034,30 @@ power_menu() {
 banner() {
 	clear
 	printf '\033[33m'
-	cat "$FRS_SHARE/theme/logo.txt" 2>/dev/null
-	printf '\033[0m\n  \033[36m%s\033[0m\n\n' "Ubuntu 26.04 LTS · $FRS_VERSION · Datenrettung · Klonen · Disk anpassen"
+	cat "$LF_SHARE/theme/logo.txt" 2>/dev/null
+	printf '\033[0m\n  \033[36m%s\033[0m\n\n' "Ubuntu 26.04 LTS · $LF_VERSION · Datenrettung · Klonen · Disk anpassen"
 	sleep 1
 }
 
 case ${1:-} in
 --selftest)
-	FRS_RUN=/run/frs
-	mkdir -p "$FRS_RUN"
-	FRS_LOG="$FRS_RUN/selftest.log"
+	LF_RUN=/run/lf
+	mkdir -p "$LF_RUN"
+	LF_LOG="$LF_RUN/selftest.log"
 	selftest
 	exit $?
 	;;
 --version)
-	echo "Firestrike Rescue $FRS_VERSION"
+	echo "Leuchtfeuer $LF_VERSION"
 	exit 0
 	;;
 esac
 
-sudo install -d -o "$(id -u)" -g "$(id -g)" "$FRS_RUN"
+sudo install -d -o "$(id -u)" -g "$(id -g)" "$LF_RUN"
 log_init
 ui_init
 banner
-log "Firestrike Rescue $FRS_VERSION gestartet"
+log "Leuchtfeuer $LF_VERSION gestartet"
 persist_startup
 ui_init
 claude_update_bg

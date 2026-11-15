@@ -1,0 +1,93 @@
+#!/bin/bash
+# Leuchtfeuer: Volles sudo für Claude (lf-claude), nur auf ausdrücklichen Wunsch des
+# Technikers, nur für diese Sitzung und nur für eine begrenzte Zeit.
+#
+#   sudo lf-freigabe an [MINUTEN]   freischalten oder verlängern (Vorgabe 30, höchstens 240)
+#   sudo lf-freigabe aus            sofort beenden
+#   lf-freigabe status              "aus" oder "an bis HH:MM"
+#   lf-freigabe zeile               Statuszeile für Claude Code (managed-settings.json)
+#
+# Auslösen kann nur ein Benutzer mit sudo, also der Techniker, nie lf-claude: Dessen sudo-Regel
+# erlaubt nur lf-lesen und lf-aufgabe. Solange die Freigabe gilt, hat Claude root und könnte sie
+# selbst verlängern. Deshalb lehnt "an" einen Aufruf ab, der von lf-claude kommt, und der
+# Assistent zeigt die Freigabe in jedem Menü an. Ein systemd-Timer nimmt sie nach Ablauf zurück,
+# ein Neustart ebenso (/etc liegt im RAM). Jedes An und Aus steht im Protokoll und im Journal.
+set -u
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+export LC_ALL=C.UTF-8
+RULE=/etc/sudoers.d/lf-claude-freigabe
+UNTIL=/run/lf/claude-freigabe-bis
+UNIT=lf-claude-freigabe-ende
+
+note() {
+	logger -t lf-freigabe -- "$*" 2>/dev/null || true
+	printf '%s %s\n' "$(date '+%F %T')" "$*" >>/run/lf/claude-aufgaben.log 2>/dev/null || true
+	echo "$*"
+}
+
+status() {
+	local until
+	until=$(cat "$UNTIL" 2>/dev/null)
+	if [[ -f $RULE && $until =~ ^[0-9]+$ ]] && ((until > $(date +%s))); then
+		echo "an bis $(date -d "@$until" +%H:%M)"
+	else
+		echo "aus"
+	fi
+}
+
+off() {
+	rm -f "$RULE" "$UNTIL"
+	systemctl stop "$UNIT.timer" 2>/dev/null || true
+}
+
+case ${1:-} in
+an)
+	((EUID == 0)) || { echo "lf-freigabe: nur mit sudo" >&2; exit 2; }
+	[[ ${SUDO_USER:-} == lf-claude ]] &&
+		{ echo "lf-freigabe: Die Freigabe schaltet nur der Techniker frei." >&2; exit 2; }
+	min=${2:-30}
+	[[ $min =~ ^[0-9]{1,3}$ ]] && ((10#$min >= 1 && 10#$min <= 240)) || { echo "lf-freigabe: MINUTEN 1 bis 240" >&2; exit 2; }
+	min=$((10#$min))
+	install -d /run/lf
+	tmp=$(mktemp /etc/sudoers.d/.lf-claude-freigabe.XXXXXX)
+	echo "lf-claude ALL=(ALL:ALL) NOPASSWD: ALL" >"$tmp"
+	chmod 0440 "$tmp"
+	visudo -cqf "$tmp" || { rm -f "$tmp"; echo "lf-freigabe: sudo-Regel ungültig" >&2; exit 1; }
+	mv -f "$tmp" "$RULE"
+	echo $(($(date +%s) + min * 60)) >"$UNTIL"
+	chmod 0644 "$UNTIL"
+	systemctl stop "$UNIT.timer" 2>/dev/null || true
+	systemctl reset-failed "$UNIT.timer" "$UNIT.service" 2>/dev/null || true
+	# Type=oneshot: Wer den Dienst von Hand startet, kehrt erst zurück, wenn die Freigabe weg ist.
+	systemd-run --quiet --unit="$UNIT" --on-active="${min}min" --timer-property=AccuracySec=1s -p Type=oneshot \
+		/usr/local/bin/lf-freigabe ablauf || { off; echo "lf-freigabe: Timer ließ sich nicht setzen, Freigabe zurückgenommen" >&2; exit 1; }
+	note "Claude (lf-claude) hat volles sudo bis $(date -d "@$(cat "$UNTIL")" +%H:%M), freigegeben von ${SUDO_USER:-root}"
+	;;
+aus)
+	((EUID == 0)) || { echo "lf-freigabe: nur mit sudo" >&2; exit 2; }
+	off
+	note "Volles sudo für Claude (lf-claude) beendet"
+	;;
+ablauf)
+	((EUID == 0)) || exit 2
+	off
+	note "Volles sudo für Claude (lf-claude) abgelaufen"
+	;;
+status | "")
+	status
+	;;
+zeile)
+	# Claude Code gibt der Statuszeile JSON auf der Standardeingabe, es wird nicht gebraucht.
+	cat >/dev/null 2>&1 || true
+	s=$(status)
+	if [[ $s == an* ]]; then
+		echo "ACHTUNG: Claude hat volles sudo ($s)"
+	else
+		echo "Leuchtfeuer: Claude arbeitet mit lf-lesen und lf-aufgabe"
+	fi
+	;;
+*)
+	echo "Aufruf: lf-freigabe an [MINUTEN] | aus | status" >&2
+	exit 2
+	;;
+esac

@@ -206,8 +206,8 @@ qsplit() {
 	printf '%s\n' "$out"
 }
 # Die Dateien der Sperre und die Ordner, in denen sie liegen.
-LOCKED=(/etc/claude-code/managed-settings.json /etc/claude-code/CLAUDE.md /usr/local/bin/frs-claude-guard /run/frs/readonly)
-LOCKED_DIRS='/|/etc|/usr|/usr/local|/usr/local/bin|/run|/run/frs'
+LOCKED=(/etc/claude-code/managed-settings.json /etc/claude-code/CLAUDE.md /usr/local/bin/lf-claude-guard /run/lf/readonly)
+LOCKED_DIRS='/|/etc|/usr|/usr/local|/usr/local/bin|/run|/run/lf'
 # names_lock TEXT   Nennt ein Wort des Texts eine Datei der Sperre über Platzhalter, ohne ihren
 #   Namen zu schreiben (/etc/claude*, /etc/{claude-code,x})? Maßgeblich ist der feste Anfang des
 #   Worts bis zum ersten Platzhalter: Beginnt eine Datei der Sperre damit, kann das Wort sie treffen.
@@ -257,13 +257,13 @@ check_command() {
 	fi
 
 	# --- Gesperrt 2: Sperre, Regeln und Liste der Quell-Disks ---------------------------------
-	if has '/etc/claude-code|frs-claude-guard|managed-settings'; then
+	if has '/etc/claude-code|lf-claude-guard|managed-settings'; then
 		deny "Die Regeln und die Sperre für Claude werden nicht per Shell angefasst. Zum Lesen der Regeln das Lesewerkzeug benutzen."
 	fi
-	re="/run/frs/readonly$S"
+	re="/run/lf/readonly$S"
 	lim=' (-[A-Za-z]*i|--in-place)'
 	if has "> *$re" || writes 'rm|mv|cp|tee|truncate|dd|ln|install|chmod|chown|chattr|shred|unlink|rsync' "$re" '' || writes sed "$re" '' "$lim"; then
-		deny "Die Liste der schreibgeschützten Quell-Disks (/run/frs/readonly) wird nicht verändert."
+		deny "Die Liste der schreibgeschützten Quell-Disks (/run/lf/readonly) wird nicht verändert."
 	fi
 
 	# Dasselbe über Umwege: Platzhalter, die auf die Dateien der Sperre passen, und Löschen,
@@ -329,7 +329,7 @@ check_command() {
 		note "eine Disk wird ohne Längenangabe gelesen (${line%% *})"
 	done
 	# Rettungsfall, Original-Image und Mapfile: nicht löschen, verschieben oder überschreiben
-	re="image\.(img|map)$S|/FRS(/|$S)"
+	re="image\.(img|map)$S|/(LF|FRS)(/|$S)"
 	mapfile -t L < <(segs 'rm|mv|truncate|shred|unlink|tee')
 	for line in "${L[@]}"; do
 		[[ $line =~ $re ]] && note "ein Rettungsfall, das Original-Image oder sein Mapfile wird verändert oder gelöscht (${line%% *})"
@@ -346,7 +346,7 @@ check_command() {
 	fi
 
 	# Der Assistent selbst: Seine Prüfungen sind Teil des Schutzes.
-	re='/usr/local/(lib/frs|bin/frs)'
+	re='/usr/local/(lib/lf|bin/lf)'
 	if has "> *$re" || writes 'rm|mv|cp|tee|truncate|dd|ln|install|chmod|chown|rsync|patch' "$re" '' || writes sed "$re" '' ' (-[A-Za-z]*i|--in-place)'; then
 		note "der Assistent des Rettungssystems wird verändert"
 	fi
@@ -408,8 +408,8 @@ check_command() {
 	flat=${flat//partclone.chkimg/}
 	word 'ddrescue|partclone(\.[a-z0-9]+)?|ntfsclone|fsarchiver|safecopy|ewfacquire|clonezilla|ocs-[a-z-]+' && note "eine Disk wird in voller Länge gelesen oder geschrieben"
 	flat=$tmp
-	word frs-rescue-run && note "eine Rettung wird gestartet: Die Quelle wird in voller Länge gelesen, das Ziel beschrieben"
-	has "$B(\.|source) +/usr/local/lib/frs" && note "Abläufe des Assistenten laufen mit Root-Rechten, hängen ein und schreiben"
+	word lf-rescue-run && note "eine Rettung wird gestartet: Die Quelle wird in voller Länge gelesen, das Ziel beschrieben"
+	has "$B(\.|source) +/usr/local/lib/lf" && note "Abläufe des Assistenten laufen mit Root-Rechten, hängen ein und schreiben"
 	writes smartctl " (-t|--test|-X|--abort|-s|--set|--smart|-o|--offlineauto|-S|--saveauto)([ =]|$)|scterc,[0-9]" '' && note "smartctl startet einen Selbsttest oder ändert Einstellungen der Disk"
 	word hdparm && ! only_reads hdparm '-I|-i|-C|-g|-H|-v|-V|-h|--Istdout|--dco-identify' '' '/dev/[A-Za-z0-9/_.:-]+' && note "hdparm ändert Einstellungen der Disk oder belastet sie"
 	writes sdparm " (-s|--set|-c|--clear|-D|--defaults|-C|--command|-S|--save)([ =]|$)" '' && note "sdparm ändert Einstellungen der Disk"
@@ -465,11 +465,11 @@ check_path() {
 	real=$(realpath -m -- "$p" 2>/dev/null) || deny "Der Pfad der Datei war nicht prüfbar."
 	for q in "$p" "$real"; do
 		case $q in
-		/etc/claude-code | /etc/claude-code/* | /usr/local/bin/frs-claude-guard | /run/frs/readonly)
+		/etc/claude-code | /etc/claude-code/* | /usr/local/bin/lf-claude-guard | /run/lf/readonly)
 			deny "Die Regeln und die Sperre für Claude und die Liste der schreibgeschützten Quell-Disks werden nicht verändert."
 			;;
 		/dev/*) note "eine Datei unter /dev wird direkt beschrieben" ;;
-		/usr/local/lib/frs | /usr/local/lib/frs/* | /usr/local/bin/frs*) note "der Assistent des Rettungssystems wird verändert" ;;
+		/usr/local/lib/lf | /usr/local/lib/lf/* | /usr/local/bin/lf*) note "der Assistent des Rettungssystems wird verändert" ;;
 		*/image.img | */image.map) note "das Original-Image oder sein Mapfile wird überschrieben" ;;
 		esac
 	done

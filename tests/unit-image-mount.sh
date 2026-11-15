@@ -9,7 +9,7 @@
 #
 # Hier wird nichts eingehängt. sudo, mount und findmnt sind Attrappen: Ein gedachter Kernel merkt
 # sich, was am Einhängepunkt gilt. Ob der echte Kernel die Optionen durchsetzt, prüft der
-# Selbsttest im gebooteten System (frs --selftest).
+# Selbsttest im gebooteten System (lf --selftest).
 set -u
 cd "$(dirname "$0")/.." || exit 1
 
@@ -18,8 +18,8 @@ T=$(mktemp -d)
 . rescue/lib/common.sh
 # shellcheck disable=SC1091
 . rescue/lib/recover.sh
-FRS_RUN="$T/run"
-MP=/mnt/frs-image/loop0p2
+LF_RUN="$T/run"
+MP=/mnt/lf-image/loop0p2
 
 log() { printf '%s\n' "$*" >>"$T/log"; }
 run() { "$@"; }
@@ -138,11 +138,11 @@ check "kein Dateisystem erkannt: nichts eingehängt" '[[ $RC != 0 && -z $OPTS &&
 echo "BitLocker:"
 reset
 mount_ro BitLocker
-check "Schlüssel erfragt, entschlüsselt, mit allen Schutzoptionen eingehängt" '[[ $RC == 0 && -s $T/input ]] && safe && [[ $CALLS == *"dislocker -r -V /dev/loop0p2"* && $CALLS == *"mount -o $ALL,loop $FRS_RUN/dislocker-loop0p2/dislocker-file $MP"* ]]'
+check "Schlüssel erfragt, entschlüsselt, mit allen Schutzoptionen eingehängt" '[[ $RC == 0 && -s $T/input ]] && safe && [[ $CALLS == *"dislocker -r -V /dev/loop0p2"* && $CALLS == *"mount -o $ALL,loop $LF_RUN/dislocker-loop0p2/dislocker-file $MP"* ]]'
 reset
 REFUSE=",loop"
 mount_ro BitLocker
-check "Ersatzweg ntfs-3g: Schutzoptionen im Aufruf, nosymfollow nachgesetzt" '[[ $RC == 0 ]] && safe && [[ $CALLS == *"ntfs-3g -o ro,nodev,nosuid,noexec $FRS_RUN/dislocker-loop0p2/dislocker-file $MP"* ]]'
+check "Ersatzweg ntfs-3g: Schutzoptionen im Aufruf, nosymfollow nachgesetzt" '[[ $RC == 0 ]] && safe && [[ $CALLS == *"ntfs-3g -o ro,nodev,nosuid,noexec $LF_RUN/dislocker-loop0p2/dislocker-file $MP"* ]]'
 
 echo "Der Kernel übernimmt eine Option nicht:"
 for o in ro nodev nosuid noexec nosymfollow; do

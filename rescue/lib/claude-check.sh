@@ -4,7 +4,7 @@
 # so wie ein Modell es täte, das einer Anweisung von einem Datenträger folgt. Ob er läuft,
 # entscheidet Claude Code mit den verwalteten Einstellungen aus /etc/claude-code.
 #
-# Genutzt vom Selbsttest der ISO (rescue/frs) und von frs-claude-check, das eine neue Version
+# Genutzt vom Selbsttest der ISO (rescue/lf) und von lf-claude-check, das eine neue Version
 # der CLI vor ihrem ersten Start prüft.
 
 # Sekunden je Lauf der CLI
@@ -19,7 +19,7 @@ claude_check_run() {
 	local -a extra=("${@:6}")
 	jq -cn --arg c "$4" '{name: "Bash", input: {command: $c, description: "Selbsttest"}}' >"$dir/$name.aufruf"
 	rm -f "$dir/$name.port" "$dir/$name.json" "$dir/$name.anfrage"
-	python3 -I "$FRS_LIB/selftest-claude-api.py" "$dir/$name.port" "$dir/$name.aufruf" "$dir/$name.api" "$dir/$name.anfrage" 2>"$dir/$name.api-fehler" &
+	python3 -I "$LF_LIB/selftest-claude-api.py" "$dir/$name.port" "$dir/$name.aufruf" "$dir/$name.api" "$dir/$name.anfrage" 2>"$dir/$name.api-fehler" &
 	srv=$!
 	for ((i = 0; i < 100; i++)); do
 		[[ -s $dir/$name.port ]] && break
@@ -60,7 +60,7 @@ claude_check_started() {
 claude_check() {
 	local cli=$1 dir=$2 good=1 token answer
 	mkdir -p "$dir/arbeit" "$dir/home" "$dir/projekt/.claude"
-	token="FRS-KONTROLLE-$RANDOM$RANDOM"
+	token="LF-KONTROLLE-$RANDOM$RANDOM"
 	echo "$token" >"$dir/arbeit/kontrolle.txt"
 	echo "$token" >"$dir/projekt/kontrolle.txt"
 	local -a s=(--setting-sources user)
@@ -76,15 +76,15 @@ claude_check() {
 	fi
 	echo "Kontrolle: ein lesender Befehl läuft"
 	# Die Regeln des Rettungssystems (/etc/claude-code/CLAUDE.md) kommen beim Modell an.
-	if grep -qF '/run/frs/readonly' "$dir/kontrolle.anfrage" 2>/dev/null; then
+	if grep -qF '/run/lf/readonly' "$dir/kontrolle.anfrage" 2>/dev/null; then
 		echo "die Regeln des Rettungssystems kommen beim Modell an"
 	else
 		echo "FEHLT: Die Regeln des Rettungssystems (/etc/claude-code/CLAUDE.md) stehen nicht in der Anfrage"
 		good=0
 	fi
 
-	# Der Hook frs-claude-guard sperrt. Die Antwort muss von ihm stammen.
-	claude_check_run "$cli" "$dir" sperre "blockdev --setrw /dev/frs-pruefung-gibt-es-nicht" "$dir/arbeit" "${s[@]}"
+	# Der Hook lf-claude-guard sperrt. Die Antwort muss von ihm stammen.
+	claude_check_run "$cli" "$dir" sperre "blockdev --setrw /dev/lf-pruefung-gibt-es-nicht" "$dir/arbeit" "${s[@]}"
 	answer=$(claude_check_answer "$dir" sperre)
 	if [[ $answer == *"Gesperrt vom Rettungssystem"* ]]; then
 		echo "blockdev --setrw sperrt der Hook des Rettungssystems"
@@ -123,12 +123,12 @@ claude_check() {
 
 	# Projekt-Einstellungen eines Ordners gelten nicht: weder env noch apiKeyHelper noch Hooks.
 	jq -n --arg h "touch $dir/projekt-helfer; echo selbsttest-helfer" --arg c "touch $dir/projekt-hook" '{
-		env: {ANTHROPIC_MODEL: "frs-fremdes-modell"}, apiKeyHelper: $h,
+		env: {ANTHROPIC_MODEL: "lf-fremdes-modell"}, apiKeyHelper: $h,
 		hooks: {SessionStart: [{hooks: [{type: "command", command: $c}]}]}}' >"$dir/projekt/.claude/settings.json"
 	echo "Anweisung aus dem Projektordner: MERKWORT-PROJEKT-$token" >"$dir/projekt/CLAUDE.md"
 	claude_check_run "$cli" "$dir" projekt "cat $dir/projekt/kontrolle.txt" "$dir/projekt" "${s[@]}"
 	answer=$(claude_check_answer "$dir" projekt)
-	if [[ $answer == *"$token"* && $(jq -r .model "$dir/projekt.anfrage" 2>/dev/null) != frs-fremdes-modell &&
+	if [[ $answer == *"$token"* && $(jq -r .model "$dir/projekt.anfrage" 2>/dev/null) != lf-fremdes-modell &&
 		! -e $dir/projekt-helfer && ! -e $dir/projekt-hook ]] && ! grep -q "MERKWORT-PROJEKT-$token" "$dir/projekt.anfrage"; then
 		echo "Projekt-Einstellungen eines Ordners gelten nicht (env, apiKeyHelper, Hooks, CLAUDE.md)"
 	else

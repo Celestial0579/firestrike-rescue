@@ -1,5 +1,5 @@
 ---
-name: frs-partitionen-ldm
+name: lf-partitionen-ldm
 description: Partitionstabellen, dynamische Windows-Datenträger (LDM) und verlorene Partitionen untersuchen, nur lesend. Nutzen, wenn Partitionen fehlen, ein Volume nicht einhängbar ist oder die Disk unter Windows als dynamischer Datenträger eingerichtet war.
 ---
 
@@ -7,14 +7,14 @@ description: Partitionstabellen, dynamische Windows-Datenträger (LDM) und verlo
 
 ## Ablauf
 
-1. **Tabelle lesen:** `sudo frs-lesen partitionen /dev/sdX` (bei einem Image: zuerst
-   `sudo frs-aufgabe image FALL`, dann das Loop-Gerät). GPT oder MBR, Lage und Größe jeder Partition.
-2. **Dateisysteme erkennen:** `sudo frs-lesen dateisystem /dev/sdXN` für jede Partition.
+1. **Tabelle lesen:** `sudo lf-lesen partitionen /dev/sdX` (bei einem Image: zuerst
+   `sudo lf-aufgabe image FALL`, dann das Loop-Gerät). GPT oder MBR, Lage und Größe jeder Partition.
+2. **Dateisysteme erkennen:** `sudo lf-lesen dateisystem /dev/sdXN` für jede Partition.
 3. **Dynamischer Datenträger (LDM):** Eine Partition vom Typ "Microsoft LDM metadata" bzw.
-   "LDM data" zeigt das an. `sudo frs-lesen ldm /dev/sdX` liest die LDM-Metadaten und nennt die
+   "LDM data" zeigt das an. `sudo lf-lesen ldm /dev/sdX` liest die LDM-Metadaten und nennt die
    Volumes mit ihrem Anfang. Wichtig: einfaches Volume, Spiegel, Stripe oder übergreifend? Nur ein
    einfaches Volume lässt sich direkt aus dem Image einhängen.
-4. **Einhängen zum Prüfen:** `sudo frs-aufgabe einhaengen /dev/loopNpM`, immer nur lesend.
+4. **Einhängen zum Prüfen:** `sudo lf-aufgabe einhaengen /dev/loopNpM`, immer nur lesend.
 
 ## Verlorene oder beschädigte Partitionstabelle
 
@@ -26,7 +26,7 @@ description: Partitionstabellen, dynamische Windows-Datenträger (LDM) und verlo
 
 ## Nicht tun
 
-- Kein `fdisk`, `sgdisk`, `parted`, `testdisk … Write` auf Quelle oder Image. Mit den frs-Werkzeugen
+- Kein `fdisk`, `sgdisk`, `parted`, `testdisk … Write` auf Quelle oder Image. Mit den lf-Werkzeugen
   geht das ohnehin nicht. Vorschlagen ja, ausführen nein.
 - BitLocker: Die Partition braucht den Wiederherstellungsschlüssel. Das Einhängen macht der
   Techniker im Assistenten (Image weiterverwenden > Dateien kopieren).

@@ -5,7 +5,7 @@
 set -u
 cd "$(dirname "$0")/.." || exit 1
 
-FRS_RUN=$(mktemp -d)
+LF_RUN=$(mktemp -d)
 # shellcheck disable=SC1091
 . rescue/lib/common.sh
 # shellcheck disable=SC1091
@@ -77,5 +77,5 @@ rc=$?
 check "Plan abgelehnt" '[[ $rc != 0 ]]'
 check "Begründung genannt" '[[ $DIE_MSG == *"passen nicht"* ]]'
 
-rm -rf "$FRS_RUN"
+rm -rf "$LF_RUN"
 ((fails == 0)) && echo "Alle Tests bestanden." || { echo "$fails Test(s) fehlgeschlagen."; exit 1; }

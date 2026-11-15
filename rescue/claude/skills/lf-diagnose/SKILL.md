@@ -1,5 +1,5 @@
 ---
-name: frs-diagnose
+name: lf-diagnose
 description: Erste Diagnose einer Disk vor der Rettung. Modell und Firmware ohne Medienzugriff lesen, bekannte Problemfassungen erkennen, SMART bzw. NVMe-Log bewerten, Empfehlung für das weitere Vorgehen. Nutzen, sobald eine Disk zur Rettung angeschlossen ist und bevor irgendetwas von ihr gelesen wird.
 ---
 
@@ -10,28 +10,28 @@ der Controller über sich selbst meldet, und erst dann SMART-Werte. Daten werden
 
 ## Ablauf
 
-1. **Welche Disk?** `sudo frs-lesen disks`. Gerät anhand von Modell, Größe und Seriennummer
+1. **Welche Disk?** `sudo lf-lesen disks`. Gerät anhand von Modell, Größe und Seriennummer
    eindeutig bestimmen. Ist es nicht eindeutig (zwei gleiche Disks, USB-Adapter ohne
    Seriennummer): **den Techniker fragen**, welche gemeint ist.
-2. **Identität ohne Medienzugriff:** `sudo frs-lesen identitaet /dev/sdX`. Daraus Modell und
+2. **Identität ohne Medienzugriff:** `sudo lf-lesen identitaet /dev/sdX`. Daraus Modell und
    Firmware-Version notieren. Mit der Liste unten abgleichen.
-3. **SMART:** `sudo frs-lesen smart /dev/sdX`. Wichtig:
+3. **SMART:** `sudo lf-lesen smart /dev/sdX`. Wichtig:
    - SATA: Reallocated, Pending und Offline Uncorrectable Sectors, CRC-Fehler (Kabel/Adapter),
      Betriebsstunden, Fehlerprotokoll.
    - NVMe: Media and Data Integrity Errors, Available Spare gegen Spare Threshold, Percentage
      Used, Critical Warning, Fehlerprotokoll.
    - Keine SMART-Selbsttests starten. Sie lesen die ganze Disk.
-4. **Kernel-Meldungen:** `sudo frs-lesen kernel`. Suche nach I/O-Fehlern, Resets, Timeouts
+4. **Kernel-Meldungen:** `sudo lf-lesen kernel`. Suche nach I/O-Fehlern, Resets, Timeouts
    ("Logical unit is in process of becoming ready", "reset", "timeout") zu genau dieser Disk.
 5. **Bewertung und Empfehlung** an den Techniker, in dieser Reihenfolge:
-   - Disk verschwindet oder hängt nach kurzer Zeit: Skill `frs-haengende-disk`.
-   - Lesefehler, Pending Sectors, Media Errors: sofort Image ziehen, Skill `frs-image-zuerst`.
+   - Disk verschwindet oder hängt nach kurzer Zeit: Skill `lf-haengende-disk`.
+   - Lesefehler, Pending Sectors, Media Errors: sofort Image ziehen, Skill `lf-image-zuerst`.
    - Unauffällig: trotzdem zuerst ein Image, wenn die Daten wichtig sind.
 
 ## Bekannte Problemfassungen
 
 Die Liste nennt öffentlich bekannte Fehlerbilder. Trifft eine zu, steht das im Bericht
-(Skill `frs-bericht`), zusammen mit der Empfehlung, die Disk nicht weiter zu verwenden.
+(Skill `lf-bericht`), zusammen mit der Empfehlung, die Disk nicht weiter zu verwenden.
 
 | Modell | Firmware | Fehlerbild |
 |---|---|---|

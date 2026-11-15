@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # Bootet die ISO in QEMU und prüft die serielle Ausgabe.
 #
-#   tests/qemu-smoke.sh ISO uefi       ISO als CD per UEFI (OVMF) booten, auf "frs ready" warten
+#   tests/qemu-smoke.sh ISO uefi       ISO als CD per UEFI (OVMF) booten, auf "lf ready" warten
 #   tests/qemu-smoke.sh ISO uefi-usb   ISO als USB-Stick per UEFI booten, neben einer fremden Disk
-#   tests/qemu-smoke.sh ISO bios       ISO als CD per BIOS booten, auf "frs ready" warten
-#   tests/qemu-smoke.sh ISO selftest   Kernel direkt mit frs.selftest starten, Selbsttest auswerten
+#   tests/qemu-smoke.sh ISO bios       ISO als CD per BIOS booten, auf "lf ready" warten
+#   tests/qemu-smoke.sh ISO selftest   Kernel direkt mit lf.selftest starten, Selbsttest auswerten
 #
 # In uefi-usb und selftest hängt zusätzlich eine fremde Disk am Rechner, die sich als der Stick
 # ausgibt: gleiche UUID und gleiches Label wie die ISO, /.disk/info, eine eigene grub.cfg und ein
@@ -42,16 +42,16 @@ foreign() {
 	uuid=$(blkid -o value -s UUID "$ISO")
 	[[ $uuid =~ ^[0-9]{4}(-[0-9]{2}){6}$ ]] || { echo "UUID der ISO nicht lesbar: '$uuid'" >&2; exit 2; }
 	mkdir -p "$d/.disk" "$d/boot/grub" "$d/casper"
-	echo "Firestrike Rescue - fremde Disk" >"$d/.disk/info"
+	echo "Leuchtfeuer - fremde Disk" >"$d/.disk/info"
 	cat >"$d/boot/grub/grub.cfg" <<-'EOF'
 		serial --unit=0 --speed=115200
 		terminal_output serial console
-		echo "FRS-GEKAPERT: grub.cfg von der fremden Disk"
+		echo "LF-GEKAPERT: grub.cfg von der fremden Disk"
 		sleep 5
 		halt
 	EOF
 	head -c $((1024 * 1024)) /dev/urandom >"$d/casper/filesystem.squashfs"
-	xorriso -as mkisofs -r -V FRS_RESCUE --modification-date="${uuid//-/}" -o "$work/fremd.iso" "$d" >/dev/null 2>&1
+	xorriso -as mkisofs -r -V LEUCHTFEUER --modification-date="${uuid//-/}" -o "$work/fremd.iso" "$d" >/dev/null 2>&1
 	[[ $(blkid -o value -s UUID "$work/fremd.iso") == "$uuid" ]] || { echo "Die fremde Disk hat nicht die UUID der ISO" >&2; exit 2; }
 	# ide-hd nimmt kein schreibgeschütztes Laufwerk an. snapshot=on: Schreibzugriffe landen in
 	# einer temporären Ebene, das Abbild bleibt unverändert. Auf q35 hat jeder IDE-Bus (AHCI-Port)
@@ -64,20 +64,20 @@ case $MODE in
 uefi)
 	ovmf
 	QEMU+=("${CD[@]}")
-	EXPECT="frs ready"
+	EXPECT="lf ready"
 	;;
 uefi-usb)
 	ovmf
 	foreign
 	QEMU+=("${FOREIGN[@]}" -device qemu-xhci
 		-drive "file=$ISO,format=raw,if=none,id=stick,snapshot=on" -device "usb-storage,drive=stick,bootindex=1")
-	EXPECT="frs ready"
+	EXPECT="lf ready"
 	# Der Start-Stub auf der EFI-Partition hat das Medium auf dem Stick gewählt.
-	AFTER=("Firestrike Rescue: Startmedium (")
+	AFTER=("Leuchtfeuer: Startmedium (")
 	;;
 bios)
 	QEMU+=(-machine pc "${CD[@]}")
-	EXPECT="frs ready"
+	EXPECT="lf ready"
 	;;
 selftest)
 	foreign
@@ -87,10 +87,10 @@ selftest)
 	# Leitung dabei auf: Was der Selbsttest danach ausgibt, ginge verloren, auch sein Ergebnis.
 	# Deshalb gibt es in diesem Lauf keinen Login-Prompt auf der seriellen Konsole.
 	QEMU+=(-machine q35 "${FOREIGN[@]}" "${CD[@]}" -kernel "$work/vmlinuz" -initrd "$work/initrd"
-		-append "boot=casper live-media=/run/frs-medium noswap systemd.swap=0 fsck.mode=skip noprompt console=ttyS0,115200 frs.selftest systemd.mask=serial-getty@ttyS0.service systemd.getty_auto=0")
-	EXPECT="FRS-SELFTEST: PASS"
+		-append "boot=casper live-media=/run/lf-medium noswap systemd.swap=0 fsck.mode=skip noprompt console=ttyS0,115200 lf.selftest systemd.mask=serial-getty@ttyS0.service systemd.getty_auto=0")
+	EXPECT="LF-SELFTEST: PASS"
 	# Gewählt ist die CD, die fremde Disk mit gleicher UUID wurde gesehen und abgelehnt.
-	AFTER=("FRS-SELFTEST: Boot: Live-Medium geprüft (/dev/sr0), Disks mit der UUID der ISO: 2")
+	AFTER=("LF-SELFTEST: Boot: Live-Medium geprüft (/dev/sr0), Disks mit der UUID der ISO: 2")
 	;;
 *) echo "Unbekannter Modus: $MODE" >&2; exit 2 ;;
 esac
@@ -101,22 +101,22 @@ pid=$!
 trap 'kill $pid 2>/dev/null || true' EXIT
 
 for ((t = 0; t < TIMEOUT; t += 5)); do
-	if grep -aq "FRS-GEKAPERT" "$LOG"; then
+	if grep -aq "LF-GEKAPERT" "$LOG"; then
 		echo "FEHLER: Die grub.cfg der fremden Disk wurde geladen."
 		tail -n 40 "$LOG"
 		exit 1
 	fi
 	if grep -aq "$EXPECT" "$LOG"; then
 		echo "OK: '$EXPECT' nach ${t}s gefunden."
-		grep -a 'FRS-SELFTEST\|frs ready\|Firestrike Rescue:' "$LOG" || true
+		grep -a 'LF-SELFTEST\|lf ready\|Leuchtfeuer:' "$LOG" || true
 		for a in "${AFTER[@]}"; do
 			grep -aqF "$a" "$LOG" || { echo "FEHLER: '$a' fehlt in der seriellen Ausgabe."; exit 1; }
 		done
 		exit 0
 	fi
-	if grep -aq "FRS-SELFTEST: FAIL" "$LOG"; then
+	if grep -aq "LF-SELFTEST: FAIL" "$LOG"; then
 		echo "Selbsttest fehlgeschlagen:"
-		grep -a 'FRS-SELFTEST' "$LOG"
+		grep -a 'LF-SELFTEST' "$LOG"
 		exit 1
 	fi
 	kill -0 $pid 2>/dev/null || break

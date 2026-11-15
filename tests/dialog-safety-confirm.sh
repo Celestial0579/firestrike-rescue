@@ -17,7 +17,7 @@ for t in whiptail script jq; do
 done
 
 T=$(mktemp -d)
-WAIT=${FRS_TEST_WAIT:-2} # Sekunden, bis der Dialog steht und Tasten ankommen dürfen
+WAIT=${LF_TEST_WAIT:-2} # Sekunden, bis der Dialog steht und Tasten ankommen dürfen
 
 # Läuft im Pseudo-Terminal: echte Bibliotheken, nur die Disk ist ausgedacht.
 cat >"$T/innen.sh" <<'EOF'
@@ -28,8 +28,8 @@ cd "$REPO" || exit 1
 . rescue/lib/common.sh
 . rescue/lib/disks.sh
 . rescue/lib/safety.sh
-FRS_LOG=/dev/null
-UI_BACKTITLE="Firestrike Rescue Dialogtest"
+LF_LOG=/dev/null
+UI_BACKTITLE="Leuchtfeuer Dialogtest"
 disk_info() {
 	case $FALL in
 	sn) echo '{"path":"/dev/sdb","size":500107862016,"model":"Testdisk","serial":"S5Y1NJ0R123456","wwn":"0x5002538f12345678","tran":"usb"}' ;;

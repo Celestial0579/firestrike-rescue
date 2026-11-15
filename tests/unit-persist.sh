@@ -3,12 +3,12 @@
 #
 # Wer den Speicher stellt, bestimmt die Sitzung: Aus ihm kommen Programme (~/.local/bin), Regeln
 # und Einstellungen für Claude, SSH-Schlüssel und WLAN-Profile. Bisher galt jede Partition mit dem
-# Namen FRS-DATA als eigener Speicher, auf welcher Disk auch immer. War sie unverschlüsselt, wurde
-# sie ohne Rückfrage eingehängt und ihre frs.conf als Shell-Code gelesen. Der Test prüft:
+# Namen LF-DATA als eigener Speicher, auf welcher Disk auch immer. War sie unverschlüsselt, wurde
+# sie ohne Rückfrage eingehängt und ihre lf.conf als Shell-Code gelesen. Der Test prüft:
 #   - der Boot-Stick ist das eingehängte Live-Medium, nicht irgendeine Disk mit dem Label der ISO,
-#   - der Speicher ist nur die Partition FRS-DATA auf diesem Stick,
+#   - der Speicher ist nur die Partition LF-DATA auf diesem Stick,
 #   - ein unverschlüsselter Speicher wird nie ohne Rückfrage eingebunden,
-#   - frs.conf wird als Daten gelesen: Nichts daraus wird ausgeführt.
+#   - lf.conf wird als Daten gelesen: Nichts daraus wird ausgeführt.
 # Ohne root und ohne Disks: lsblk, blkid, findmnt, sudo und die Dialoge sind Attrappen.
 set -u
 cd "$(dirname "$0")/.." || exit 1
@@ -26,23 +26,23 @@ check() {
 }
 markers() { compgen -G "$T/MARKE-*" >/dev/null; }
 
-FRS_RUN="$T/run"
-FRS_PERSIST="$T/persist"
-FRS_LOG=/dev/null
+LF_RUN="$T/run"
+LF_PERSIST="$T/persist"
+LF_LOG=/dev/null
 HOME="$T/home"
 # Aus claude.sh: Claude läuft als eigener Benutzer, sein Home kommt vom Speicher.
-CLAUDE_USER=frs-claude
+CLAUDE_USER=lf-claude
 CLAUDE_HOME="$T/claude-home"
 claude_as() { sudo -u "$CLAUDE_USER" -H "$@"; }
-PERSIST_CONFIG="$T/etc-frs/frs.conf"
-PERSIST_MAPPER_DEV="$T/mapper-frs-data"
-mkdir -p "$FRS_RUN" "$HOME" "$T/etc-frs"
+PERSIST_CONFIG="$T/etc-lf/lf.conf"
+PERSIST_MAPPER_DEV="$T/mapper-lf-data"
+mkdir -p "$LF_RUN" "$HOME" "$T/etc-lf"
 
 # ---------------------------------------------------------------------------
 # Die gedachte Maschine. Jede Variable beschreibt, was ein Werkzeug meldet.
 #   CDROM         Quelle von /cdrom laut findmnt
 #   BLOCKDEVS     Pfade, die Blockgeräte sind
-#   ISO_LABEL     Geräte mit dem Label FRS_RESCUE laut blkid, in dieser Reihenfolge
+#   ISO_LABEL     Geräte mit dem Label LEUCHTFEUER laut blkid, in dieser Reihenfolge
 #   PARTS         Zeilen "PFAD DISK PARTLABEL LABEL TYP": Partitionen und ihr Inhalt laut blkid
 # ---------------------------------------------------------------------------
 findmnt() { [[ -n $CDROM ]] && echo "$CDROM"; }
@@ -52,15 +52,15 @@ is_blockdev() { [[ " $BLOCKDEVS " == *" $1 "* ]]; }
 blkid() {
 	local d path disk partlabel label type
 	case "$*" in
-	*LABEL=FRS_RESCUE*) for d in $ISO_LABEL; do echo "$d"; done ;;
-	*PARTLABEL=FRS-DATA*)
+	*LABEL=LEUCHTFEUER*) for d in $ISO_LABEL; do echo "$d"; done ;;
+	*PARTLABEL=LF-DATA*)
 		while read -r path disk partlabel label type; do
-			[[ $partlabel == FRS-DATA ]] && echo "$path"
+			[[ $partlabel == LF-DATA ]] && echo "$path"
 		done <<<"$PARTS"
 		;;
-	*LABEL=FRS-DATA*)
+	*LABEL=LF-DATA*)
 		while read -r path disk partlabel label type; do
-			[[ $label == FRS-DATA ]] && echo "$path"
+			[[ $label == LF-DATA ]] && echo "$path"
 		done <<<"$PARTS"
 		;;
 	esac
@@ -125,7 +125,7 @@ ui_password() {
 # fresh   Vergisst, was frühere Aufrufe hinterlassen haben.
 fresh() {
 	rm -f "$T/sudo" "$T/log" "$T/msg" "$T/yesno" "$T/password" "$T/bind" "$PERSIST_MAPPER_DEV"
-	rm -f "$FRS_RUN"/persist-*
+	rm -f "$LF_RUN"/persist-*
 }
 # Ergebnis des letzten Aufrufs: SUDO (Aufrufe hinter sudo), MSG, YESNO, BIND.
 result() {
@@ -143,10 +143,10 @@ normal() {
 	CDROM=/dev/sdb1
 	BLOCKDEVS="/dev/sdb1 /dev/sdb /dev/sr0"
 	ISO_LABEL="/dev/sda2 /dev/sdb /dev/sdb1"
-	PARTS="/dev/sda2 /dev/sda - FRS_RESCUE iso9660
-/dev/sda9 /dev/sda FRS-DATA FRS-DATA ext4
-/dev/sdb1 /dev/sdb - FRS_RESCUE iso9660
-/dev/sdb3 /dev/sdb FRS-DATA FRS-DATA crypto_LUKS"
+	PARTS="/dev/sda2 /dev/sda - LEUCHTFEUER iso9660
+/dev/sda9 /dev/sda LF-DATA LF-DATA ext4
+/dev/sdb1 /dev/sdb - LEUCHTFEUER iso9660
+/dev/sdb3 /dev/sdb LF-DATA LF-DATA crypto_LUKS"
 }
 
 # ---------------------------------------------------------------------------
@@ -165,38 +165,50 @@ check "kein Live-Medium, kein Label: kein Boot-Stick" '! boot_disk >/dev/null'
 # ---------------------------------------------------------------------------
 echo "Welche Partition ist der eigene Speicher:"
 normal
-check "FRS-DATA auf dem Stick, nicht die gleichnamige auf der internen Disk" '[[ $(persist_find) == /dev/sdb3 ]]'
+check "LF-DATA auf dem Stick, nicht die gleichnamige auf der internen Disk" '[[ $(persist_find) == /dev/sdb3 ]]'
 check "die fremde Partition wird als fremd erkannt" '[[ $(persist_foreign) == /dev/sda9 ]]'
-PARTS="/dev/sda9 /dev/sda FRS-DATA FRS-DATA ext4
-/dev/sdb1 /dev/sdb - FRS_RESCUE iso9660"
+PARTS="/dev/sda9 /dev/sda LF-DATA LF-DATA ext4
+/dev/sdb1 /dev/sdb - LEUCHTFEUER iso9660"
 check "nur auf der fremden Disk: kein eigener Speicher" '! persist_find >/dev/null && [[ -z $(persist_find) ]]'
-PARTS="/dev/sdb1 /dev/sdb - FRS_RESCUE iso9660
-/dev/sdb3 /dev/sdb FRS-DATA FRS-DATA ext4
-/dev/sdb4 /dev/sdb FRS-DATA - ext4"
+PARTS="/dev/sdb1 /dev/sdb - LEUCHTFEUER iso9660
+/dev/sdb3 /dev/sdb LF-DATA LF-DATA ext4
+/dev/sdb4 /dev/sdb LF-DATA - ext4"
 check "zwei Partitionen mit dem Namen auf dem Stick: kein eigener Speicher" '[[ -z $(persist_find) ]]'
-PARTS="/dev/sdb1 /dev/sdb - FRS_RESCUE iso9660
-/dev/sdb3 /dev/sdb - FRS-DATA ext4"
+PARTS="/dev/sdb1 /dev/sdb - LEUCHTFEUER iso9660
+/dev/sdb3 /dev/sdb - LF-DATA ext4"
 check "nur das Dateisystem trägt den Namen: gilt auf dem Stick auch" '[[ $(persist_find) == /dev/sdb3 ]]'
+echo "Übergang von firestrike-rescue (eine Beta lang): FRS-DATA gilt wie LF-DATA:"
+PARTS="/dev/sdb1 /dev/sdb - LEUCHTFEUER iso9660
+/dev/sdb3 /dev/sdb FRS-DATA FRS-DATA crypto_LUKS"
+check "FRS-DATA auf dem Stick ist der eigene Speicher" '[[ $(persist_find) == /dev/sdb3 ]]'
+PARTS="/dev/sda9 /dev/sda FRS-DATA FRS-DATA ext4
+/dev/sdb1 /dev/sdb - LEUCHTFEUER iso9660"
+check "FRS-DATA auf der fremden Disk: kein eigener Speicher" '[[ -z $(persist_find) ]]'
+check "FRS-DATA auf der fremden Disk wird als fremd erkannt" '[[ $(persist_foreign) == /dev/sda9 ]]'
+PARTS="/dev/sdb1 /dev/sdb - LEUCHTFEUER iso9660
+/dev/sdb3 /dev/sdb LF-DATA LF-DATA ext4
+/dev/sdb4 /dev/sdb FRS-DATA FRS-DATA ext4"
+check "LF-DATA und FRS-DATA auf dem Stick: kein eigener Speicher" '[[ -z $(persist_find) ]]'
 normal
 CDROM=/dev/shm
 check "Boot-Stick nicht sicher erkennbar: kein eigener Speicher" '[[ -z $(persist_find) ]]'
 check "dann gelten alle gleichnamigen Partitionen als fremd" '[[ $(persist_foreign | tr "\n" " ") == "/dev/sda9 /dev/sdb3 " ]]'
 normal
-printf 'FRS_BOOT_DEV=/dev/sdb\nFRS_BOOT_DISKS=2\n' >"$T/frs-boot.env"
-FRS_BOOT_ENV="$T/frs-boot.env"
+printf 'LF_BOOT_DEV=/dev/sdb\nLF_BOOT_DISKS=2\n' >"$T/lf-boot.env"
+LF_BOOT_ENV="$T/lf-boot.env"
 check "trug beim Start eine weitere Disk die UUID der ISO: kein eigener Speicher" '! persist_find >/dev/null && [[ -z $(persist_find) ]]'
-printf 'FRS_BOOT_DEV=/dev/sdb\nFRS_BOOT_DISKS=1\n' >"$T/frs-boot.env"
+printf 'LF_BOOT_DEV=/dev/sdb\nLF_BOOT_DISKS=1\n' >"$T/lf-boot.env"
 check "nur der Stick trug sie: Speicher wie bisher" '[[ $(persist_find) == /dev/sdb3 ]]'
-FRS_BOOT_ENV="$T/fehlt"
+LF_BOOT_ENV="$T/fehlt"
 
 # ---------------------------------------------------------------------------
 # Ab hier zählt, ob eingebunden wird. persist_bind wird dafür nur mitgeschrieben.
 persist_bind() { echo bind >>"$T/bind"; }
 
-echo "Angriff: nur die fremde Disk trägt eine unverschlüsselte Partition FRS-DATA:"
+echo "Angriff: nur die fremde Disk trägt eine unverschlüsselte Partition LF-DATA:"
 normal
-PARTS="/dev/sda9 /dev/sda FRS-DATA FRS-DATA ext4
-/dev/sdb1 /dev/sdb - FRS_RESCUE iso9660"
+PARTS="/dev/sda9 /dev/sda LF-DATA LF-DATA ext4
+/dev/sdb1 /dev/sdb - LEUCHTFEUER iso9660"
 # Auf dem Stick ist kein Platz für einen neuen Speicher, es folgt also kein Angebot zum Anlegen.
 persist_free_bytes() { echo 0; }
 fresh
@@ -225,8 +237,8 @@ PASSPHRASE="geheim" YESNO_RC=1
 persist_startup
 result
 check "die Passphrase wird verlangt, keine Ja-Nein-Frage" '[[ -s $T/password && -z $YESNO ]]'
-check "entsperrt wird die Partition auf dem Stick" '[[ $SUDO == *"cryptsetup open --key-file - /dev/sdb3 frs-data"* ]]'
-check "eingehängt ohne Gerätedateien und Setuid" '[[ $SUDO == *"mount -o noatime,nodev,nosuid $PERSIST_MAPPER_DEV $FRS_PERSIST"* ]]'
+check "entsperrt wird die Partition auf dem Stick" '[[ $SUDO == *"cryptsetup open --key-file - /dev/sdb3 lf-data"* ]]'
+check "eingehängt ohne Gerätedateien und Setuid" '[[ $SUDO == *"mount -o noatime,nodev,nosuid $PERSIST_MAPPER_DEV $LF_PERSIST"* ]]'
 check "eingebunden" '[[ $BIND == bind ]]'
 check "die fremde Partition wird trotzdem gemeldet und nie eingehängt" '[[ $MSG == *"/dev/sda9"* && $SUDO != *"/dev/sda9"* ]]'
 fresh
@@ -237,8 +249,8 @@ check "Passphrase abgebrochen: nichts eingehängt, nichts eingebunden" '[[ $SUDO
 
 echo "Eigener Speicher, unverschlüsselt:"
 normal
-PARTS="/dev/sdb1 /dev/sdb - FRS_RESCUE iso9660
-/dev/sdb3 /dev/sdb FRS-DATA FRS-DATA ext4"
+PARTS="/dev/sdb1 /dev/sdb - LEUCHTFEUER iso9660
+/dev/sdb3 /dev/sdb LF-DATA LF-DATA ext4"
 fresh
 YESNO_RC=1
 persist_startup
@@ -256,7 +268,7 @@ fresh
 YESNO_RC=0
 persist_startup
 result
-check "Ja: eingehängt ohne Gerätedateien und Setuid, eingebunden" '[[ $SUDO == *"mount -o noatime,nodev,nosuid /dev/sdb3 $FRS_PERSIST"* && $BIND == bind ]]'
+check "Ja: eingehängt ohne Gerätedateien und Setuid, eingebunden" '[[ $SUDO == *"mount -o noatime,nodev,nosuid /dev/sdb3 $LF_PERSIST"* && $BIND == bind ]]'
 
 echo "Anlegen:"
 fresh
@@ -266,31 +278,31 @@ result
 check "gibt es auf dem Stick schon einen Speicher, wird kein zweiter angelegt" '[[ $rc != 0 && $SUDO != *sgdisk* && $MSG == *"schon eine Partition"* ]]'
 
 # ---------------------------------------------------------------------------
-echo "frs.conf wird gelesen, nicht ausgeführt:"
+echo "lf.conf wird gelesen, nicht ausgeführt:"
 cat >"$PERSIST_CONFIG" <<EOF
 # Eigene Einstellungen
-FRS_TECHNIKER="Tim Beispiel"
+LF_TECHNIKER="Tim Beispiel"
 
-  FRS_TARGET_FS=exfat
+  LF_TARGET_FS=exfat
 touch $T/MARKE-zeile
-FRS_TARGET_FS=\$(touch $T/MARKE-ersetzung)
+LF_TARGET_FS=\$(touch $T/MARKE-ersetzung)
 PATH=$T/fremd:/usr/bin
-FRS_TECHNIKER="a"; touch $T/MARKE-semikolon
-export FRS_TARGET_FS=ext4
-FRS_TECHNIKER=\`touch $T/MARKE-backtick\`
-FRS_TARGET_FS=ntfs
-FRS_TARGET_FS=ext4 # Kommentar hinter dem Wert
-FRS_SSH_AUTOSTART=1
+LF_TECHNIKER="a"; touch $T/MARKE-semikolon
+export LF_TARGET_FS=ext4
+LF_TECHNIKER=\`touch $T/MARKE-backtick\`
+LF_TARGET_FS=ntfs
+LF_TARGET_FS=ext4 # Kommentar hinter dem Wert
+LF_SSH_AUTOSTART=1
 . $T/fremd.sh
 EOF
 echo "touch $T/MARKE-eingebunden" >"$T/fremd.sh"
 old_path=$PATH
-unset FRS_TECHNIKER FRS_TARGET_FS FRS_SSH_AUTOSTART
+unset LF_TECHNIKER LF_TARGET_FS LF_SSH_AUTOSTART
 persist_config_load "$PERSIST_CONFIG"
 rc=$?
 check "gelesen" '[[ $rc == 0 ]]'
-check "gültige Zeilen setzen ihre Einstellung" '[[ ${FRS_TECHNIKER:-} == "Tim Beispiel" && ${FRS_TARGET_FS:-} == exfat ]]'
-check "ein Name, den der Assistent nicht kennt, setzt nichts" '[[ -z ${FRS_SSH_AUTOSTART:-} ]]'
+check "gültige Zeilen setzen ihre Einstellung" '[[ ${LF_TECHNIKER:-} == "Tim Beispiel" && ${LF_TARGET_FS:-} == exfat ]]'
+check "ein Name, den der Assistent nicht kennt, setzt nichts" '[[ -z ${LF_SSH_AUTOSTART:-} ]]'
 check "jede andere Zeile ist als nicht übernommen vermerkt" '[[ ${PERSIST_CONFIG_REJECTED-} == " 5 6 7 8 9 10 11 12 13 14" ]]'
 check "PATH bleibt, wie er war" '[[ $PATH == "$old_path" ]]'
 check "nichts wurde ausgeführt: keine Markerdatei" '! markers'
@@ -298,32 +310,57 @@ check "nichts wurde ausgeführt: keine Markerdatei" '! markers'
 # Dasselbe über das echte persist_bind: Dort wurde die Datei bisher per "." eingelesen.
 # shellcheck disable=SC1091
 . rescue/lib/persist.sh
-PERSIST_CONFIG="$T/etc-frs/frs.conf"
+PERSIST_CONFIG="$T/etc-lf/lf.conf"
 fresh
-unset FRS_TECHNIKER FRS_TARGET_FS FRS_SSH_AUTOSTART
+unset LF_TECHNIKER LF_TARGET_FS LF_SSH_AUTOSTART
 persist_bind
 result
-check "persist_bind: Einstellungen übernommen" '[[ ${FRS_TECHNIKER:-} == "Tim Beispiel" && ${FRS_TARGET_FS:-} == exfat ]]'
+check "persist_bind: Einstellungen übernommen" '[[ ${LF_TECHNIKER:-} == "Tim Beispiel" && ${LF_TARGET_FS:-} == exfat ]]'
 check "persist_bind: nichts ausgeführt" '! markers && [[ $PATH == "$old_path" ]]'
-check "persist_bind: der Techniker erfährt, welche Zeilen nicht übernommen wurden" '[[ $MSG == "frs.conf|"*"nicht übernommen: 5 6 7 8 9 10 11 12 13 14"* ]]'
-check "persist_bind: das Home von Claude kommt vom Speicher" '[[ $SUDO == *"mount --bind $FRS_PERSIST/claude-home $CLAUDE_HOME"* ]]'
-check "persist_bind: die eigene CLAUDE.md legt Claude selbst an, nicht der Live-Benutzer" '[[ $SUDO == *"-u frs-claude -H test -f $CLAUDE_HOME/.claude/CLAUDE.md"* ]]'
+check "persist_bind: der Techniker erfährt, welche Zeilen nicht übernommen wurden" '[[ $MSG == "lf.conf|"*"nicht übernommen: 5 6 7 8 9 10 11 12 13 14"* ]]'
+check "persist_bind: das Home von Claude kommt vom Speicher" '[[ $SUDO == *"mount --bind $LF_PERSIST/claude-home $CLAUDE_HOME"* ]]'
+check "persist_bind: die eigene CLAUDE.md legt Claude selbst an, nicht der Live-Benutzer" '[[ $SUDO == *"-u lf-claude -H test -f $CLAUDE_HOME/.claude/CLAUDE.md"* ]]'
 rm -f "$PERSIST_CONFIG"
 fresh
 persist_bind
 result
 check "fehlt die Datei, legt persist_bind die Vorlage an, und sie ist gültig" '[[ -s $PERSIST_CONFIG && -z $MSG ]] && persist_config_load "$PERSIST_CONFIG" && [[ -z ${PERSIST_CONFIG_REJECTED-} ]]'
-printf 'FRS_TARGET_FS=ext4\r\nFRS_TECHNIKER="Erika Muster"\r\n' >"$PERSIST_CONFIG"
-unset FRS_TARGET_FS FRS_TECHNIKER
+printf 'LF_TARGET_FS=ext4\r\nLF_TECHNIKER="Erika Muster"\r\n' >"$PERSIST_CONFIG"
+unset LF_TARGET_FS LF_TECHNIKER
 persist_config_load "$PERSIST_CONFIG"
-check "Zeilenenden von Windows, Wert mit und ohne Anführungszeichen" '[[ ${FRS_TARGET_FS:-} == ext4 && ${FRS_TECHNIKER:-} == "Erika Muster" && -z $PERSIST_CONFIG_REJECTED ]]'
+check "Zeilenenden von Windows, Wert mit und ohne Anführungszeichen" '[[ ${LF_TARGET_FS:-} == ext4 && ${LF_TECHNIKER:-} == "Erika Muster" && -z $PERSIST_CONFIG_REJECTED ]]'
 rm -f "$PERSIST_CONFIG"
-echo 'FRS_TARGET_FS=exfat' >"$T/woanders.conf"
+echo 'LF_TARGET_FS=exfat' >"$T/woanders.conf"
 ln -s "$T/woanders.conf" "$PERSIST_CONFIG"
-unset FRS_TARGET_FS
+unset LF_TARGET_FS
 persist_config_load "$PERSIST_CONFIG"
 rc=$?
-check "eine Verknüpfung an Stelle der Datei wird nicht gelesen" '[[ $rc != 0 && -z ${FRS_TARGET_FS:-} ]]'
+check "eine Verknüpfung an Stelle der Datei wird nicht gelesen" '[[ $rc != 0 && -z ${LF_TARGET_FS:-} ]]'
+rm -f "$PERSIST_CONFIG"
+
+echo "Übergang von firestrike-rescue (eine Beta lang): frs.conf:"
+PERSIST_CONFIG_OLD="$T/etc-lf/frs.conf"
+printf 'FRS_TECHNIKER="Erika Muster"\nFRS_TARGET_FS=exfat\nFRS_SSH_AUTOSTART=1\n' >"$PERSIST_CONFIG_OLD"
+fresh
+unset LF_TARGET_FS LF_TECHNIKER LF_SSH_AUTOSTART
+persist_bind
+result
+check "fehlt die lf.conf, wird die frs.conf übernommen" '[[ -f $PERSIST_CONFIG ]] && cmp -s "$PERSIST_CONFIG" "$PERSIST_CONFIG_OLD"'
+check "die frs.conf selbst bleibt" '[[ -f $PERSIST_CONFIG_OLD ]]'
+check "ihre FRS-Namen gelten als die LF-Namen" '[[ ${LF_TECHNIKER:-} == "Erika Muster" && ${LF_TARGET_FS:-} == exfat ]]'
+check "ein FRS-Name, den der Assistent nicht kennt, setzt nichts und wird gemeldet" '[[ -z ${LF_SSH_AUTOSTART:-} && $MSG == "lf.conf|"*"nicht übernommen: 3"* ]]'
+echo 'LF_TARGET_FS=ext4' >"$PERSIST_CONFIG"
+fresh
+unset LF_TARGET_FS LF_TECHNIKER
+persist_bind
+check "gibt es die lf.conf schon, gilt nur sie" '[[ ${LF_TARGET_FS:-} == ext4 && -z ${LF_TECHNIKER:-} ]]'
+rm -f "$PERSIST_CONFIG" "$PERSIST_CONFIG_OLD"
+echo 'FRS_TARGET_FS=exfat' >"$T/woanders.conf"
+ln -s "$T/woanders.conf" "$PERSIST_CONFIG_OLD"
+fresh
+unset LF_TARGET_FS
+persist_bind
+check "eine Verknüpfung an Stelle der frs.conf wird nicht übernommen" '[[ -z ${LF_TARGET_FS:-} ]] && ! grep -q FRS_ "$PERSIST_CONFIG"'
 
 rm -rf "$T"
 ((fails == 0)) && echo "Alle Tests bestanden." || { echo "$fails Test(s) fehlgeschlagen."; exit 1; }

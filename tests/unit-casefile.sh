@@ -4,7 +4,7 @@
 # Der Fallordner liegt auf der Ziel-Disk, also auf einem Datenträger aus fremder Hand. Der Test
 # legt präparierte Falldateien an, deren Inhalt eine Markerdatei erzeugen würde, sobald irgendwer
 # ihn als Shell-Code liest, und prüft, dass keine entsteht: mit der Bibliothek allein und mit dem
-# echten frs-rescue-run (ohne root und ohne Disks, das Skript endet vor dem ersten Zugriff).
+# echten lf-rescue-run (ohne root und ohne Disks, das Skript endet vor dem ersten Zugriff).
 set -u
 cd "$(dirname "$0")/.." || exit 1
 export LC_ALL=C.UTF-8
@@ -53,7 +53,7 @@ rc=$?
 check "gelesen" '[[ $rc == 0 && $(casefile_get STATE) == new && $(casefile_get SRC_SIZE) == 500107862016 ]]'
 check "fehlender Schlüssel liefert die Vorgabe" '[[ $(casefile_get PHASE_DONE 0) == 0 && -z $(casefile_get STARTED) ]]'
 casefile_set "$T/neu/case.env" STATE running &&
-	casefile_set "$T/neu/case.env" SRC_PATH /dev/mapper/frs-bad &&
+	casefile_set "$T/neu/case.env" SRC_PATH /dev/mapper/lf-bad &&
 	casefile_set "$T/neu/case.env" STARTED "2026-11-12T09:33:59+01:00" &&
 	casefile_set "$T/neu/case.env" PHASE_DONE 2
 rc=$?
@@ -114,14 +114,14 @@ casefile_load "$T/crlf/case.env"
 rc=$?
 check "Zeilenenden von Windows und Leerzeile am Ende" '[[ $rc == 0 && $(casefile_get STATE) == new ]]'
 mkdir -p "$T/pfad"
-printf '%s\n' 'SRC_ID="/dev/mapper/frs-bad"' 'SRC_SIZE="67108864"' 'SRC_LABEL="Selbsttest (dm-error)"' 'STATE="done"' >"$T/pfad/case.env"
+printf '%s\n' 'SRC_ID="/dev/mapper/lf-bad"' 'SRC_SIZE="67108864"' 'SRC_LABEL="Selbsttest (dm-error)"' 'STATE="done"' >"$T/pfad/case.env"
 casefile_load "$T/pfad/case.env"
 rc=$?
-check "Kennung als Gerätepfad (Selbsttest)" '[[ $rc == 0 && $(casefile_get SRC_ID) == /dev/mapper/frs-bad ]]'
+check "Kennung als Gerätepfad (Selbsttest)" '[[ $rc == 0 && $(casefile_get SRC_ID) == /dev/mapper/lf-bad ]]'
 
 # ---------------------------------------------------------------------------
 # Präparierte Dateien. Jede würde, als Shell-Code gelesen, $T/MARKE-… anlegen oder das Skript
-# umlenken. Die ersten sechs sind am bisherigen frs-rescue-run nachgestellt.
+# umlenken. Die ersten sechs sind am bisherigen lf-rescue-run nachgestellt.
 bad befehl <<EOF
 SRC_ID="GIBT-ES-NICHT\$(touch $T/MARKE-befehl)"
 SRC_SIZE="1"
@@ -215,7 +215,7 @@ SRC_LABEL="Test\disk"
 STATE="new"
 EOF
 bad auswaerts <<EOF
-SRC_ID="/dev/a/../../mnt/frs-target/FRS/x/geraet"
+SRC_ID="/dev/a/../../mnt/lf-target/LF/x/geraet"
 SRC_SIZE="1"
 STATE="new"
 EOF
@@ -259,13 +259,13 @@ check "Begründung nennt den fehlenden Schlüssel" '[[ $CASEFILE_ERROR == *"SRC_
 # ---------------------------------------------------------------------------
 # run NAME   Startet das echte Skript auf einem Fallordner. Ergebnis: RC, OUT.
 # Als Quelle ist ein Gerät genannt, das es nicht gibt: Gelesen wird in diesen Tests nie.
-NODISK=/dev/frs-test-gibt-es-nicht
+NODISK=/dev/lf-test-gibt-es-nicht
 run() {
-	OUT=$(bash rescue/bin/frs-rescue-run "$T/$1" "$NODISK" --no-pause 2>&1)
+	OUT=$(bash rescue/bin/lf-rescue-run "$T/$1" "$NODISK" --no-pause 2>&1)
 	RC=$?
 }
 
-echo "Präparierte Falldateien mit dem echten frs-rescue-run:"
+echo "Präparierte Falldateien mit dem echten lf-rescue-run:"
 for name in "${BAD[@]}"; do
 	sum=$(md5sum <"$T/$name/case.env")
 	run "$name"
@@ -293,7 +293,7 @@ check "Fallordner selbst als Verknüpfung: Abbruch" '[[ $RC == 2 && $OUT == *"ke
 check "Zustand des echten Ordners unberührt" '[[ $(casefile_peek "$T/echt/case.env" STATE) == new ]]'
 check "durch keine Verknüpfung wurde geschrieben" '! markers'
 
-echo "Gültige Falldatei mit dem echten frs-rescue-run (Quelle nicht angeschlossen):"
+echo "Gültige Falldatei mit dem echten lf-rescue-run (Quelle nicht angeschlossen):"
 good lauf
 run lauf
 check "Skript läuft bis zur Suche nach der Quelle" '[[ $RC == 1 && $OUT == *"$NODISK ist nicht (mehr) angeschlossen"* ]]'
@@ -326,7 +326,7 @@ chmod +x "$T/attrappen"/*
 # full NAME   Startet das echte Skript mit den Attrappen. Ergebnis: RC, OUT, CALLS (ddrescue-Aufrufe).
 full() {
 	: >"$T/aufrufe"
-	OUT=$(PATH="$T/attrappen:$PATH" DDRESCUE_CALLS="$T/aufrufe" bash rescue/bin/frs-rescue-run "$T/$1" /dev/sdz --no-pause 2>&1)
+	OUT=$(PATH="$T/attrappen:$PATH" DDRESCUE_CALLS="$T/aufrufe" bash rescue/bin/lf-rescue-run "$T/$1" /dev/sdz --no-pause 2>&1)
 	RC=$?
 	CALLS=$(wc -l <"$T/aufrufe")
 }
@@ -346,7 +346,7 @@ check "keine Reste im Fallordner" '! compgen -G "$T/ganz/case.env.*" >/dev/null'
 mkdir -p "$T/abbruch"
 casefile_create "$T/abbruch/case.env" "SRC_ID=GIBT-ES-DOCH-4711" "SRC_SIZE=500107862016" "STATE=new"
 : >"$T/aufrufe"
-OUT=$(PATH="$T/attrappen:$PATH" DDRESCUE_CALLS="$T/aufrufe" DDRESCUE_FAIL_AT=2 bash rescue/bin/frs-rescue-run "$T/abbruch" /dev/sdz --no-pause 2>&1)
+OUT=$(PATH="$T/attrappen:$PATH" DDRESCUE_CALLS="$T/aufrufe" DDRESCUE_FAIL_AT=2 bash rescue/bin/lf-rescue-run "$T/abbruch" /dev/sdz --no-pause 2>&1)
 RC=$?
 check "Fehler in Phase 2: unterbrochen, Phase 1 vermerkt" '[[ $RC != 0 && $(field abbruch STATE) == interrupted && $(field abbruch PHASE_DONE) == 1 ]]'
 started=$(field abbruch STARTED)

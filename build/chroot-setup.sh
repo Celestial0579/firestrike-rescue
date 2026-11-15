@@ -52,32 +52,32 @@ HOME="$inst_home" bash -c 'curl -fsSL https://claude.ai/install.sh | bash'
 claude_real="$(readlink -f "$inst_home/.local/bin/claude")"
 # Die CLI liegt neben dem Assistenten. /usr/local/bin/claude ist ein Skript aus rescue/bin, das
 # sie ohne Projekt-Einstellungen startet (--setting-sources user).
-install -m 0755 "$claude_real" /usr/local/lib/frs/claude-cli
+install -m 0755 "$claude_real" /usr/local/lib/lf/claude-cli
 rm -rf "$inst_home"
-/usr/local/lib/frs/claude-cli --version
+/usr/local/lib/lf/claude-cli --version
 # Auch wenn eine spätere ~/.bashrc ~/.local/bin wieder vorn in den PATH setzt: In jeder
 # interaktiven Shell ist "claude" das Skript des Rettungssystems.
 cat >>/etc/bash.bashrc <<'EOF'
 
-# Firestrike Rescue: claude immer ohne Projekt-Einstellungen (siehe /usr/local/bin/claude)
+# Leuchtfeuer: claude immer ohne Projekt-Einstellungen (siehe /usr/local/bin/claude)
 claude() { /usr/local/bin/claude "$@"; }
 EOF
 
-log "Benutzer für Claude: frs-claude, als root nur die frs-Werkzeuge"
+log "Benutzer für Claude: lf-claude, als root nur die lf-Werkzeuge"
 # Claude läuft nicht als Live-Benutzer (sudo ohne Passwort), sondern als eigener Benutzer ohne
 # Zugriff auf Blockgeräte und ohne Passwort. Gruppen: die eigene und render (GPU für Claude
-# Desktop, keine Bildschirm- oder Eingabegeräte). Als root darf er nur die frs-Werkzeuge starten:
-# frs-lesen (Diagnose) und frs-aufgabe (Rettungsaufgaben, nur auf das bestätigte Ziel).
-# Volles sudo gibt es nur zeitlich begrenzt, wenn der Techniker es freischaltet (frs-freigabe).
+# Desktop, keine Bildschirm- oder Eingabegeräte). Als root darf er nur die lf-Werkzeuge starten:
+# lf-lesen (Diagnose) und lf-aufgabe (Rettungsaufgaben, nur auf das bestätigte Ziel).
+# Volles sudo gibt es nur zeitlich begrenzt, wenn der Techniker es freischaltet (lf-freigabe).
 getent group render >/dev/null || groupadd --system render
-useradd --system --home-dir /var/lib/frs-claude --create-home --shell /bin/bash --groups render frs-claude
-chmod 700 /var/lib/frs-claude
-cat >/etc/sudoers.d/frs-claude <<'EOF'
-# Firestrike Rescue: Claude (frs-claude) darf als root nur die frs-Werkzeuge starten.
-frs-claude ALL=(root) NOPASSWD: /usr/local/bin/frs-lesen, /usr/local/bin/frs-aufgabe
+useradd --system --home-dir /var/lib/lf-claude --create-home --shell /bin/bash --groups render lf-claude
+chmod 700 /var/lib/lf-claude
+cat >/etc/sudoers.d/lf-claude <<'EOF'
+# Leuchtfeuer: Claude (lf-claude) darf als root nur die lf-Werkzeuge starten.
+lf-claude ALL=(root) NOPASSWD: /usr/local/bin/lf-lesen, /usr/local/bin/lf-aufgabe
 EOF
-chmod 0440 /etc/sudoers.d/frs-claude
-visudo -cf /etc/sudoers.d/frs-claude
+chmod 0440 /etc/sudoers.d/lf-claude
+visudo -cf /etc/sudoers.d/lf-claude
 
 log "Live-Benutzer und Autologin"
 # casper legt den Benutzer beim Boot an (sudo ohne Passwort).
@@ -92,8 +92,8 @@ log "Live-Benutzer und Autologin"
 # Die Datei kommt über den Hook von casper in die initrd (update-initramfs weiter unten).
 cat >/etc/casper.conf <<'EOF'
 export USERNAME="rescue"
-export USERFULLNAME="Firestrike Rescue"
-export HOST="frs"
+export USERFULLNAME="Leuchtfeuer"
+export HOST="lf"
 export BUILD_SYSTEM="Ubuntu"
 export FLAVOUR="Ubuntu"
 export LIVEMEDIA_TIMEOUT=3600
@@ -126,7 +126,7 @@ fi
 systemctl mask swap.target >/dev/null 2>&1 || true
 
 log "Dienste"
-systemctl enable frs-theme.service frs-ready.service frs-selftest.service NetworkManager.service
+systemctl enable lf-theme.service lf-ready.service lf-selftest.service NetworkManager.service
 # SSH nur auf Wunsch über den Assistenten
 systemctl disable ssh.service ssh.socket >/dev/null 2>&1 || true
 # Keine Wartezeit auf Netzwerk beim Booten

@@ -176,8 +176,8 @@ resize_erase() {
 	discard) runv sudo blkdiscard -f "$dev" ;;
 	ata)
 		if sudo hdparm -I "$dev" | grep -q 'not.*frozen'; then
-			runv sudo hdparm --user-master u --security-set-pass frs "$dev" &&
-				runv sudo hdparm --user-master u --security-erase frs "$dev"
+			runv sudo hdparm --user-master u --security-set-pass lf "$dev" &&
+				runv sudo hdparm --user-master u --security-erase lf "$dev"
 		else
 			echo "Die Disk ist 'frozen'. Rechner in den Standby schicken (Werkzeuge > Shell: systemctl suspend) und danach erneut versuchen,"
 			echo "oder Disk im laufenden Betrieb kurz ab- und wieder anstecken."

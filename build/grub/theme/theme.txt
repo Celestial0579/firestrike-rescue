@@ -1,8 +1,8 @@
-# Firestrike Rescue – GRUB-Theme
+# Leuchtfeuer – GRUB-Theme
 # Farben von firestrike.de: Grund #141715, Text #E8EBE7, Stahl hell #B4C6D1, Funke #E8A33D, Glut #AB5019
 
 desktop-color: "#141715"
-title-text: "Firestrike Rescue"
+title-text: "Leuchtfeuer"
 title-font: "@TITLE_FONT@"
 title-color: "#E8A33D"
 message-font: "@MENU_FONT@"

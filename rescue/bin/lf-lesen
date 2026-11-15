@@ -1,19 +1,19 @@
 #!/bin/bash
-# Firestrike Rescue: lesende Werkzeuge für Claude (Benutzer frs-claude).
+# Leuchtfeuer: lesende Werkzeuge für Claude (Benutzer lf-claude).
 #
 # Claude läuft als eigener Benutzer ohne Zugriff auf Blockgeräte und ohne sudo. Erlaubt ist ihm
-# nur dieses Programm (/etc/sudoers.d/frs-claude). Es kennt eine feste Liste von Aktionen, die
+# nur dieses Programm (/etc/sudoers.d/lf-claude). Es kennt eine feste Liste von Aktionen, die
 # nur lesen, prüft jedes Argument selbst und reicht keine Optionen an die Werkzeuge durch.
 # Schreibendes (Rettung, Klonen, Partitionieren, Kopieren aufs Ziel) gibt es nur im Assistenten.
 #
-#   frs-lesen disks                      Disks und Partitionen (lsblk)
-#   frs-lesen identitaet GERÄT           Modell, Firmware, Seriennummer, ohne Medienzugriff (smartctl -i)
-#   frs-lesen smart GERÄT                SMART-Werte und Fehlerprotokoll (smartctl -x)
-#   frs-lesen partitionen GERÄT          Partitionstabelle (sfdisk -d)
-#   frs-lesen dateisystem GERÄT          Typ, Label und UUID des Dateisystems (blkid -p)
-#   frs-lesen sektoren GERÄT START [N]   N Sektoren zu 512 Byte ab START als Hexdump (N ≤ 64)
-#   frs-lesen ldm GERÄT                  Metadaten eines dynamischen Windows-Datenträgers (ldmtool)
-#   frs-lesen kernel                     die letzten 200 Kernel-Meldungen
+#   lf-lesen disks                      Disks und Partitionen (lsblk)
+#   lf-lesen identitaet GERÄT           Modell, Firmware, Seriennummer, ohne Medienzugriff (smartctl -i)
+#   lf-lesen smart GERÄT                SMART-Werte und Fehlerprotokoll (smartctl -x)
+#   lf-lesen partitionen GERÄT          Partitionstabelle (sfdisk -d)
+#   lf-lesen dateisystem GERÄT          Typ, Label und UUID des Dateisystems (blkid -p)
+#   lf-lesen sektoren GERÄT START [N]   N Sektoren zu 512 Byte ab START als Hexdump (N ≤ 64)
+#   lf-lesen ldm GERÄT                  Metadaten eines dynamischen Windows-Datenträgers (ldmtool)
+#   lf-lesen kernel                     die letzten 200 Kernel-Meldungen
 #
 # GERÄT ist /dev/NAME einer Disk oder Partition, die es laut /sys/class/block gibt.
 set -u
@@ -22,7 +22,7 @@ export LC_ALL=C.UTF-8
 umask 077
 
 die() {
-	echo "frs-lesen: $*" >&2
+	echo "lf-lesen: $*" >&2
 	exit 2
 }
 

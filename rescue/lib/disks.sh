@@ -7,9 +7,9 @@ is_blockdev() { [[ -b $1 ]]; }
 # Gerät, von dem das Rettungssystem gestartet wurde (der Stick), z. B. /dev/sdb.
 #
 # Maßgeblich ist das eingehängte Live-Medium unter /cdrom: Von ihm läuft das System wirklich.
-# Das Label FRS_RESCUE zählt nur, wenn /cdrom kein Gerät mehr ist (Start "in den RAM"), und nur,
+# Das Label LEUCHTFEUER zählt nur, wenn /cdrom kein Gerät mehr ist (Start "in den RAM"), und nur,
 # wenn genau eine Disk es trägt. Ein Label kann jeder auf jede Disk schreiben: Eine fremde Disk
-# mit diesem Label gälte sonst als der Stick und ihre Partition FRS-DATA als eigener Speicher.
+# mit diesem Label gälte sonst als der Stick und ihre Partition LF-DATA als eigener Speicher.
 boot_disk() {
 	local dev pk cand disks=()
 	dev=$(findmnt -n -o SOURCE /cdrom 2>/dev/null | head -n1)
@@ -25,19 +25,19 @@ boot_disk() {
 		pk=$(lsblk -no PKNAME "$cand" 2>/dev/null | head -n1)
 		[[ -n $pk ]] && cand="/dev/$pk"
 		[[ " ${disks[*]} " == *" $cand "* ]] || disks+=("$cand")
-	done < <(blkid -t LABEL=FRS_RESCUE -o device 2>/dev/null)
+	done < <(blkid -t LABEL=LEUCHTFEUER -o device 2>/dev/null)
 	((${#disks[@]} == 1)) || return 1
 	echo "${disks[0]}"
 }
 
-# Gibt sich beim Start eine weitere Disk als der Stick aus? Das Skript casper-premount/frs_medium
-# der initrd zählt die Disks, die die UUID der ISO tragen (FRS_BOOT_DISKS). Mehr als eine heißt:
+# Gibt sich beim Start eine weitere Disk als der Stick aus? Das Skript casper-premount/lf_medium
+# der initrd zählt die Disks, die die UUID der ISO tragen (LF_BOOT_DISKS). Mehr als eine heißt:
 # Eine Disk ist eine Kopie des Sticks oder gibt sich als er aus. Welche Disk der Stick ist, lässt
 # sich dann nicht sicher sagen. Fehlt die Datei (älteres System, Tests), gilt der Stick als eindeutig.
-FRS_BOOT_ENV=${FRS_BOOT_ENV:-/run/frs-boot.env}
+LF_BOOT_ENV=${LF_BOOT_ENV:-/run/lf-boot.env}
 boot_medium_unique() {
 	local n
-	n=$(sed -n 's/^FRS_BOOT_DISKS=\([0-9]*\)$/\1/p' "$FRS_BOOT_ENV" 2>/dev/null)
+	n=$(sed -n 's/^LF_BOOT_DISKS=\([0-9]*\)$/\1/p' "$LF_BOOT_ENV" 2>/dev/null)
 	[[ -z $n || $n -le 1 ]]
 }
 
@@ -112,7 +112,7 @@ disk_label() {
 # Ergebnis wird pro Sitzung zwischengespeichert, weil smartctl bei defekten Disks langsam ist.
 disk_smart() {
 	local dev=$1 cache
-	cache="$FRS_RUN/smart-$(basename "$dev")"
+	cache="$LF_RUN/smart-$(basename "$dev")"
 	if [[ -f $cache && $(($(date +%s) - $(stat -c %Y "$cache"))) -lt 300 ]]; then
 		cat "$cache"
 		return

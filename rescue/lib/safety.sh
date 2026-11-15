@@ -13,7 +13,7 @@ safety_set_ro() {
 		run sudo blockdev --setro "$p" || true
 	done
 	log "Schreibschutz aktiv: $dev"
-	echo "$dev" | sudo tee -a "$FRS_RUN/readonly" >/dev/null
+	echo "$dev" | sudo tee -a "$LF_RUN/readonly" >/dev/null
 }
 
 safety_is_ro() {
@@ -27,14 +27,14 @@ safety_check_target() {
 	[[ -n $tdev ]] || { die "Ziel-Disk $tid ist nicht mehr da."; return 1; }
 	bd=$(boot_disk 2>/dev/null || true)
 	if [[ $tdev == "$bd" ]]; then
-		die "Der Firestrike-Rescue-Stick kann nicht als Ziel benutzt werden."
+		die "Der Leuchtfeuer-Stick kann nicht als Ziel benutzt werden."
 		return 1
 	fi
 	if [[ -n $sid && $tid == "$sid" ]]; then
 		die "Quelle und Ziel sind dieselbe Disk."
 		return 1
 	fi
-	if grep -qx "$tdev" "$FRS_RUN/readonly" 2>/dev/null || safety_is_ro "$tdev"; then
+	if grep -qx "$tdev" "$LF_RUN/readonly" 2>/dev/null || safety_is_ro "$tdev"; then
 		die "$tdev ist als Quelle schreibgeschützt und kann kein Ziel sein."
 		return 1
 	fi

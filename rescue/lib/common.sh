@@ -1,15 +1,15 @@
 # shellcheck shell=bash
 # Gemeinsame Funktionen: Protokoll, Oberfläche (whiptail), Hilfen.
 
-FRS_SHARE="${FRS_SHARE:-/usr/local/share/frs}"
-FRS_RUN="/run/frs"
-FRS_PERSIST="/persist"
-FRS_TARGET_MNT="/mnt/frs-target"
-FRS_IMAGE_MNT="/mnt/frs-image"
+LF_SHARE="${LF_SHARE:-/usr/local/share/lf}"
+LF_RUN="/run/lf"
+LF_PERSIST="/persist"
+LF_TARGET_MNT="/mnt/lf-target"
+LF_IMAGE_MNT="/mnt/lf-image"
 
 # shellcheck disable=SC1091
-[[ -r /etc/frs-release ]] && . /etc/frs-release
-FRS_VERSION="${FRS_VERSION:-dev}"
+[[ -r /etc/lf-release ]] && . /etc/lf-release
+LF_VERSION="${LF_VERSION:-dev}"
 
 # ---------------------------------------------------------------------------
 # Protokoll
@@ -18,28 +18,28 @@ FRS_VERSION="${FRS_VERSION:-dev}"
 # sonst im RAM. Zusätzlich kopiert jeder Rettungsfall sein Protokoll aufs Ziel.
 
 log_init() {
-	local dir="$FRS_RUN/logs"
-	mountpoint -q "$FRS_PERSIST" 2>/dev/null && dir="$FRS_PERSIST/logs"
-	sudo install -d -o "$(id -u)" -g "$(id -g)" "$dir" "$FRS_RUN" 2>/dev/null || mkdir -p "$dir"
-	if [[ -z ${FRS_LOG:-} || ! -f $FRS_LOG ]]; then
-		FRS_LOG="$dir/frs-$(date +%Y%m%d-%H%M%S).log"
-		: >"$FRS_LOG"
-	elif [[ $FRS_LOG != "$dir"/* ]]; then
+	local dir="$LF_RUN/logs"
+	mountpoint -q "$LF_PERSIST" 2>/dev/null && dir="$LF_PERSIST/logs"
+	sudo install -d -o "$(id -u)" -g "$(id -g)" "$dir" "$LF_RUN" 2>/dev/null || mkdir -p "$dir"
+	if [[ -z ${LF_LOG:-} || ! -f $LF_LOG ]]; then
+		LF_LOG="$dir/lf-$(date +%Y%m%d-%H%M%S).log"
+		: >"$LF_LOG"
+	elif [[ $LF_LOG != "$dir"/* ]]; then
 		# Persistenz wurde nachträglich eingehängt: Protokoll umziehen
-		cp "$FRS_LOG" "$dir/" && FRS_LOG="$dir/$(basename "$FRS_LOG")"
+		cp "$LF_LOG" "$dir/" && LF_LOG="$dir/$(basename "$LF_LOG")"
 	fi
-	export FRS_LOG
+	export LF_LOG
 }
 
 log() {
-	printf '%s %s\n' "$(date '+%F %T')" "$*" >>"${FRS_LOG:-/dev/null}"
+	printf '%s %s\n' "$(date '+%F %T')" "$*" >>"${LF_LOG:-/dev/null}"
 }
 
 # run CMD...   Führt einen Befehl aus, protokolliert Befehl, Ausgabe und Rückgabewert.
 run() {
 	log "\$ $*"
 	local rc=0
-	"$@" >>"${FRS_LOG:-/dev/null}" 2>&1 || rc=$?
+	"$@" >>"${LF_LOG:-/dev/null}" 2>&1 || rc=$?
 	log "  -> rc=$rc"
 	return "$rc"
 }
@@ -78,7 +78,7 @@ term_clean() {
 runv() {
 	log "\$ $*"
 	local rc
-	"$@" 2>&1 | term_clean | tee -a "${FRS_LOG:-/dev/null}"
+	"$@" 2>&1 | term_clean | tee -a "${LF_LOG:-/dev/null}"
 	rc=${PIPESTATUS[0]}
 	log "  -> rc=$rc"
 	return "$rc"
@@ -95,11 +95,11 @@ die() {
 # ---------------------------------------------------------------------------
 # whiptail zeichnet immer direkt auf /dev/tty, damit Dialoge auch aus $(…) heraus sichtbar sind.
 ui_init() {
-	if [[ -r $FRS_SHARE/theme/newt-colors ]]; then
-		NEWT_COLORS="$(grep -v '^#' "$FRS_SHARE/theme/newt-colors" | tr '\n' ' ')"
+	if [[ -r $LF_SHARE/theme/newt-colors ]]; then
+		NEWT_COLORS="$(grep -v '^#' "$LF_SHARE/theme/newt-colors" | tr '\n' ' ')"
 		export NEWT_COLORS
 	fi
-	UI_BACKTITLE="Firestrike Rescue $FRS_VERSION  ·  Protokoll: ${FRS_LOG:-–}"
+	UI_BACKTITLE="Leuchtfeuer $LF_VERSION  ·  Protokoll: ${LF_LOG:-–}"
 }
 
 _ui_size() {
@@ -266,7 +266,7 @@ tmux_run() {
 	if ! tmux has-session -t "$name" 2>/dev/null; then
 		tmux new-session -d -s "$name" -x 200 -y 50 "$@"
 		tmux set-option -t "$name" status-style "bg=colour4,fg=colour7" >/dev/null
-		tmux set-option -t "$name" status-left " Firestrike Rescue · $name " >/dev/null
+		tmux set-option -t "$name" status-left " Leuchtfeuer · $name " >/dev/null
 		tmux set-option -t "$name" status-left-length 60 >/dev/null
 		tmux set-option -t "$name" status-right " Strg+B, D = Ansicht verlassen (läuft weiter) " >/dev/null
 		tmux set-option -t "$name" status-right-length 60 >/dev/null

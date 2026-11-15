@@ -3,13 +3,13 @@
 # noexec, nosymfollow), und der Assistent prüft danach am Einhängepunkt, ob sie gelten.
 #
 # Was auf einer Ziel-Disk liegt, hat jemand anderes dorthin gelegt: Gerätedateien, Programme
-# mit Setuid, Verknüpfungen an Stelle von FRS, Fallordner oder image.img. Ohne die Optionen
+# mit Setuid, Verknüpfungen an Stelle von LF, Fallordner oder image.img. Ohne die Optionen
 # führt eine Verknüpfung image.img -> /dev/sda dazu, dass der Assistent die interne Disk für das
 # Image hält.
 #
 # Hier wird nichts eingehängt. sudo, mount und findmnt sind Attrappen: Ein gedachter Kernel
 # merkt sich, welche Optionen am Einhängepunkt gelten. Ob der echte Kernel die Optionen
-# durchsetzt, prüft der Selbsttest im gebooteten System (frs --selftest).
+# durchsetzt, prüft der Selbsttest im gebooteten System (lf --selftest).
 set -u
 cd "$(dirname "$0")/.." || exit 1
 
@@ -18,7 +18,7 @@ T=$(mktemp -d)
 . rescue/lib/common.sh
 # shellcheck disable=SC1091
 . rescue/lib/target.sh
-FRS_TARGET_MNT=/mnt/frs-target
+LF_TARGET_MNT=/mnt/lf-target
 
 log() { printf '%s\n' "$*" >>"$T/log"; }
 run() { "$@"; }
@@ -98,35 +98,35 @@ for fs in ext4 xfs btrfs ""; do
 	reset
 	mount_part "$fs"
 	check "eingehängt, am Einhängepunkt gelten alle Schutzoptionen" '[[ $RC == 0 ]] && safe'
-	check "Aufruf verlangt die Optionen" '[[ $CALLS == *"mount -o $ALL /dev/sdz1 /mnt/frs-target"* ]]'
+	check "Aufruf verlangt die Optionen" '[[ $CALLS == *"mount -o $ALL /dev/sdz1 /mnt/lf-target"* ]]'
 	check "kein Nachsetzen nötig" '[[ $CALLS != *remount* ]]'
 done
 
 echo "exFAT:"
 reset
 mount_part exfat
-check "eingehängt mit Schutzoptionen und Besitzer" '[[ $RC == 0 ]] && safe && [[ $CALLS == *"mount -o $ALL,uid=1000,gid=1000,umask=022 /dev/sdz1 /mnt/frs-target"* ]]'
+check "eingehängt mit Schutzoptionen und Besitzer" '[[ $RC == 0 ]] && safe && [[ $CALLS == *"mount -o $ALL,uid=1000,gid=1000,umask=022 /dev/sdz1 /mnt/lf-target"* ]]'
 
 echo "NTFS über den Kerneltreiber:"
 reset
 mount_part ntfs
-check "eingehängt mit Schutzoptionen und Besitzer" '[[ $RC == 0 ]] && safe && [[ $CALLS == *"mount -t ntfs3 -o $ALL,uid=1000,gid=1000,umask=022 /dev/sdz1 /mnt/frs-target"* ]]'
+check "eingehängt mit Schutzoptionen und Besitzer" '[[ $RC == 0 ]] && safe && [[ $CALLS == *"mount -t ntfs3 -o $ALL,uid=1000,gid=1000,umask=022 /dev/sdz1 /mnt/lf-target"* ]]'
 check "ntfs-3g wird nicht gebraucht" '[[ $CALLS != *ntfs-3g* ]]'
 reset
 OTHERS_WRITE=1 mount_part ntfs
-check "kann ein anderer Benutzer unter ntfs3 schreiben, hängt ntfs-3g mit umask=022 ein" '[[ $RC == 0 ]] && [[ $CALLS == *"-u nobody -n test -w /mnt/frs-target"* && $CALLS == *"ntfs-3g -o nodev,nosuid,noexec,uid=1000,gid=1000,umask=022 /dev/sdz1 /mnt/frs-target"* ]]'
+check "kann ein anderer Benutzer unter ntfs3 schreiben, hängt ntfs-3g mit umask=022 ein" '[[ $RC == 0 ]] && [[ $CALLS == *"-u nobody -n test -w /mnt/lf-target"* && $CALLS == *"ntfs-3g -o nodev,nosuid,noexec,uid=1000,gid=1000,umask=022 /dev/sdz1 /mnt/lf-target"* ]]'
 
 echo "NTFS über ntfs-3g (Kerneltreiber lehnt ab):"
 reset
 NTFS3_OK=0
 mount_part ntfs
-check "ntfs-3g bekommt nodev, nosuid und noexec" '[[ $CALLS == *"ntfs-3g -o nodev,nosuid,noexec,uid=1000,gid=1000,umask=022 /dev/sdz1 /mnt/frs-target"* ]]'
-check "nosymfollow wird am Einhängepunkt nachgesetzt" '[[ $CALLS == *"mount -i -o remount,bind,$ALL /mnt/frs-target"* ]]'
+check "ntfs-3g bekommt nodev, nosuid und noexec" '[[ $CALLS == *"ntfs-3g -o nodev,nosuid,noexec,uid=1000,gid=1000,umask=022 /dev/sdz1 /mnt/lf-target"* ]]'
+check "nosymfollow wird am Einhängepunkt nachgesetzt" '[[ $CALLS == *"mount -i -o remount,bind,$ALL /mnt/lf-target"* ]]'
 check "danach gelten alle Schutzoptionen" '[[ $RC == 0 ]] && safe'
 reset
 NTFS3_OK=0 REMOUNT_OK=0
 mount_part ntfs
-check "Nachsetzen scheitert: Ziel abgelehnt und wieder ausgehängt" '[[ $RC != 0 && -z $OPTS && $CALLS == *"umount /mnt/frs-target"* ]]'
+check "Nachsetzen scheitert: Ziel abgelehnt und wieder ausgehängt" '[[ $RC != 0 && -z $OPTS && $CALLS == *"umount /mnt/lf-target"* ]]'
 check "Grund steht im Protokoll" '[[ $LOG == *"Einhängen abgelehnt"*"nosymfollow"* ]]'
 
 echo "Der Kernel übernimmt eine Option nicht:"
@@ -145,7 +145,7 @@ echo "Am Einhängepunkt hängt noch etwas:"
 reset
 echo "rw,relatime" >"$T/mounted"
 mount_part ext4
-check "das Alte wird ausgehängt, das Neue gilt mit Schutzoptionen" '[[ $RC == 0 ]] && safe && [[ $(head -n2 "$T/sudo" | tail -n1) == "umount /mnt/frs-target" ]]'
+check "das Alte wird ausgehängt, das Neue gilt mit Schutzoptionen" '[[ $RC == 0 ]] && safe && [[ $(head -n2 "$T/sudo" | tail -n1) == "umount /mnt/lf-target" ]]'
 reset
 echo "rw,relatime" >"$T/mounted"
 UMOUNT_OK=0
@@ -162,12 +162,12 @@ reset
 echo "rw,relatime" >"$T/mounted"
 echo /dev/sdz1 >"$T/source"
 mount_part ext4
-check "ohne Schutzoptionen eingehängt: wird nicht übernommen, sondern neu eingehängt" '[[ $RC == 0 ]] && safe && [[ $CALLS == *"umount /mnt/frs-target"*"mount -o $ALL /dev/sdz1"* ]]'
+check "ohne Schutzoptionen eingehängt: wird nicht übernommen, sondern neu eingehängt" '[[ $RC == 0 ]] && safe && [[ $CALLS == *"umount /mnt/lf-target"*"mount -o $ALL /dev/sdz1"* ]]'
 reset
 echo "rw,relatime,$ALL" >"$T/mounted"
 echo /dev/sdy1 >"$T/source"
 mount_part ext4
-check "eine andere Partition hängt dort: wird ausgehängt, die gewählte eingehängt" '[[ $RC == 0 && $(cat "$T/source") == /dev/sdz1 && $CALLS == *"umount /mnt/frs-target"*"mount -o $ALL /dev/sdz1"* ]]'
+check "eine andere Partition hängt dort: wird ausgehängt, die gewählte eingehängt" '[[ $RC == 0 && $(cat "$T/source") == /dev/sdz1 && $CALLS == *"umount /mnt/lf-target"*"mount -o $ALL /dev/sdz1"* ]]'
 reset
 echo "rw,relatime,$ALL" >"$T/mounted"
 echo /dev/sdy1 >"$T/source"

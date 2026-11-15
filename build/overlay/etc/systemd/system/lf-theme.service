@@ -1,12 +1,12 @@
 [Unit]
-Description=Firestrike-Farbpalette für die Konsole
+Description=Leuchtfeuer-Farbpalette für die Konsole
 # Nach Ubuntus setvtrgb.service, das sonst die Standardpalette zurücksetzt
 After=systemd-vconsole-setup.service setvtrgb.service
 Before=getty@tty1.service
 
 [Service]
 Type=oneshot
-ExecStart=setvtrgb /usr/local/share/frs/theme/vtrgb
+ExecStart=setvtrgb /usr/local/share/lf/theme/vtrgb
 RemainAfterExit=yes
 
 [Install]

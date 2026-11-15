@@ -1,5 +1,5 @@
 # shellcheck shell=bash
-# Ziel-Disk für Images vorbereiten und einhängen (nach $FRS_TARGET_MNT).
+# Ziel-Disk für Images vorbereiten und einhängen (nach $LF_TARGET_MNT).
 
 # Dateisysteme, auf denen Images > 4 GiB abgelegt werden können.
 TARGET_FS_OK="ext4 ext3 xfs btrfs exfat ntfs"
@@ -9,7 +9,7 @@ TARGET_FS_OK="ext4 ext3 xfs btrfs exfat ntfs"
 #   nodev        Gerätedateien auf dem Ziel öffnen kein Gerät (image.img als Gerätedatei).
 #   nosuid       Setuid- und Setgid-Bits auf dem Ziel wirken nicht.
 #   noexec       Vom Ziel wird nichts ausgeführt.
-#   nosymfollow  Verknüpfungen auf dem Ziel werden nicht verfolgt (FRS, Fallordner oder
+#   nosymfollow  Verknüpfungen auf dem Ziel werden nicht verfolgt (LF, Fallordner oder
 #                image.img als Verknüpfung auf eine andere Stelle oder eine andere Disk).
 TARGET_MOUNT_OPTS=(nodev nosuid noexec nosymfollow)
 
@@ -22,58 +22,58 @@ target_mount_optstring() {
 target_mount_raw() {
 	local part=$1 fs=$2 opts own
 	opts=$(target_mount_optstring)
-	# Dateien gehören dem Assistenten. umask=022: Andere Benutzer, auch Claude (frs-claude), lesen nur.
+	# Dateien gehören dem Assistenten. umask=022: Andere Benutzer, auch Claude (lf-claude), lesen nur.
 	own="uid=$(id -u),gid=$(id -g),umask=022"
 	case $fs in
 	ntfs)
 		# ntfs3 wendet umask nur auf Dateien an, die nach dem Einhängen entstehen. Was schon auf
 		# der Disk liegt, auch das Wurzelverzeichnis, kann für alle beschreibbar bleiben. Dann wird
 		# mit ntfs-3g eingehängt, das die Maske auf alles anwendet. Andere Benutzer, auch Claude
-		# (frs-claude), schreiben so nie aufs Ziel.
-		if run sudo mount -t ntfs3 -o "$opts,$own" "$part" "$FRS_TARGET_MNT"; then
+		# (lf-claude), schreiben so nie aufs Ziel.
+		if run sudo mount -t ntfs3 -o "$opts,$own" "$part" "$LF_TARGET_MNT"; then
 			target_others_can_write || return 0
-			log "ntfs3: $FRS_TARGET_MNT ist für andere Benutzer beschreibbar, Wechsel zu ntfs-3g"
-			run sudo umount "$FRS_TARGET_MNT" || return 1
+			log "ntfs3: $LF_TARGET_MNT ist für andere Benutzer beschreibbar, Wechsel zu ntfs-3g"
+			run sudo umount "$LF_TARGET_MNT" || return 1
 		fi
 		target_mount_ntfs3g "$part"
 		;;
-	exfat) run sudo mount -o "$opts,$own" "$part" "$FRS_TARGET_MNT" ;;
-	*) run sudo mount -o "$opts" "$part" "$FRS_TARGET_MNT" ;;
+	exfat) run sudo mount -o "$opts,$own" "$part" "$LF_TARGET_MNT" ;;
+	*) run sudo mount -o "$opts" "$part" "$LF_TARGET_MNT" ;;
 	esac
 }
 
 # target_others_can_write   Kann ein anderer Benutzer als der Assistent im Ziel schreiben?
 target_others_can_write() {
-	sudo -u nobody -n test -w "$FRS_TARGET_MNT" 2>/dev/null
+	sudo -u nobody -n test -w "$LF_TARGET_MNT" 2>/dev/null
 }
 
 # Ersatzweg für NTFS, wenn der Kerneltreiber ntfs3 ablehnt. ntfs-3g (FUSE) kennt nosymfollow
 # nicht. Die Option setzt target_mount_secure danach am Einhängepunkt.
 target_mount_ntfs3g() {
-	run sudo ntfs-3g -o "nodev,nosuid,noexec,uid=$(id -u),gid=$(id -g),umask=022" "$1" "$FRS_TARGET_MNT"
+	run sudo ntfs-3g -o "nodev,nosuid,noexec,uid=$(id -u),gid=$(id -g),umask=022" "$1" "$LF_TARGET_MNT"
 }
 
 # Gelten am Einhängepunkt des Ziels wirklich alle Schutzoptionen (mount_has_opts in common.sh)?
-target_mount_has_opts() { mount_has_opts "$FRS_TARGET_MNT" "${TARGET_MOUNT_OPTS[@]}"; }
+target_mount_has_opts() { mount_has_opts "$LF_TARGET_MNT" "${TARGET_MOUNT_OPTS[@]}"; }
 
 # Setzt fehlende Schutzoptionen nach. Gelten danach nicht alle, wird das Ziel wieder ausgehängt:
 # lieber kein Ziel als eines ohne Schutz (mount_enforce in common.sh).
-target_mount_secure() { mount_enforce "$FRS_TARGET_MNT" "${TARGET_MOUNT_OPTS[@]}"; }
+target_mount_secure() { mount_enforce "$LF_TARGET_MNT" "${TARGET_MOUNT_OPTS[@]}"; }
 
 target_mount_part() {
 	local part=$1 fs
 	fs=$(lsblk -no FSTYPE "$part")
-	sudo install -d "$FRS_TARGET_MNT"
-	if mountpoint -q "$FRS_TARGET_MNT"; then
+	sudo install -d "$LF_TARGET_MNT"
+	if mountpoint -q "$LF_TARGET_MNT"; then
 		# Hängt genau diese Partition schon geschützt und beschreibbar dort, bleibt sie
 		# eingehängt. Ein Kopierlauf im Hintergrund, der das Ziel gerade benutzt, stört so nicht.
-		if [[ $(findmnt -n -o SOURCE -M "$FRS_TARGET_MNT" 2>/dev/null) == "$part" ]] && target_mount_has_opts && mount_has_opts "$FRS_TARGET_MNT" rw; then
+		if [[ $(findmnt -n -o SOURCE -M "$LF_TARGET_MNT" 2>/dev/null) == "$part" ]] && target_mount_has_opts && mount_has_opts "$LF_TARGET_MNT" rw; then
 			return 0
 		fi
 		# Zwei Dateisysteme übereinander am selben Punkt gibt es nicht: Dann ließe sich nicht
 		# mehr sagen, für welches die geprüften Optionen gelten.
-		if ! run sudo umount "$FRS_TARGET_MNT"; then
-			log "Ziel abgelehnt: $FRS_TARGET_MNT ist noch in Benutzung und lässt sich nicht aushängen."
+		if ! run sudo umount "$LF_TARGET_MNT"; then
+			log "Ziel abgelehnt: $LF_TARGET_MNT ist noch in Benutzung und lässt sich nicht aushängen."
 			return 1
 		fi
 	fi
@@ -83,30 +83,30 @@ target_mount_part() {
 	target_mount_secure || return 1
 	# Ein Ziel muss beschreibbar sein. Hängt es nur lesend (Gerät schreibgeschützt, Windows im
 	# Ruhezustand), wird es gleich abgelehnt und nicht erst beim Schreiben.
-	if ! mount_has_opts "$FRS_TARGET_MNT" rw; then
+	if ! mount_has_opts "$LF_TARGET_MNT" rw; then
 		log "Ziel abgelehnt: $part ließ sich nur lesend einhängen."
-		run sudo umount "$FRS_TARGET_MNT"
+		run sudo umount "$LF_TARGET_MNT"
 		return 1
 	fi
 	case $fs in
 	ntfs | exfat) ;;
-	*) run sudo chown "$(id -u):$(id -g)" "$FRS_TARGET_MNT" ;;
+	*) run sudo chown "$(id -u):$(id -g)" "$LF_TARGET_MNT" ;;
 	esac
 }
 
-target_fs() { findmnt -no FSTYPE "$FRS_TARGET_MNT" 2>/dev/null; }
+target_fs() { findmnt -no FSTYPE "$LF_TARGET_MNT" 2>/dev/null; }
 
-target_free() { df -B1 --output=avail "$FRS_TARGET_MNT" | tail -n1 | tr -d ' '; }
+target_free() { df -B1 --output=avail "$LF_TARGET_MNT" | tail -n1 | tr -d ' '; }
 
 # Ganze Disk neu einrichten: GPT, eine Partition, ext4 oder exFAT.
 target_format() {
 	local tid=$1 dev fs text="Welches Dateisystem soll das Ziel bekommen?" preset=()
 	dev=$(disk_resolve "$tid")
-	# FRS_TARGET_FS aus der frs.conf wählt nur vor. Entschieden wird hier, und bestätigt danach.
-	case ${FRS_TARGET_FS:-} in
+	# LF_TARGET_FS aus der lf.conf wählt nur vor. Entschieden wird hier, und bestätigt danach.
+	case ${LF_TARGET_FS:-} in
 	ext4 | exfat)
-		preset=(--default-item "$FRS_TARGET_FS")
-		text+="\nVorausgewählt ist $FRS_TARGET_FS (FRS_TARGET_FS in der frs.conf)."
+		preset=(--default-item "$LF_TARGET_FS")
+		text+="\nVorausgewählt ist $LF_TARGET_FS (LF_TARGET_FS in der lf.conf)."
 		;;
 	esac
 	fs=$(ui_menu "Ziel formatieren" "$text" "${preset[@]}" -- \
@@ -117,19 +117,19 @@ target_format() {
 	ui_info "Ziel formatieren" "Formatiere $dev als $fs …"
 	run sudo wipefs -a "$dev" &&
 		run sudo sgdisk -Z "$dev" &&
-		run sudo sgdisk -n 1:0:0 -t 1:"$([[ $fs == exfat ]] && echo 0700 || echo 8300)" -c 1:FRS-TARGET "$dev" &&
+		run sudo sgdisk -n 1:0:0 -t 1:"$([[ $fs == exfat ]] && echo 0700 || echo 8300)" -c 1:LF-TARGET "$dev" &&
 		run sudo partprobe "$dev" && sleep 2 || { die "Partitionieren von $dev fehlgeschlagen. Details im Protokoll."; return 1; }
 	local part
 	part=$(lsblk -nr -o PATH "$dev" | sed -n 2p)
 	if [[ $fs == exfat ]]; then
-		run sudo mkfs.exfat -L FRS-TARGET "$part"
+		run sudo mkfs.exfat -L LF-TARGET "$part"
 	else
-		run sudo mkfs.ext4 -F -L FRS-TARGET -m 0 -T largefile "$part"
+		run sudo mkfs.ext4 -F -L LF-TARGET -m 0 -T largefile "$part"
 	fi || { die "Formatieren fehlgeschlagen. Details im Protokoll."; return 1; }
 	target_mount_part "$part"
 }
 
-# target_prepare ZIEL-ID BENÖTIGTE-BYTES   -> Ziel ist danach unter $FRS_TARGET_MNT beschreibbar.
+# target_prepare ZIEL-ID BENÖTIGTE-BYTES   -> Ziel ist danach unter $LF_TARGET_MNT beschreibbar.
 target_prepare() {
 	local tid=$1 need=$2 dev items=() p path fs size label
 	dev=$(disk_resolve "$tid")
@@ -160,7 +160,7 @@ target_prepare() {
 			return 1
 		fi
 	fi
-	log "Ziel bereit: $FRS_TARGET_MNT ($(target_fs), $(human "$free") frei)"
+	log "Ziel bereit: $LF_TARGET_MNT ($(target_fs), $(human "$free") frei)"
 }
 
 # ---------------------------------------------------------------------------
@@ -187,21 +187,21 @@ target_search_fsopt() {
 
 # target_search_lock PARTITION   Schreibschutz auf Kernelebene für die Dauer der Suche. Rückgabe 0,
 # wenn die Partition danach schreibgeschützt ist. Welche Partition die Suche selbst gesperrt
-# hat, steht in $FRS_RUN/search-lock: Nur diesen Schutz hebt target_search_unlock wieder auf,
+# hat, steht in $LF_RUN/search-lock: Nur diesen Schutz hebt target_search_unlock wieder auf,
 # auch nach einem Abbruch des Assistenten. Ein Schutz, der vorher schon galt (Quell-Disk),
 # bleibt unberührt.
 target_search_lock() {
 	local part=$1
 	[[ $(sudo blockdev --getro "$part" 2>/dev/null) == 1 ]] && return 0
 	run sudo blockdev --setro "$part" || return 1
-	echo "$part" >"$FRS_RUN/search-lock"
+	echo "$part" >"$LF_RUN/search-lock"
 }
 
 target_search_unlock() {
 	local part
-	[[ -s $FRS_RUN/search-lock ]] || return 0
-	part=$(head -n1 "$FRS_RUN/search-lock")
-	rm -f "$FRS_RUN/search-lock"
+	[[ -s $LF_RUN/search-lock ]] || return 0
+	part=$(head -n1 "$LF_RUN/search-lock")
+	rm -f "$LF_RUN/search-lock"
 	[[ $part == /dev/* ]] || return 0
 	run sudo blockdev --setrw "$part"
 }
@@ -216,15 +216,33 @@ target_mount_search() {
 	)
 	fsopt=$(target_search_fsopt "$fs")
 	case $fs in
-	ntfs) run sudo mount -t ntfs3 -o "$opts" "$part" "$FRS_TARGET_MNT" ||
-		run sudo ntfs-3g -o ro,norecover,nodev,nosuid,noexec "$part" "$FRS_TARGET_MNT" ;;
-	*) run sudo mount -o "$opts${fsopt:+,$fsopt}" "$part" "$FRS_TARGET_MNT" ;;
+	ntfs) run sudo mount -t ntfs3 -o "$opts" "$part" "$LF_TARGET_MNT" ||
+		run sudo ntfs-3g -o ro,norecover,nodev,nosuid,noexec "$part" "$LF_TARGET_MNT" ;;
+	*) run sudo mount -o "$opts${fsopt:+,$fsopt}" "$part" "$LF_TARGET_MNT" ;;
 	esac || return 1
-	mount_enforce "$FRS_TARGET_MNT" "${TARGET_SEARCH_OPTS[@]}"
+	mount_enforce "$LF_TARGET_MNT" "${TARGET_SEARCH_OPTS[@]}"
 }
 
-# target_find_cases ZIEL-ID   Sucht auf einer Disk nach Rettungsfällen (FRS/*/case.env).
-# Rückgabe 0: gefunden. Die Partition hängt dann nur lesend unter $FRS_TARGET_MNT und steht in
+# target_cases_dir   Name des Ordners mit den Rettungsfällen auf dem eingehängten Ziel: LF.
+# Übergang von firestrike-rescue, gilt eine Beta lang: Liegen Fälle nur im alten Ordner FRS,
+# ist es FRS. Fortgesetzt wird dann dort. Neue Fälle legt der Assistent nur unter LF an.
+target_cases_dir() {
+	if ! compgen -G "$LF_TARGET_MNT/LF/*/case.env" >/dev/null &&
+		compgen -G "$LF_TARGET_MNT/FRS/*/case.env" >/dev/null; then
+		echo FRS
+	else
+		echo LF
+	fi
+}
+
+# target_has_cases   Liegt auf dem eingehängten Ziel ein Rettungsfall (LF/*/case.env, im
+# Übergang auch FRS/*/case.env)?
+target_has_cases() {
+	compgen -G "$LF_TARGET_MNT/LF/*/case.env" >/dev/null || compgen -G "$LF_TARGET_MNT/FRS/*/case.env" >/dev/null
+}
+
+# target_find_cases ZIEL-ID   Sucht auf einer Disk nach Rettungsfällen (LF/*/case.env).
+# Rückgabe 0: gefunden. Die Partition hängt dann nur lesend unter $LF_TARGET_MNT und steht in
 # TARGET_CASE_PART. Danach folgt genau eines: target_case_writable oder target_search_end.
 target_find_cases() {
 	local tid=$1 dev
@@ -237,19 +255,19 @@ target_find_cases() {
 target_find_cases_on() {
 	local dev=$1 p path fs cur
 	TARGET_CASE_PART="" TARGET_CASE_ACTIVE=0
-	sudo install -d "$FRS_TARGET_MNT"
-	if mountpoint -q "$FRS_TARGET_MNT"; then
+	sudo install -d "$LF_TARGET_MNT"
+	if mountpoint -q "$LF_TARGET_MNT"; then
 		# Hängt eine Partition dieser Disk schon als Ziel dieser Sitzung dort (beschreibbar und
 		# geschützt, etwa weil im Hintergrund noch kopiert wird), bleibt sie, wie sie ist.
-		cur=$(findmnt -n -o SOURCE -M "$FRS_TARGET_MNT" 2>/dev/null)
-		if [[ -n $cur ]] && target_mount_has_opts && mount_has_opts "$FRS_TARGET_MNT" rw &&
+		cur=$(findmnt -n -o SOURCE -M "$LF_TARGET_MNT" 2>/dev/null)
+		if [[ -n $cur ]] && target_mount_has_opts && mount_has_opts "$LF_TARGET_MNT" rw &&
 			lsblk -nr -o PATH "$dev" 2>/dev/null | grep -qxF -- "$cur" &&
-			compgen -G "$FRS_TARGET_MNT/FRS/*/case.env" >/dev/null; then
+			target_has_cases; then
 			TARGET_CASE_PART=$cur TARGET_CASE_ACTIVE=1
 			return 0
 		fi
-		if ! run sudo umount "$FRS_TARGET_MNT"; then
-			log "Suche abgebrochen: $FRS_TARGET_MNT ist noch in Benutzung und lässt sich nicht aushängen."
+		if ! run sudo umount "$LF_TARGET_MNT"; then
+			log "Suche abgebrochen: $LF_TARGET_MNT ist noch in Benutzung und lässt sich nicht aushängen."
 			return 1
 		fi
 	fi
@@ -261,11 +279,11 @@ target_find_cases_on() {
 		# Erst der Schreibschutz, dann das Einhängen. Ohne Schreibschutz wird nicht eingehängt.
 		target_search_lock "$path" || continue
 		if target_mount_search "$path" "$fs"; then
-			if compgen -G "$FRS_TARGET_MNT/FRS/*/case.env" >/dev/null; then
+			if target_has_cases; then
 				TARGET_CASE_PART=$path
 				return 0
 			fi
-			run sudo umount "$FRS_TARGET_MNT"
+			run sudo umount "$LF_TARGET_MNT"
 		fi
 		target_search_unlock
 	done 3< <(disk_parts "$dev")
@@ -276,7 +294,7 @@ target_find_cases_on() {
 # eigenen Schreibschutz wieder aufheben. Ein schon aktives Ziel bleibt, wie es ist.
 target_search_end() {
 	if [[ -n $TARGET_CASE_PART ]] && ((!TARGET_CASE_ACTIVE)); then
-		mountpoint -q "$FRS_TARGET_MNT" && run sudo umount "$FRS_TARGET_MNT"
+		mountpoint -q "$LF_TARGET_MNT" && run sudo umount "$LF_TARGET_MNT"
 		target_search_unlock
 	fi
 	TARGET_CASE_PART="" TARGET_CASE_ACTIVE=0

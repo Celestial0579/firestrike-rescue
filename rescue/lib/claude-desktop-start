@@ -1,22 +1,22 @@
 #!/bin/bash
-# Firestrike Rescue: Startet Claude Desktop als frs-claude. Läuft in cage, als Live-Benutzer.
+# Leuchtfeuer: Startet Claude Desktop als lf-claude. Läuft in cage, als Live-Benutzer.
 #
-# cage legt seinen Wayland-Socket in $XDG_RUNTIME_DIR = /run/frs/wayland ab (claude_desktop). Das
-# Verzeichnis gehört dem Live-Benutzer, Gruppe frs-claude. Dieses Skript gibt der Gruppe den
-# Socket frei und startet die App als frs-claude, mit eigenem XDG_RUNTIME_DIR, eigener D-Bus-
-# Sitzung und eigenem Schlüsselbund (~frs-claude/.local/share/keyrings, auf dem Speicher).
+# cage legt seinen Wayland-Socket in $XDG_RUNTIME_DIR = /run/lf/wayland ab (claude_desktop). Das
+# Verzeichnis gehört dem Live-Benutzer, Gruppe lf-claude. Dieses Skript gibt der Gruppe den
+# Socket frei und startet die App als lf-claude, mit eigenem XDG_RUNTIME_DIR, eigener D-Bus-
+# Sitzung und eigenem Schlüsselbund (~lf-claude/.local/share/keyrings, auf dem Speicher).
 set -u
-FRS_LIB=/usr/local/lib/frs
-FRS_RUN=/run/frs
+LF_LIB=/usr/local/lib/lf
+LF_RUN=/run/lf
 # shellcheck source=claude.sh
-. "$FRS_LIB/claude.sh"
+. "$LF_LIB/claude.sh"
 
 sock=${WAYLAND_DISPLAY:-}
 [[ -n $sock ]] || { echo "claude-desktop-start: WAYLAND_DISPLAY fehlt" >&2; exit 1; }
 [[ $sock == /* ]] || sock=$XDG_RUNTIME_DIR/$sock
 claude_wayland_share "$sock" || { echo "claude-desktop-start: Socket $sock lässt sich nicht freigeben" >&2; exit 1; }
 
-exec sudo -u "$CLAUDE_USER" -H env WAYLAND_DISPLAY="$sock" XDG_RUNTIME_DIR="$CLAUDE_XDG" XDG_CURRENT_DESKTOP=frs \
+exec sudo -u "$CLAUDE_USER" -H env WAYLAND_DISPLAY="$sock" XDG_RUNTIME_DIR="$CLAUDE_XDG" XDG_CURRENT_DESKTOP=lf \
 	dbus-run-session -- bash -c '
 		eval "$(printf "" | gnome-keyring-daemon --unlock --components=secrets 2>/dev/null)"
 		eval "$(gnome-keyring-daemon --start --components=secrets 2>/dev/null)"

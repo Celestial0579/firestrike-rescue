@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Attrappe der Claude-API für den Selbsttest (frs --selftest, selftest_claude).
+"""Attrappe der Claude-API für den Selbsttest (lf --selftest, selftest_claude).
 
 Der Selbsttest prüft die Sperre für Claude mit der echten Claude-Code-CLI, aber ohne Konto und
 ohne Modell. Diese Attrappe spielt das Modell: Auf die erste Anfrage mit Werkzeugen antwortet
