@@ -50,9 +50,18 @@ log "Claude Code CLI (nativer Installer)"
 inst_home="$(mktemp -d)"
 HOME="$inst_home" bash -c 'curl -fsSL https://claude.ai/install.sh | bash'
 claude_real="$(readlink -f "$inst_home/.local/bin/claude")"
-install -m 0755 "$claude_real" /usr/local/bin/claude
+# Die CLI liegt neben dem Assistenten. /usr/local/bin/claude ist ein Skript aus rescue/bin, das
+# sie ohne Projekt-Einstellungen startet (--setting-sources user).
+install -m 0755 "$claude_real" /usr/local/lib/frs/claude-cli
 rm -rf "$inst_home"
-/usr/local/bin/claude --version
+/usr/local/lib/frs/claude-cli --version
+# Auch wenn eine spätere ~/.bashrc ~/.local/bin wieder vorn in den PATH setzt: In jeder
+# interaktiven Shell ist "claude" das Skript des Rettungssystems.
+cat >>/etc/bash.bashrc <<'EOF'
+
+# Firestrike Rescue: claude immer ohne Projekt-Einstellungen (siehe /usr/local/bin/claude)
+claude() { /usr/local/bin/claude "$@"; }
+EOF
 
 log "Live-Benutzer und Autologin"
 # casper legt den Benutzer beim Boot an (sudo ohne Passwort).
