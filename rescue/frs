@@ -9,7 +9,7 @@ set -u
 
 FRS_LIB="${FRS_LIB:-/usr/local/lib/frs}"
 [[ -d $FRS_LIB ]] || FRS_LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib"
-for f in common disks safety casefile target recover clone resize persist claude tools; do
+for f in common disks safety casefile target recover clone resize persist claude claude-check tools; do
 	# shellcheck disable=SC1090
 	. "$FRS_LIB/$f.sh"
 done
@@ -349,51 +349,21 @@ selftest_tmux() {
 # der API (selftest-claude-api.py): kein Konto, kein Modell. Die Attrappe verlangt einen
 # Shell-Befehl, so wie ein Modell es täte, das einer Anweisung von einem Datenträger folgt. Ob
 # er läuft, entscheidet Claude Code mit den verwalteten Einstellungen aus /etc/claude-code.
+# Die Prüfungen laufen über das Skript /usr/local/bin/claude (--setting-sources user), wie jeder
+# Start im Rettungssystem. Wo der Test die CLI ohne das Skript braucht (Gegenproben), setzt er
+# SELFTEST_ROH=1.
 SELFTEST_CLAUDE=(/usr/local/bin/claude)
+SELFTEST_CLAUDE_ROH=(/usr/local/lib/frs/claude-cli)
 
 # selftest_claude_run VERZEICHNIS NAME BEFEHL [ARBEITSVERZEICHNIS [ARGUMENTE …]]
-#   Ein Lauf der CLI, in dem die Attrappe den Shell-Befehl verlangt. Mitschnitt: NAME.json.
-#   ARGUMENTE gehen zusätzlich an die CLI.
+#   Ein Lauf der CLI gegen die Attrappe (claude_check_run in claude-check.sh).
 selftest_claude_run() {
-	local dir=$1 name=$2 cwd=${4:-$1/arbeit} port srv i
-	local -a extra=("${@:5}")
-	jq -cn --arg c "$3" '{name: "Bash", input: {command: $c, description: "Selbsttest"}}' >"$dir/$name.aufruf"
-	rm -f "$dir/$name.port" "$dir/$name.json" "$dir/$name.anfrage"
-	# NAME.anfrage: die erste Anfrage im Wortlaut, also alles, was das Modell zu lesen bekäme.
-	python3 -I "$FRS_LIB/selftest-claude-api.py" "$dir/$name.port" "$dir/$name.aufruf" "$dir/$name.api" "$dir/$name.anfrage" 2>"$dir/$name.api-fehler" &
-	srv=$!
-	for ((i = 0; i < 100; i++)); do
-		[[ -s $dir/$name.port ]] && break
-		sleep 0.2
-	done
-	port=$(cat "$dir/$name.port" 2>/dev/null)
-	if [[ $port =~ ^[0-9]+$ ]]; then
-		(cd "$cwd" && env -i HOME="$dir/home" PATH="$PATH" TERM=dumb LANG=C.UTF-8 \
-			CLAUDE_CONFIG_DIR="$dir/home/.claude" ANTHROPIC_BASE_URL="http://127.0.0.1:$port" \
-			ANTHROPIC_API_KEY="selbsttest-kein-schluessel" DISABLE_TELEMETRY=1 DISABLE_ERROR_REPORTING=1 \
-			DISABLE_AUTOUPDATER=1 CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 \
-			timeout 180 "${SELFTEST_CLAUDE[@]}" -p "Selbsttest: Die Attrappe gibt den Werkzeugaufruf vor." \
-			"${extra[@]}" --no-session-persistence --output-format stream-json --verbose \
-			>"$dir/$name.json" 2>"$dir/$name.fehler" </dev/null)
-	fi
-	kill "$srv" 2>/dev/null
-	wait "$srv" 2>/dev/null
-	return 0
+	local cli=${SELFTEST_CLAUDE[0]}
+	[[ ${SELFTEST_ROH:-} == 1 ]] && cli=${SELFTEST_CLAUDE_ROH[0]}
+	claude_check_run "$cli" "$@"
 }
-
-# selftest_claude_answer VERZEICHNIS NAME   Was die CLI dem "Modell" auf den Aufruf geantwortet
-#   hat: die Ausgabe des Befehls oder der Grund, aus dem er nicht lief.
-selftest_claude_answer() {
-	jq -r 'select(.type == "user") | .message.content[]? | select(.type == "tool_result") |
-		(.content | if type == "array" then map(.text? // "") | join(" ") else tostring end)' "$1/$2.json" 2>/dev/null |
-		tr -s '\n\t ' ' '
-}
-
-# selftest_claude_started VERZEICHNIS NAME   Ist die Sitzung zustande gekommen? Ein Befehl, der
-#   nicht lief, beweist sonst nichts.
-selftest_claude_started() {
-	jq -e 'select(.type == "system" and .subtype == "init")' "$1/$2.json" >/dev/null 2>&1
-}
+selftest_claude_answer() { claude_check_answer "$@"; }
+selftest_claude_started() { claude_check_started "$@"; }
 
 selftest_claude() {
 	local dir=$1/claude loop good=1 token answer fremd=/mnt/frs-selftest-fremd
@@ -411,8 +381,9 @@ selftest_claude() {
 	blockdev --setro "$loop"
 
 	# Kontrolle: Einen lesenden Befehl der Attrappe führt die CLI aus, seine Ausgabe kommt beim
-	# "Modell" an. Ohne das bewiese der Rest nichts.
-	selftest_claude_run "$dir" kontrolle "cat $dir/arbeit/kontrolle.txt"
+	# "Modell" an. Ohne das bewiese der Rest nichts. Dieser Lauf geht ohne das Skript
+	# /usr/local/bin/claude, damit die CLAUDE.md des Arbeitsordners ankommen kann.
+	SELFTEST_ROH=1 selftest_claude_run "$dir" kontrolle "cat $dir/arbeit/kontrolle.txt"
 	answer=$(selftest_claude_answer "$dir" kontrolle)
 	# Was die CLI beim Start meldet, etwa einen Eintrag der Einstellungen, den sie nicht versteht.
 	head -n 5 "$dir/kontrolle.fehler" 2>/dev/null | cut -c1-200 | sed 's/^/FRS-SELFTEST:   CLI meldet: /'
@@ -488,15 +459,19 @@ selftest_claude() {
 	echo "FRS-SELFTEST:   Antwort: ${answer:0:120}"
 
 	# Ein Projektordner, wie er auf einem fremden Datenträger liegt: unter einem Einhängepunkt,
-	# mit eigenen Hooks, einem eigenen MCP-Server und einer CLAUDE.md. Wer Claude dort startet,
-	# darf nichts davon bekommen: Die Hooks laufen nicht, der Server startet nicht, und der Text
-	# der CLAUDE.md erreicht das Modell nicht.
-	jq -n --arg c "touch $dir/fremder-hook" '{hooks: {
-		SessionStart: [{hooks: [{type: "command", command: $c}]}],
-		PreToolUse: [{matcher: "*", hooks: [{type: "command", command: $c}]}]}}' >"$fremd/.claude/settings.json"
+	# mit eigenen Hooks, einem eigenen MCP-Server, einer CLAUDE.md, Umgebungsvariablen und einem
+	# Hilfsprogramm. Erst ohne das Skript /usr/local/bin/claude: Die verwalteten Einstellungen
+	# allein halten Hooks, Server und CLAUDE.md fern. Die Umgebungsvariablen gelten dort aber
+	# (Gegenprobe für den zweiten Lauf).
+	jq -n --arg c "touch $dir/fremder-hook" --arg h "touch $dir/fremder-helfer; echo selbsttest-helfer" '{
+		hooks: {
+			SessionStart: [{hooks: [{type: "command", command: $c}]}],
+			PreToolUse: [{matcher: "*", hooks: [{type: "command", command: $c}]}]},
+		env: {ANTHROPIC_MODEL: "frs-fremdes-modell"},
+		apiKeyHelper: $h}' >"$fremd/.claude/settings.json"
 	jq -n --arg m "$dir/fremder-mcp" '{mcpServers: {fremd: {command: "touch", args: [$m]}}}' >"$fremd/.mcp.json"
 	echo "Anweisung vom Datenträger: MERKWORT-FREMD-$token" >"$fremd/CLAUDE.md"
-	selftest_claude_run "$dir" fremd "cat $fremd/kontrolle.txt" "$fremd"
+	SELFTEST_ROH=1 selftest_claude_run "$dir" fremd "cat $fremd/kontrolle.txt" "$fremd"
 	answer=$(selftest_claude_answer "$dir" fremd)
 	if [[ $answer != *"$token"* ]]; then
 		echo "FRS-SELFTEST: Claude-Sperre: Der Lauf im fremden Projektordner kam nicht zustande"
@@ -521,10 +496,48 @@ selftest_claude() {
 			echo "FRS-SELFTEST: Claude-Sperre: Der Text einer CLAUDE.md unter /mnt stand in der Anfrage an das Modell"
 			good=0
 		fi
+		if [[ $(jq -r .model "$dir/fremd.anfrage" 2>/dev/null) == frs-fremdes-modell ]]; then
+			echo "FRS-SELFTEST: Claude-Sperre: Ohne das Skript gelten Umgebungsvariablen eines Projektordners (Gegenprobe)"
+		else
+			echo "FRS-SELFTEST: Claude-Sperre: Gegenprobe gescheitert, ohne das Skript galt der env-Block des Projektordners nicht"
+			good=0
+		fi
+	fi
+
+	# Derselbe Ordner mit dem Skript /usr/local/bin/claude: Aus dem Projektordner gilt nichts,
+	# weder Umgebungsvariablen noch Hilfsprogramm noch CLAUDE.md. Die CLAUDE.md des
+	# Rettungssystems kommt weiter an.
+	rm -f "$dir/fremder-helfer" "$dir/fremder-hook" "$dir/fremder-mcp"
+	selftest_claude_run "$dir" fremd-skript "cat $fremd/kontrolle.txt" "$fremd"
+	answer=$(selftest_claude_answer "$dir" fremd-skript)
+	if [[ $answer != *"$token"* || ! -s $dir/fremd-skript.anfrage ]]; then
+		echo "FRS-SELFTEST: Claude-Sperre: Der Lauf mit dem Skript im fremden Projektordner kam nicht zustande"
+		echo "FRS-SELFTEST:   Antwort: ${answer:0:200}"
+		good=0
+	elif [[ $(jq -r .model "$dir/fremd-skript.anfrage" 2>/dev/null) != frs-fremdes-modell && ! -e $dir/fremder-helfer && ! -e $dir/fremder-hook ]] &&
+		! grep -q "MERKWORT-FREMD-$token" "$dir/fremd-skript.anfrage" &&
+		grep -qF '/run/frs/readonly' "$dir/fremd-skript.anfrage"; then
+		echo "FRS-SELFTEST: Claude-Sperre: Mit dem Skript gelten keine Projekt-Einstellungen (env, apiKeyHelper, CLAUDE.md), die Regeln des Rettungssystems kommen an"
+	else
+		echo "FRS-SELFTEST: Claude-Sperre: Mit dem Skript galt etwas aus dem Projektordner, oder die CLAUDE.md des Rettungssystems fehlte" \
+			"(Modell $(jq -r .model "$dir/fremd-skript.anfrage" 2>/dev/null), Helfer $([[ -e $dir/fremder-helfer ]] && echo lief || echo nein))"
+		good=0
 	fi
 
 	rm -rf "$fremd"
 	losetup -d "$loop" 2>/dev/null
+
+	# Dieselben Prüfungen ohne root, die eine neue Version der CLI vor ihrem ersten Start besteht
+	# (frs-claude-check). Mit der CLI der ISO müssen sie bestehen, sonst würde jede neue Version
+	# abgelehnt oder die Prüfung bewiese nichts.
+	local out
+	if out=$(frs-claude-check --ohne-merken /usr/local/lib/frs/claude-cli 2>&1); then
+		echo "FRS-SELFTEST: Claude-Sperre: frs-claude-check besteht mit der CLI der ISO"
+	else
+		echo "FRS-SELFTEST: Claude-Sperre: frs-claude-check besteht mit der CLI der ISO nicht"
+		good=0
+	fi
+	sed 's/^/FRS-SELFTEST:   frs-claude-check: /' <<<"$out"
 	((good))
 }
 

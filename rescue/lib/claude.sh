@@ -1,15 +1,17 @@
 # shellcheck shell=bash
 # Claude Code CLI und Claude Desktop im Rettungssystem.
 
-claude_bin() {
-	if [[ -x $HOME/.local/bin/claude ]]; then echo "$HOME/.local/bin/claude"; else echo /usr/local/bin/claude; fi
-}
+# /usr/local/bin/claude startet die CLI (aktualisiert aus ~/.local/bin oder die der ISO aus
+# /usr/local/lib/frs/claude-cli) immer ohne Projekt-Einstellungen.
+CLAUDE_CMD=/usr/local/bin/claude
+CLAUDE_CLI_ISO=/usr/local/lib/frs/claude-cli
 
-# Hält die CLI auf der Persistenz aktuell (im Hintergrund, Fehler sind egal).
+# Hält die CLI auf der Persistenz aktuell (im Hintergrund, Fehler sind egal). Eine neue Version
+# wird gleich danach geprüft (frs-claude-check), dann wartet der Techniker beim Start nicht darauf.
 claude_update_bg() {
 	persist_is_open || return 0
 	is_online || return 0
-	(/usr/local/bin/claude install stable >>"$FRS_LOG" 2>&1 &)
+	( ("$CLAUDE_CLI_ISO" install stable && frs-claude-check "$HOME/.local/bin/claude") >>"$FRS_LOG" 2>&1 &)
 }
 
 # Datei mit dem aktuellen Zustand im Sitzungsverzeichnis. Sie heißt bewusst nicht CLAUDE.md:
@@ -107,7 +109,7 @@ claude_start() {
 		Rechner öffnen und den Code hier einfügen. Beenden mit /exit oder Strg+D.
 
 	EOF
-	(cd "$dir" && "$(claude_bin)")
+	(cd "$dir" && "$CLAUDE_CMD")
 }
 
 claude_desktop() {

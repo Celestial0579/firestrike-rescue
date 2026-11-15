@@ -1,6 +1,8 @@
 # Firestrike Rescue: Assistent startet automatisch auf tty1.
 [ -f ~/.bashrc ] && . ~/.bashrc
-export PATH="$HOME/.local/bin:$PATH"
+# ~/.local/bin hinten: Dort legt "claude install" die aktualisierte CLI ab. "claude" soll das
+# Skript /usr/local/bin/claude bleiben, das sie ohne Projekt-Einstellungen startet.
+export PATH="$PATH:$HOME/.local/bin"
 if [ "$(tty)" = "/dev/tty1" ] && [ -z "${FRS_STARTED:-}" ]; then
 	export FRS_STARTED=1
 	frs
