@@ -82,7 +82,7 @@ Die ISO landet in `out/`.
 | `build/grub/` | Bootmenü und Theme |
 | `rescue/frs` | Assistent, Bibliotheken in `rescue/lib/` |
 | `rescue/claude/CLAUDE.md` | Regeln für Claude im Rettungssystem |
-| `rescue/claude/managed-settings.json`, `rescue/bin/frs-claude-guard` | Sperre für Claude: Was die Regeln verbieten, lehnt ein Hook ab. Kein Auto-Modus. Hooks, Erlaubnis-Regeln, Skills, Agenten und MCP-Server nur aus dem Rettungssystem, keine `CLAUDE.md` von einem Einhängepunkt. `rescue/bin/claude` startet die CLI ohne Projekt-Einstellungen (`--setting-sources user`), eine neue Version erst nach `rescue/bin/frs-claude-check` |
+| `rescue/claude/managed-settings.json`, `rescue/bin/frs-claude-guard` | Sperre für Claude: Was die Regeln verbieten, lehnt ein Hook ab. Kein Auto-Modus. Hooks, Erlaubnis-Regeln, Skills, Agenten und MCP-Server nur aus dem Rettungssystem, keine `CLAUDE.md` von einem Einhängepunkt. `rescue/bin/claude` startet die CLI ohne Projekt-Einstellungen (`--setting-sources user`), eine neue Version erst nach `rescue/bin/frs-claude-check`. Die CLI läuft als Benutzer `frs-claude` und darf als root nur `rescue/bin/frs-lesen` starten |
 | `tests/qemu-smoke.sh` | Boot-Tests (UEFI, BIOS, Selbsttest mit simulierter defekter Disk) |
 
 Design

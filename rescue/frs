@@ -70,6 +70,7 @@ selftest() {
 	selftest_boot "$dir" || ok=0
 	selftest_tmux "$dir" || ok=0
 	selftest_claude "$dir" || ok=0
+	selftest_claude_user "$dir" || ok=0
 	# Werkzeuge vorhanden?
 	local t
 	for t in ddrescue partclone.ntfs partclone.extfs ntfsresize smartctl nvme sgdisk sfdisk cryptsetup dislocker \
@@ -135,6 +136,12 @@ selftest_target() {
 		}
 		echo "FRS-SELFTEST: Ziel $fs eingehängt als $(findmnt -n -o FSTYPE,VFS-OPTIONS -M "$FRS_TARGET_MNT" | tr -s ' \n' ' ')"
 		target_mount_has_opts || { echo "FRS-SELFTEST: Ziel $fs: Schutzoptionen gelten nicht"; good=0; }
+		# Claude (frs-claude) schreibt auf kein Ziel.
+		if sudo -u frs-claude -n touch "$FRS_TARGET_MNT/claude-probe" 2>/dev/null; then
+			echo "FRS-SELFTEST: Ziel $fs: frs-claude konnte schreiben"
+			rm -f "$FRS_TARGET_MNT/claude-probe"
+			good=0
+		fi
 		# Schreiben muss gehen, Ausführen nicht.
 		printf '#!/bin/sh\nexit 0\n' >"$FRS_TARGET_MNT/neu" || { echo "FRS-SELFTEST: Ziel $fs: nicht beschreibbar"; good=0; }
 		chmod 755 "$FRS_TARGET_MNT/neu" 2>/dev/null
@@ -531,13 +538,93 @@ selftest_claude() {
 	# (frs-claude-check). Mit der CLI der ISO müssen sie bestehen, sonst würde jede neue Version
 	# abgelehnt oder die Prüfung bewiese nichts.
 	local out
-	if out=$(frs-claude-check --ohne-merken /usr/local/lib/frs/claude-cli 2>&1); then
-		echo "FRS-SELFTEST: Claude-Sperre: frs-claude-check besteht mit der CLI der ISO"
+	# Als frs-claude, wie im Betrieb.
+	if out=$(sudo -u frs-claude -H frs-claude-check --ohne-merken /usr/local/lib/frs/claude-cli 2>&1 </dev/null); then
+		echo "FRS-SELFTEST: Claude-Sperre: frs-claude-check besteht mit der CLI der ISO, als frs-claude"
 	else
-		echo "FRS-SELFTEST: Claude-Sperre: frs-claude-check besteht mit der CLI der ISO nicht"
+		echo "FRS-SELFTEST: Claude-Sperre: frs-claude-check besteht mit der CLI der ISO nicht (als frs-claude)"
 		good=0
 	fi
 	sed 's/^/FRS-SELFTEST:   frs-claude-check: /' <<<"$out"
+	((good))
+}
+
+# selftest_as BEFEHL …   BEFEHL als frs-claude, ohne Eingabe und ohne Passwortabfrage.
+selftest_as() {
+	sudo -u frs-claude -H -n "$@" </dev/null
+}
+
+# Claude läuft als eigener Benutzer (frs-claude). Er liest Disks nur über frs-lesen und schreibt
+# gar nicht. Geprüft wird das Betriebssystem, nicht Claude Code: Die Befehle laufen direkt als
+# frs-claude, ohne Hook und ohne Rückfrage.
+selftest_claude_user() {
+	local dir=$1/benutzer good=1 loop want got a
+	mkdir -p "$dir"
+	head -c $((1024 * 1024)) /dev/urandom >"$dir/disk.raw"
+	loop=$(losetup --find --show "$dir/disk.raw")
+	blockdev --setro "$loop"
+
+	if [[ $(id -Gn frs-claude 2>/dev/null) == frs-claude ]]; then
+		echo "FRS-SELFTEST: frs-claude: in keiner Gruppe außer der eigenen"
+	else
+		echo "FRS-SELFTEST: frs-claude: Gruppen '$(id -Gn frs-claude 2>&1)'"
+		good=0
+	fi
+	got=$(selftest_as sudo -n -l 2>&1)
+	if [[ $got == *"NOPASSWD: /usr/local/bin/frs-lesen"* && $got != *"(ALL : ALL) ALL"* && $got != *"(ALL) ALL"* ]] &&
+		[[ $(grep -c 'NOPASSWD' <<<"$got") == 1 ]]; then
+		echo "FRS-SELFTEST: frs-claude: sudo nur für frs-lesen"
+	else
+		echo "FRS-SELFTEST: frs-claude: sudo erlaubt mehr als frs-lesen:"
+		sed 's/^/FRS-SELFTEST:   /' <<<"$got" | tail -n 6
+		good=0
+	fi
+
+	# Lesen über frs-lesen: genau die Bytes der Disk.
+	want=$(head -c 1024 "$dir/disk.raw" | od -A x -t x1z -v)
+	got=$(selftest_as sudo -n /usr/local/bin/frs-lesen sektoren "$loop" 0 2 2>&1)
+	if [[ -n $want && $got == "$want" ]]; then
+		echo "FRS-SELFTEST: frs-claude: frs-lesen sektoren liest die Disk"
+	else
+		echo "FRS-SELFTEST: frs-claude: frs-lesen sektoren liefert nicht den Inhalt der Disk: ${got:0:160}"
+		good=0
+	fi
+
+	# frs-lesen nimmt nur, was zur Aktion passt.
+	local -a args bad=(
+		"sektoren|$loop|0|65" "sektoren|/etc/shadow|0|1" "sektoren|$loop|-1" "sektoren|$loop|0x10"
+		"smart|$loop -s on" "smart|--scan" "smart|/dev/../etc/shadow" "partitionen|$loop|--delete"
+		"disks|--output-all" "kernel|-C" "lies|/etc/shadow"
+	)
+	for a in "${bad[@]}"; do
+		IFS='|' read -ra args <<<"$a"
+		got=$(selftest_as sudo -n /usr/local/bin/frs-lesen "${args[@]}" 2>/dev/null)
+		if [[ $? == 0 || -n $got ]]; then
+			echo "FRS-SELFTEST: frs-claude: frs-lesen nahm ${a//|/ } an"
+			good=0
+		fi
+	done
+	((good)) && echo "FRS-SELFTEST: frs-claude: frs-lesen lehnt Optionen, fremde Pfade und zu viele Sektoren ab"
+
+	# Ohne frs-lesen: kein Lesen der Disk, kein Aufheben des Schreibschutzes, kein anderes sudo.
+	if selftest_as dd if="$loop" of=/dev/null count=1 status=none 2>/dev/null; then
+		echo "FRS-SELFTEST: frs-claude: konnte das Blockgerät direkt lesen"
+		good=0
+	fi
+	selftest_as sudo -n blockdev --setrw "$loop" 2>/dev/null
+	if [[ $(blockdev --getro "$loop") != 1 ]]; then
+		echo "FRS-SELFTEST: frs-claude: konnte den Schreibschutz aufheben"
+		good=0
+	fi
+	if selftest_as sudo -n dd if="$loop" of=/dev/null count=1 status=none 2>/dev/null ||
+		selftest_as sudo -n -u rescue true 2>/dev/null; then
+		echo "FRS-SELFTEST: frs-claude: sudo erlaubte einen anderen Befehl"
+		good=0
+	fi
+	((good)) && echo "FRS-SELFTEST: frs-claude: kein direkter Zugriff auf Blockgeräte, kein anderes sudo"
+
+	losetup -d "$loop" 2>/dev/null
+	rm -f "$dir/disk.raw"
 	((good))
 }
 

@@ -103,19 +103,19 @@ done
 echo "exFAT:"
 reset
 mount_part exfat
-check "eingehängt mit Schutzoptionen und Besitzer" '[[ $RC == 0 ]] && safe && [[ $CALLS == *"mount -o $ALL,uid=1000,gid=1000 /dev/sdz1 /mnt/frs-target"* ]]'
+check "eingehängt mit Schutzoptionen und Besitzer" '[[ $RC == 0 ]] && safe && [[ $CALLS == *"mount -o $ALL,uid=1000,gid=1000,umask=022 /dev/sdz1 /mnt/frs-target"* ]]'
 
 echo "NTFS über den Kerneltreiber:"
 reset
 mount_part ntfs
-check "eingehängt mit Schutzoptionen und Besitzer" '[[ $RC == 0 ]] && safe && [[ $CALLS == *"mount -t ntfs3 -o $ALL,uid=1000,gid=1000 /dev/sdz1 /mnt/frs-target"* ]]'
+check "eingehängt mit Schutzoptionen und Besitzer" '[[ $RC == 0 ]] && safe && [[ $CALLS == *"mount -t ntfs3 -o $ALL,uid=1000,gid=1000,umask=022 /dev/sdz1 /mnt/frs-target"* ]]'
 check "ntfs-3g wird nicht gebraucht" '[[ $CALLS != *ntfs-3g* ]]'
 
 echo "NTFS über ntfs-3g (Kerneltreiber lehnt ab):"
 reset
 NTFS3_OK=0
 mount_part ntfs
-check "ntfs-3g bekommt nodev, nosuid und noexec" '[[ $CALLS == *"ntfs-3g -o nodev,nosuid,noexec,uid=1000,gid=1000 /dev/sdz1 /mnt/frs-target"* ]]'
+check "ntfs-3g bekommt nodev, nosuid und noexec" '[[ $CALLS == *"ntfs-3g -o nodev,nosuid,noexec,uid=1000,gid=1000,umask=022 /dev/sdz1 /mnt/frs-target"* ]]'
 check "nosymfollow wird am Einhängepunkt nachgesetzt" '[[ $CALLS == *"mount -i -o remount,bind,$ALL /mnt/frs-target"* ]]'
 check "danach gelten alle Schutzoptionen" '[[ $RC == 0 ]] && safe'
 reset

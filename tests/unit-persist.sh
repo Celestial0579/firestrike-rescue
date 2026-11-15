@@ -30,6 +30,10 @@ FRS_RUN="$T/run"
 FRS_PERSIST="$T/persist"
 FRS_LOG=/dev/null
 HOME="$T/home"
+# Aus claude.sh: Claude läuft als eigener Benutzer, sein Home kommt vom Speicher.
+CLAUDE_USER=frs-claude
+CLAUDE_HOME="$T/claude-home"
+claude_as() { sudo -u "$CLAUDE_USER" -H "$@"; }
 PERSIST_CONFIG="$T/etc-frs/frs.conf"
 PERSIST_MAPPER_DEV="$T/mapper-frs-data"
 mkdir -p "$FRS_RUN" "$HOME" "$T/etc-frs"
@@ -302,6 +306,8 @@ result
 check "persist_bind: Einstellungen übernommen" '[[ ${FRS_TECHNIKER:-} == "Tim Beispiel" && ${FRS_TARGET_FS:-} == exfat ]]'
 check "persist_bind: nichts ausgeführt" '! markers && [[ $PATH == "$old_path" ]]'
 check "persist_bind: der Techniker erfährt, welche Zeilen nicht übernommen wurden" '[[ $MSG == "frs.conf|"*"nicht übernommen: 5 6 7 8 9 10 11 12 13 14"* ]]'
+check "persist_bind: das Home von Claude kommt vom Speicher" '[[ $SUDO == *"mount --bind $FRS_PERSIST/claude-home $CLAUDE_HOME"* ]]'
+check "persist_bind: die eigene CLAUDE.md legt Claude selbst an, nicht der Live-Benutzer" '[[ $SUDO == *"-u frs-claude -H test -f $CLAUDE_HOME/.claude/CLAUDE.md"* ]]'
 rm -f "$PERSIST_CONFIG"
 fresh
 persist_bind
