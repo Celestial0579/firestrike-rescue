@@ -53,7 +53,9 @@ foreign() {
 	head -c $((1024 * 1024)) /dev/urandom >"$d/casper/filesystem.squashfs"
 	xorriso -as mkisofs -r -V FRS_RESCUE --modification-date="${uuid//-/}" -o "$work/fremd.iso" "$d" >/dev/null 2>&1
 	[[ $(blkid -o value -s UUID "$work/fremd.iso") == "$uuid" ]] || { echo "Die fremde Disk hat nicht die UUID der ISO" >&2; exit 2; }
-	FOREIGN=(-drive "file=$work/fremd.iso,format=raw,if=none,id=fremd,readonly=on" -device "ide-hd,drive=fremd")
+	# ide-hd nimmt kein schreibgeschütztes Laufwerk an. snapshot=on: Schreibzugriffe landen in
+	# einer temporären Ebene, das Abbild bleibt unverändert.
+	FOREIGN=(-drive "file=$work/fremd.iso,format=raw,if=none,id=fremd,snapshot=on" -device "ide-hd,drive=fremd")
 }
 
 AFTER=()
@@ -67,7 +69,7 @@ uefi-usb)
 	ovmf
 	foreign
 	QEMU+=("${FOREIGN[@]}" -device qemu-xhci
-		-drive "file=$ISO,format=raw,if=none,id=stick,readonly=on" -device "usb-storage,drive=stick,bootindex=1")
+		-drive "file=$ISO,format=raw,if=none,id=stick,snapshot=on" -device "usb-storage,drive=stick,bootindex=1")
 	EXPECT="frs ready"
 	# Der Start-Stub auf der EFI-Partition hat das Medium auf dem Stick gewählt.
 	AFTER=("Firestrike Rescue: Startmedium (")
