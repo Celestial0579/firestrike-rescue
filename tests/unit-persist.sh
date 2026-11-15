@@ -177,6 +177,13 @@ normal
 CDROM=/dev/shm
 check "Boot-Stick nicht sicher erkennbar: kein eigener Speicher" '[[ -z $(persist_find) ]]'
 check "dann gelten alle gleichnamigen Partitionen als fremd" '[[ $(persist_foreign | tr "\n" " ") == "/dev/sda9 /dev/sdb3 " ]]'
+normal
+printf 'FRS_BOOT_DEV=/dev/sdb\nFRS_BOOT_DISKS=2\n' >"$T/frs-boot.env"
+FRS_BOOT_ENV="$T/frs-boot.env"
+check "trug beim Start eine weitere Disk die UUID der ISO: kein eigener Speicher" '! persist_find >/dev/null && [[ -z $(persist_find) ]]'
+printf 'FRS_BOOT_DEV=/dev/sdb\nFRS_BOOT_DISKS=1\n' >"$T/frs-boot.env"
+check "nur der Stick trug sie: Speicher wie bisher" '[[ $(persist_find) == /dev/sdb3 ]]'
+FRS_BOOT_ENV="$T/fehlt"
 
 # ---------------------------------------------------------------------------
 # Ab hier zählt, ob eingebunden wird. persist_bind wird dafür nur mitgeschrieben.

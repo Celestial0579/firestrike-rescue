@@ -1,0 +1,16 @@
+#!/bin/sh
+# Firestrike Rescue: Werkzeuge für scripts/casper-premount/frs_medium in die initrd.
+# Die UUID der ISO und die Prüfsumme des squashfs kommen erst nach dem squashfs dazu
+# (build/build.sh, Schritt "SquashFS"), als eigenes cpio-Archiv vor der initrd.
+PREREQ=""
+prereqs() { echo "$PREREQ"; }
+case $1 in
+prereqs)
+	prereqs
+	exit 0
+	;;
+esac
+. /usr/share/initramfs-tools/hook-functions
+manual_add_modules isofs
+copy_exec /sbin/blkid /sbin
+copy_exec /usr/bin/sha256sum /bin

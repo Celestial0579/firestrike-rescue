@@ -30,6 +30,17 @@ boot_disk() {
 	echo "${disks[0]}"
 }
 
+# Gibt sich beim Start eine weitere Disk als der Stick aus? Das Skript casper-premount/frs_medium
+# der initrd zählt die Disks, die die UUID der ISO tragen (FRS_BOOT_DISKS). Mehr als eine heißt:
+# Eine Disk ist eine Kopie des Sticks oder gibt sich als er aus. Welche Disk der Stick ist, lässt
+# sich dann nicht sicher sagen. Fehlt die Datei (älteres System, Tests), gilt der Stick als eindeutig.
+FRS_BOOT_ENV=${FRS_BOOT_ENV:-/run/frs-boot.env}
+boot_medium_unique() {
+	local n
+	n=$(sed -n 's/^FRS_BOOT_DISKS=\([0-9]*\)$/\1/p' "$FRS_BOOT_ENV" 2>/dev/null)
+	[[ -z $n || $n -le 1 ]]
+}
+
 # Alle physischen Disks als JSON-Zeilen (ohne Loop, RAM, CD, ohne den Boot-Stick).
 #
 # Was eine Disk über sich meldet, steht danach in Dialogen, in Menüs und in der Falldatei:

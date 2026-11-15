@@ -1,0 +1,145 @@
+#!/bin/sh
+# Firestrike Rescue: das Live-Medium wählen und prüfen, bevor casper es benutzt.
+#
+# casper nimmt das Gerät, das live-media nennt, ohne Prüfung. Früher stand dort
+# /dev/disk/by-label/FRS_RESCUE, und ein Label kann jede Disk tragen. casper führt danach Programme
+# aus dem squashfs aus, schon bevor die Skripte unter casper-bottom laufen (chroot /root …). Eine
+# fremde Disk mit diesem Label konnte so das ganze System stellen.
+#
+# Dieses Skript läuft vor der Suche von casper (casper-premount):
+#   1. Kandidaten sind die Geräte mit der UUID der ISO. Die UUID setzt der Build für jede ISO neu,
+#      sie steht zusammen mit der SHA-256-Summe des squashfs in /conf/frs-medium.conf.
+#   2. Jeder Kandidat wird nur lesend eingehängt. Er gilt nur, wenn casper/ genau ein Abbild
+#      enthält (filesystem.squashfs: casper hängt sonst jedes weitere als Schicht darüber) und
+#      dessen SHA-256-Summe stimmt.
+#   3. Der erste passende bleibt unter /run/frs-medium eingehängt. Das Bootmenü nennt casper genau
+#      dieses Verzeichnis (live-media=/run/frs-medium), und LIVEMEDIA_TIMEOUT verhindert, dass
+#      casper anderswo sucht.
+# Passt kein Gerät, startet das System nicht. Was gewählt wurde, steht in /run/frs-boot.env,
+# auch wie viele Disks die UUID der ISO tragen: Mehr als eine heißt, eine Disk gibt sich als der
+# Stick aus. Der Assistent bindet dann keinen persistenten Speicher ein.
+#
+# Grenzen: Ein Gerät, das beim zweiten Lesen andere Daten liefert als beim ersten, erkennt die
+# Prüfung nicht. Eine vollständige Kopie des Sticks mit unverändertem squashfs gilt als Medium,
+# das System ist dann aber das echte.
+
+PREREQ=""
+prereqs() { echo "$PREREQ"; }
+case $1 in
+prereqs)
+	prereqs
+	exit 0
+	;;
+esac
+
+if [ -r /scripts/functions ]; then
+	. /scripts/functions
+	R=""
+else
+	# Nur für tests/unit-boot-medium.sh: außerhalb einer initrd, mit Attrappen.
+	R=${FRS_TEST_ROOT:?"frs_medium läuft nur in der initrd"}
+	panic() {
+		echo "PANIC: $*"
+		exit 1
+	}
+	wait_for_udev() { :; }
+fi
+
+CONF=$R/conf/frs-medium.conf
+MNT=$R/run/frs-medium
+ENV=$R/run/frs-boot.env
+SYS=$R/sys
+# Wie lange auf das Medium gewartet wird (USB-Sticks melden sich manchmal spät), in Sekunden.
+WAIT=300
+
+say() { echo "Firestrike Rescue: $*"; }
+# fatal TEXT   Kein Start. panic öffnet eine Notfall-Shell und kehrt zurück, wenn sie endet. Dann
+# liefe casper weiter und suchte nach LIVEMEDIA_TIMEOUT doch auf allen Disks. Deshalb immer wieder.
+fatal() {
+	while :; do
+		panic "Firestrike Rescue: $1"
+	done
+}
+
+uuid=$(sed -n 's/^FRS_ISO_UUID=\([0-9-]\{22\}\)$/\1/p' "$CONF" 2>/dev/null)
+sum=$(sed -n 's/^FRS_SQUASHFS_SHA256=\([0-9a-f]\{64\}\)$/\1/p' "$CONF" 2>/dev/null)
+if [ -z "$uuid" ] || [ -z "$sum" ]; then
+	fatal "$CONF fehlt oder ist unvollständig. Ohne UUID und Prüfsumme wird kein Live-Medium verwendet."
+fi
+
+# disk_of GERÄT   Name der Disk, auf der das Gerät liegt (sdb1 -> sdb, sr0 -> sr0).
+disk_of() {
+	b=${1##*/}
+	if [ -e "$SYS/class/block/$b/partition" ]; then
+		p=$(readlink -f "$SYS/class/block/$b")
+		p=${p%/*}
+		echo "${p##*/}"
+	else
+		echo "$b"
+	fi
+}
+
+# good   Ist das unter $MNT eingehängte Dateisystem das Medium dieser ISO?
+good() {
+	for f in "$MNT"/casper/*.squashfs "$MNT"/casper/*.ext2 "$MNT"/casper/*.dir; do
+		[ -e "$f" ] || [ -L "$f" ] || continue
+		if [ "$f" != "$MNT/casper/filesystem.squashfs" ]; then
+			say "$dev: weiteres Abbild ${f##*/} im Ordner casper, das Gerät wird nicht verwendet."
+			return 1
+		fi
+	done
+	[ -f "$MNT/casper/filesystem.squashfs" ] || return 1
+	say "Prüfe das Live-Medium auf $dev (SHA-256 des squashfs, je nach Stick bis zu einer Minute) …"
+	s=$(sha256sum "$MNT/casper/filesystem.squashfs" 2>/dev/null | cut -d' ' -f1)
+	if [ "$s" != "$sum" ]; then
+		say "$dev trägt die UUID der ISO, aber ein anderes squashfs. Das Gerät wird nicht verwendet."
+		return 1
+	fi
+	return 0
+}
+
+modprobe -q isofs 2>/dev/null || true
+mkdir -p "$MNT"
+tried=" "
+found=""
+waited=0
+while [ -z "$found" ]; do
+	wait_for_udev 10
+	for dev in $(blkid -c /dev/null -t "UUID=$uuid" -o device 2>/dev/null); do
+		case $tried in *" $dev "*) continue ;; esac
+		tried="$tried$dev "
+		mount -t iso9660 -o ro "$dev" "$MNT" 2>/dev/null || continue
+		if good; then
+			found=$dev
+			break
+		fi
+		umount "$MNT" 2>/dev/null
+	done
+	[ -n "$found" ] && break
+	if [ "$waited" -ge "$WAIT" ]; then
+		fatal "Kein Gerät mit dem geprüften Live-Medium gefunden (UUID $uuid). Es wird auf keiner anderen Disk gesucht."
+	fi
+	[ "$waited" = 10 ] && say "Warte auf das Live-Medium (UUID $uuid) …"
+	sleep 2
+	waited=$((waited + 2))
+done
+
+# Wie viele Disks tragen die UUID der ISO? Die ISO liegt auf dem Stick zweimal (ganze Disk und
+# erste Partition), gezählt werden deshalb Disks.
+disks=" "
+for d in $(blkid -c /dev/null -t "UUID=$uuid" -o device 2>/dev/null); do
+	d=$(disk_of "$d")
+	case $disks in *" $d "*) ;; *) disks="$disks$d " ;; esac
+done
+n=0
+for d in $disks; do n=$((n + 1)); done
+{
+	echo "FRS_BOOT_DEV=$found"
+	echo "FRS_BOOT_DISK=$(disk_of "$found")"
+	echo "FRS_BOOT_DISKS=$n"
+	echo "FRS_ISO_UUID=$uuid"
+	echo "FRS_SQUASHFS_SHA256=$sum"
+} >"$ENV"
+say "Live-Medium geprüft: $found. Disks mit der UUID der ISO: $n."
+[ "$n" -gt 1 ] && say "Achtung: Eine weitere Disk gibt sich als dieser Stick aus. Persistenter Speicher wird nicht eingebunden."
+exit 0

@@ -28,6 +28,7 @@ persist_candidates() {
 # zu erkennen oder tragen dort mehrere Partitionen den Namen, gibt es keinen Speicher.
 persist_find() {
 	local bd parts
+	boot_medium_unique || return 1
 	bd=$(boot_disk 2>/dev/null) || return 1
 	mapfile -t parts < <(persist_candidates "$bd")
 	((${#parts[@]} == 1)) || return 1
@@ -204,6 +205,7 @@ persist_free_bytes() {
 persist_create() {
 	local bd
 	bd=$(boot_disk) || { ui_msg "Persistenz" "Der Boot-Stick ist nicht sicher zu erkennen (Start aus dem RAM oder per Ventoy, oder mehrere Disks tragen das Label der ISO)."; return 1; }
+	boot_medium_unique || { ui_msg "Persistenz" "Beim Start trug eine weitere Disk die Kennung dieses Sticks. Welche Disk der Stick ist, lässt sich nicht sicher sagen. Es wird kein Speicher angelegt.\n\nFremde Disks abziehen und neu starten."; return 1; }
 	if [[ -n $(persist_candidates "$bd") ]]; then
 		ui_msg "Persistenz" "Auf dem Stick gibt es schon eine Partition mit dem Namen $PERSIST_LABEL. Eine zweite wird nicht angelegt.\n\nEntsperren: Werkzeuge > Persistenter Speicher > Entsperren und einhängen."
 		return 1
