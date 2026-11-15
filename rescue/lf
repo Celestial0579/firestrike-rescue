@@ -481,9 +481,18 @@ selftest_p2v() {
 		echo "LF-SELFTEST: P2V: mit fremdem Schlüssel keine Verbindung (Gegenprobe)"
 	fi
 	p2v_logout
-	if ! p2v_hostkey_scan || ! p2v_hostkey_accept "${P2V_FP: -4}" || ! p2v_login; then
-		echo "LF-SELFTEST: P2V: Anmeldung an der Attrappe fehlgeschlagen. sshd:"
-		tail -n 5 "$k/sshd.log" | sed 's/^/LF-SELFTEST:   /'
+	local lrc=1
+	if p2v_hostkey_scan && p2v_hostkey_accept "${P2V_FP: -4}"; then
+		p2v_login
+		lrc=$?
+	fi
+	if ((lrc != 0)); then
+		echo "LF-SELFTEST: P2V: Anmeldung an der Attrappe fehlgeschlagen (rc=$lrc). sshd:"
+		tail -n 8 "$k/sshd.log" | sed 's/^/LF-SELFTEST:   /'
+		out=$(p2v_r sh -c 'id -u; command -v qm pvesm pvesh qemu-nbd hostname')
+		echo "LF-SELFTEST: P2V: Probe auf dem Knoten: $(tr '\n' ' ' <<<"$out")"
+		echo "LF-SELFTEST: P2V: ssh meldet:"
+		tail -n 10 "$LF_LOG" | sed 's/^/LF-SELFTEST:   /'
 		good=0
 	fi
 	out=$(p2v_storages)
