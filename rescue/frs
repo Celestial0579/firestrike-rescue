@@ -639,14 +639,17 @@ selftest_claude_aufgabe() {
 	src=$dir/quelle.raw tgt=$dir/ziel.raw res=$dir/retten.raw
 	truncate -s 32M "$src" "$tgt"
 	head -c $((1024 * 1024)) /dev/urandom >"$res"
-	mkfs.ext4 -q -F "$src"
-	mkdir -p "$dir/roh"
-	mount "$src" "$dir/roh" && echo "PROBE-$RANDOM" >"$dir/roh/probe.txt" && cp "$dir/roh/probe.txt" "$dir/probe.txt"
-	umount "$dir/roh"
+	# Inhalt der Quelle ohne Einhängen (mkfs -d): Ein Loop-Gerät, das ein früherer Test
+	# schreibgeschützt hat, behält das beim nächsten Einbinden.
+	mkdir -p "$dir/inhalt"
+	echo "PROBE-$RANDOM" >"$dir/inhalt/probe.txt"
+	cp "$dir/inhalt/probe.txt" "$dir/probe.txt"
+	mkfs.ext4 -q -F -d "$dir/inhalt" "$src"
 	mkfs.ext4 -q -F "$tgt"
 	sloop=$(losetup --find --show "$src")
 	tloop=$(losetup --find --show "$tgt")
 	rloop=$(losetup --find --show "$res")
+	blockdev --setrw "$sloop" "$tloop" "$rloop"
 	for i in 1 2 3 4 5 6 7 8 9 10; do
 		udevadm settle
 		[[ $(lsblk -no FSTYPE "$tloop") == ext4 ]] && break

@@ -66,7 +66,7 @@ sektoren)
 	start=$(num "$2") || exit 2
 	n=$(num "${3:-1}") || exit 2
 	((n >= 1 && n <= 64)) || die "höchstens 64 Sektoren auf einmal"
-	dd if="$d" bs=512 skip="$start" count="$n" iflag=direct status=none | od -A x -t x1z -v
+	dd if="$d" bs=512 skip="$start" count="$n" status=none | od -A x -t x1z -v
 	;;
 kernel)
 	(($# == 0)) || die "kernel erwartet keine Argumente"

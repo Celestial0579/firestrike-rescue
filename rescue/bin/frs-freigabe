@@ -58,7 +58,8 @@ an)
 	chmod 0644 "$UNTIL"
 	systemctl stop "$UNIT.timer" 2>/dev/null || true
 	systemctl reset-failed "$UNIT.timer" "$UNIT.service" 2>/dev/null || true
-	systemd-run --quiet --unit="$UNIT" --on-active="${min}min" --timer-property=AccuracySec=1s \
+	# Type=oneshot: Wer den Dienst von Hand startet, kehrt erst zurück, wenn die Freigabe weg ist.
+	systemd-run --quiet --unit="$UNIT" --on-active="${min}min" --timer-property=AccuracySec=1s -p Type=oneshot \
 		/usr/local/bin/frs-freigabe ablauf || { off; echo "frs-freigabe: Timer ließ sich nicht setzen, Freigabe zurückgenommen" >&2; exit 1; }
 	note "Claude (frs-claude) hat volles sudo bis $(date -d "@$(cat "$UNTIL")" +%H:%M), freigegeben von ${SUDO_USER:-root}"
 	;;
