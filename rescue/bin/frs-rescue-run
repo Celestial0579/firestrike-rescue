@@ -152,6 +152,38 @@ PHASES=(
 	"3|Fehlerbereiche einzeln mit Direktzugriff und 3 Wiederholungen|-d -r3"
 )
 DONE=$(casefile_get PHASE_DONE 0)
+
+# Phase 0 (#46): Liegen im Fall Domains (frs-aufgabe domain, aus der NTFS-Bitmap der Quelle),
+# liest ddrescue zuerst nur sie: die MFT, dann die belegten Cluster. Danach holen die Phasen
+# 1 bis 3 den Rest in derselben Mapfile, ohne Gelesenes erneut zu lesen. Nach Phase 1 lohnt
+# eine Domain nicht mehr.
+if ((DONE == 0)); then
+	for d in domain-mft.map domain.map; do
+		f=$CASE/$d
+		[[ -e $f || -L $f ]] || continue
+		if ! casefile_domain_ok "$f"; then
+			say "$d ist keine gültige Domain-Mapfile und wird nicht verwendet."
+			continue
+		fi
+		case $d in
+		domain-mft.map) title="nur die MFT (Verwaltung des Dateisystems)" ;;
+		*) title="nur die belegten Cluster" ;;
+		esac
+		say "Phase 0: $title"
+		ddrescue "${SPARSE[@]}" -n -m "$f" "$SRC" "$IMG" "$MAP" 2>&1 | tee -a "$LOG"
+		rc=${PIPESTATUS[0]}
+		if ((rc != 0)); then
+			if [[ ! -b $SRC ]]; then
+				say "Die Quell-Disk ist verschwunden (USB-Reset oder Ausfall). Stand gespeichert, später fortsetzen."
+			else
+				say "ddrescue meldet Fehler (rc=$rc). Stand gespeichert, Fortsetzen ist möglich."
+			fi
+			setv STATE interrupted
+			finish "$rc"
+		fi
+	done
+fi
+
 for ph in "${PHASES[@]}"; do
 	IFS='|' read -r n title opts <<<"$ph"
 	((n <= DONE)) && continue

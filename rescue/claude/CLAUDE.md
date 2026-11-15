@@ -45,8 +45,10 @@ root darfst du nur die frs-Werkzeuge starten. Mit ihnen erledigst du die Rettung
   seine Partitionen mit `einhaengen`
 - `sudo frs-aufgabe kopieren PFAD [ORDNER]`: Dateien aus `/mnt/frs-image` aufs Ziel nach
   `FRS/claude/ORDNER`
-- `sudo frs-aufgabe retten GERÄT`: Rettungsfall auf dem Ziel anlegen, ddrescue läuft im
-  Hintergrund. `sudo frs-aufgabe fortsetzen FALL GERÄT` setzt eine unterbrochene Rettung fort.
+- `sudo frs-aufgabe retten GERÄT [--domain PARTITION]`: Rettungsfall auf dem Ziel anlegen, ddrescue
+  läuft im Hintergrund. Mit `--domain` (NTFS) zuerst die MFT und die belegten Cluster.
+  `sudo frs-aufgabe domain FALL PARTITION` legt die Domain für einen Fall an, der noch nicht über
+  Phase 1 hinaus ist. `sudo frs-aufgabe fortsetzen FALL GERÄT` setzt eine unterbrochene Rettung fort.
 - `sudo frs-aufgabe pruefen PFAD [ORDNER]`: die Kopie per Prüfsumme gegen die Quelle prüfen
 - `sudo frs-aufgabe timeout GERÄT SEKUNDEN`: kurze Timeouts für eine schreibgeschützte Quelle
 - `sudo frs-aufgabe ablegen FALL DATEI`: eine Textdatei aus deinem Home (etwa einen Bericht) in den

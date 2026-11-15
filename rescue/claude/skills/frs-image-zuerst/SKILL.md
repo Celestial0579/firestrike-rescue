@@ -38,7 +38,8 @@ merkt sich jeden gelesenen Bereich, ein Abbruch kostet deshalb nur Zeit.
 - **Sehr viele Fehlerstellen nach Phase 1:** Weiter nachlesen oder mit dem Erreichten weiterarbeiten?
   Das ist eine Abwägung zwischen Zeit, Risiko für die Disk und Wert der fehlenden Daten.
   Vorlegen, nicht selbst entscheiden.
-- **Nur Teile sind wichtig** (etwa ein Benutzerordner): Skill `frs-nur-belegte-bereiche`.
+- **NTFS und nur zum Teil belegt:** gleich mit `sudo frs-aufgabe retten /dev/sdX --domain /dev/sdXN`
+  starten (Skill `frs-nur-belegte-bereiche`). Das schont die Disk und spart viel Zeit.
 
 ## Lehren
 

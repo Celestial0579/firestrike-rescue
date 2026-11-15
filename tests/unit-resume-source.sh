@@ -96,6 +96,23 @@ fall echt DEFEKT-0001 1000204886016
 rescue echt /dev/sdx
 check "drei Phasen, gelesen nur von der gewählten Disk" '[[ $RC == 0 && $(grep -c " /dev/sdx " <<<"$READ") == 3 && $READ != *"/dev/sdy"* && $READ != *"/dev/sdw"* ]]'
 check "Zustand done, Pfad der Quelle vermerkt" '[[ $(field echt STATE) == "done" && $(field echt SRC_PATH) == /dev/sdx ]]'
+echo "Domain (#46): zuerst MFT und belegte Cluster, dann die Phasen:"
+fall domain DEFEKT-0001 1000204886016
+printf '# Domain\n0x00000000     +\n0x00100000  0x00200000  +\n' >"$T/domain/domain-mft.map"
+printf '0x00000000     ?     1\n0x00100000  0x10000000  +\n0x20000000  0x00001000  -\n' >"$T/domain/domain.map"
+rescue domain /dev/sdx
+check "Phase 0 liest erst domain-mft.map, dann domain.map, danach die Phasen 1 bis 3" '[[ $(sed -n 1p <<<"$READ") == *"-n -m $T/domain/domain-mft.map /dev/sdx "* && $(sed -n 2p <<<"$READ") == *"-n -m $T/domain/domain.map /dev/sdx "* && $(sed -n 3p <<<"$READ") == *"-n /dev/sdx"* && $(grep -c . <<<"$READ") == 5 ]]'
+fall domainfalsch DEFEKT-0001 1000204886016
+printf '0x00100000  0x00200000  +\n--input-position=0 x\n' >"$T/domainfalsch/domain.map"
+ln -s /etc/hostname "$T/domainfalsch/domain-mft.map"
+rescue domainfalsch /dev/sdx
+check "ungültige Domain und Verknüpfung: nicht verwendet, gemeldet" '[[ $READ != *" -m "* && $OUT == *"domain.map ist keine gültige Domain-Mapfile"* && $OUT == *"domain-mft.map ist keine gültige Domain-Mapfile"* && $(grep -c . <<<"$READ") == 3 ]]'
+fall domainspaet DEFEKT-0001 1000204886016
+casefile_set "$T/domainspaet/case.env" PHASE_DONE 1 2>/dev/null || sed -i 's/^STATE=interrupted$/STATE=interrupted\nPHASE_DONE=1/' "$T/domainspaet/case.env"
+printf '0x00100000  0x00200000  +\n' >"$T/domainspaet/domain.map"
+rescue domainspaet /dev/sdx
+check "nach Phase 1 keine Domain mehr" '[[ $READ != *" -m "* ]]'
+
 fall wwn 0x5000c500aaaaaaaa 1000204886016
 rescue wwn /dev/sdx
 check "Kennung ist der WWN: Rettung läuft" '[[ $RC == 0 && $READ == *" /dev/sdx "* ]]'
