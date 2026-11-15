@@ -29,7 +29,7 @@ check "die Kopie unterscheidet sich nur in der PATH-Zeile" '[[ $(diff "$L" "$T/f
 check "das Original setzt PATH fest, ohne Verzeichnisse des Aufrufers" 'grep -q "^PATH=/usr/sbin:/usr/bin:/sbin:/bin$" "$L"'
 
 # Ein Gerät, das es gibt: das erste Blockgerät dieses Rechners.
-dev=$(ls /sys/class/block | grep -E "^[a-z][a-z0-9]{0,31}$" | head -n 1)
+dev=$(find /sys/class/block -mindepth 1 -maxdepth 1 -printf "%f\n" | grep -E "^[a-z][a-z0-9]{0,31}$" | sort | head -n 1)
 run() {
 	: >"$T/aufrufe"
 	out=$("$T/frs-lesen" "$@" 2>"$T/fehler")

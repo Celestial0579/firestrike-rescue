@@ -36,7 +36,7 @@ run() {
 wrote() { grep -qvE '^(mountpoint|findmnt) ' "$T/aufrufe"; }
 
 echo "Abgelehnt, bevor geschrieben, eingehängt oder gestartet wird:"
-dev=/dev/$(ls /sys/class/block | grep -E "^[a-z][a-z0-9]{0,31}$" | head -n 1)
+dev=/dev/$(find /sys/class/block -mindepth 1 -maxdepth 1 -printf "%f\n" | grep -E "^[a-z][a-z0-9]{0,31}$" | sort | head -n 1)
 while IFS= read -r line; do
 	read -ra a <<<"$line"
 	run "${a[@]}"
