@@ -120,6 +120,13 @@ configure() {
 	# Sitzung, kein Projekt und kein Benutzer überstimmt sie. Ob sie wirken, prüft der Selbsttest
 	# mit der CLI der ISO (selftest_claude).
 	install -D -m 0644 "$SRC/rescue/claude/managed-settings.json" "$CHROOT/etc/claude-code/managed-settings.json"
+	# Skills zur Datenrettung: Verwaltete Skills liegen unter .claude/skills im Verzeichnis der
+	# verwalteten Einstellungen. Skills aus ~/.claude und aus Projektordnern lädt Claude Code im
+	# Rettungssystem nicht (strictPluginOnlyCustomization). Ob sie geladen werden, prüft der Selbsttest.
+	local s
+	for s in "$SRC"/rescue/claude/skills/*/; do
+		install -D -m 0644 "$s/SKILL.md" "$CHROOT/etc/claude-code/.claude/skills/$(basename "$s")/SKILL.md"
+	done
 	install -m 0644 "$SRC/build/packages.list" "$CHROOT/tmp/packages.list"
 	install -m 0755 "$SRC/build/chroot-setup.sh" "$CHROOT/tmp/chroot-setup.sh"
 

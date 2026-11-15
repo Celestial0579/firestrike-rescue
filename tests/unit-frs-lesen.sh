@@ -19,7 +19,7 @@ T=$(mktemp -d)
 # frs-lesen setzt PATH selbst. Damit die Attrappen greifen, läuft eine Kopie, deren PATH-Zeile auf
 # den Ordner der Attrappen zeigt.
 mkdir -p "$T/bin"
-for t in lsblk smartctl sfdisk blkid dd od dmesg tail; do
+for t in lsblk smartctl sfdisk blkid dd od dmesg tail ldmtool; do
 	printf '#!/bin/sh\necho "%s $*" >>"%s/aufrufe"\n' "$t" "$T" >"$T/bin/$t"
 	chmod +x "$T/bin/$t"
 done
@@ -40,6 +40,10 @@ echo "Gültige Aufrufe starten genau ein Werkzeug mit festen Optionen:"
 if [[ -n $dev && -b /dev/$dev ]]; then
 	run smart "/dev/$dev"
 	check "smart: smartctl -x GERÄT" '[[ $rc == 0 && $(cat "$T/aufrufe") == "smartctl -x /dev/$dev" ]]'
+	run identitaet "/dev/$dev"
+	check "identitaet: smartctl -i GERÄT, kein Medienzugriff" '[[ $rc == 0 && $(cat "$T/aufrufe") == "smartctl -i /dev/$dev" ]]'
+	run ldm "/dev/$dev"
+	check "ldm: ldmtool scan GERÄT" '[[ $(cat "$T/aufrufe") == "ldmtool scan /dev/$dev" ]]'
 	run partitionen "/dev/$dev"
 	check "partitionen: sfdisk -d GERÄT" '[[ $(cat "$T/aufrufe") == "sfdisk -d /dev/$dev" ]]'
 	run dateisystem "/dev/$dev"
@@ -64,6 +68,11 @@ while IFS= read -r line; do
 	check "frs-lesen $line" '[[ $rc == 2 && ! -s $T/aufrufe && -z $out && -s $T/fehler ]]'
 done <<EOF
 lies /etc/shadow
+identitaet
+identitaet /etc/shadow
+identitaet $d -s on
+ldm /etc/shadow
+ldm $d --create
 smart
 smart $d $d
 smart --scan

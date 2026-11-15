@@ -628,6 +628,42 @@ selftest_claude_user() {
 	selftest_claude_aufgabe "$dir" || good=0
 	selftest_claude_freigabe || good=0
 	selftest_claude_wayland "$dir" || good=0
+	selftest_claude_skills || good=0
+	((good))
+}
+
+# selftest_claude_skills   Claude Code lädt für frs-claude genau die Skills aus
+#   /etc/claude-code/.claude/skills. Ein Probe-Skill, der nur für diesen Lauf dort liegt, muss
+#   dabei sein (dann kommen sie wirklich von dort), ein Skill im Home von frs-claude nicht.
+selftest_claude_skills() {
+	local good=1 sk=/etc/claude-code/.claude/skills d token want got s probe
+	token="$RANDOM$RANDOM"
+	probe=frs-selbsttest-probe-$token
+	install -d "$sk/$probe"
+	printf -- '---\nname: %s\ndescription: Probe des Selbsttests %s\n---\n\nNur für den Selbsttest.\n' "$probe" "$token" >"$sk/$probe/SKILL.md"
+	d=$(selftest_as mktemp -d /tmp/frs-skills.XXXXXX)
+	selftest_as mkdir -p "$d/arbeit" "$d/home/.claude/skills/frs-fremd-$token"
+	selftest_as sh -c 'printf -- "---\nname: %s\ndescription: fremd\n---\n\nfremd\n" "$1" >"$2"' _ "frs-fremd-$token" "$d/home/.claude/skills/frs-fremd-$token/SKILL.md"
+	echo "kontrolle" | selftest_as tee "$d/arbeit/k.txt" >/dev/null
+	selftest_as env FRS_LIB="$FRS_LIB" bash -c '. "$FRS_LIB/claude-check.sh"; claude_check_run /usr/local/bin/claude "$1" skills "cat $1/arbeit/k.txt" "$1/arbeit"' _ "$d"
+	got=$(jq -r 'select(.type == "system" and .subtype == "init") | .skills[]?' "$d/skills.json" 2>/dev/null | sort)
+	want=$(for s in "$sk"/*/SKILL.md; do basename "$(dirname "$s")"; done | sort)
+	if [[ -z $got ]]; then
+		echo "FRS-SELFTEST: Skills: Der Lauf als frs-claude meldet keine Skills"
+		good=0
+	else
+		for s in $want; do
+			grep -qx "$s" <<<"$got" || { echo "FRS-SELFTEST: Skills: $s aus $sk fehlt"; good=0; }
+		done
+		grep -qx "frs-fremd-$token" <<<"$got" && { echo "FRS-SELFTEST: Skills: ein Skill aus dem Home von frs-claude wurde geladen"; good=0; }
+		# Nur frs-Skills stammen aus dem Rettungssystem. Andere Namen sind mitgelieferte Skills der CLI.
+		for s in $(grep '^frs-' <<<"$got"); do
+			grep -qx "$s" <<<"$want" || { echo "FRS-SELFTEST: Skills: $s stammt nicht aus $sk"; good=0; }
+		done
+	fi
+	rm -rf "${sk:?}/$probe"
+	selftest_as rm -rf "$d"
+	((good)) && echo "FRS-SELFTEST: Skills: frs-claude bekommt genau die Skills aus $sk ($(grep -c . <<<"$want") mit Probe), keine aus dem eigenen Home"
 	((good))
 }
 
@@ -715,6 +751,42 @@ selftest_claude_aufgabe() {
 	fi
 	got=$(selftest_as sudo -n frs-aufgabe stand 2>&1)
 	[[ $got == *"Letzte Aufgaben"* ]] || { echo "FRS-SELFTEST: frs-aufgabe: stand ohne Ausgabe"; good=0; }
+
+	# Prüfen: gleiche Kopie ohne Abweichung, eine veränderte Kopie wird gemeldet.
+	if selftest_as sudo -n frs-aufgabe pruefen "$mp/probe.txt" selbsttest >/dev/null 2>&1 &&
+		grep -q '^rsync rc=0$' "$FRS_TARGET_MNT/FRS/claude/selbsttest.pruefung.txt"; then
+		echo x >>"$FRS_TARGET_MNT/FRS/claude/selbsttest/probe.txt"
+		if ! selftest_as sudo -n frs-aufgabe pruefen "$mp/probe.txt" selbsttest >/dev/null 2>&1 &&
+			grep -q '^ABWEICHUNG: probe.txt$' "$FRS_TARGET_MNT/FRS/claude/selbsttest.pruefung.txt"; then
+			echo "FRS-SELFTEST: frs-aufgabe: pruefen bestätigt eine gleiche Kopie und meldet eine veränderte"
+		else
+			echo "FRS-SELFTEST: frs-aufgabe: pruefen hat eine veränderte Kopie nicht gemeldet"
+			good=0
+		fi
+	else
+		echo "FRS-SELFTEST: frs-aufgabe: pruefen meldet bei einer gleichen Kopie Abweichungen"
+		good=0
+	fi
+
+	# Ablegen: eine Textdatei aus dem Home von Claude in den Fall, nichts anderes.
+	selftest_as sh -c 'echo "Bericht des Selbsttests" >"$HOME/selbsttest-bericht.md"; ln -sf /etc/shadow "$HOME/selbsttest-link.md"; head -c 4096 /dev/urandom >"$HOME/selbsttest-binaer.md"'
+	if [[ -n $c ]] && selftest_as sudo -n frs-aufgabe ablegen "$(basename "$c")" /var/lib/frs-claude/selbsttest-bericht.md >/dev/null 2>&1 &&
+		cmp -s "$c/claude-selbsttest-bericht.md" /var/lib/frs-claude/selbsttest-bericht.md &&
+		! selftest_as sudo -n frs-aufgabe ablegen "$(basename "$c")" /var/lib/frs-claude/selbsttest-link.md >/dev/null 2>&1 &&
+		! selftest_as sudo -n frs-aufgabe ablegen "$(basename "$c")" /var/lib/frs-claude/selbsttest-binaer.md >/dev/null 2>&1 &&
+		[[ ! -e $c/claude-selbsttest-link.md && ! -e $c/claude-selbsttest-binaer.md && ! -e $c/claude-shadow ]]; then
+		echo "FRS-SELFTEST: frs-aufgabe: ablegen legt Textdateien aus dem Home von Claude in den Fall, keine Verknüpfungen, nichts Binäres"
+	else
+		echo "FRS-SELFTEST: frs-aufgabe: ablegen nahm eine Verknüpfung oder Binärdatei an oder legte nichts ab"
+		good=0
+	fi
+	selftest_as sh -c 'rm -f "$HOME"/selbsttest-*.md'
+
+	# Timeout: nur für Disks mit einstellbarem Timeout. Ein Loop-Gerät hat keinen.
+	if selftest_as sudo -n frs-aufgabe timeout "$rloop" 5 >/dev/null 2>&1; then
+		echo "FRS-SELFTEST: frs-aufgabe: timeout nahm ein Gerät ohne einstellbaren Timeout an"
+		good=0
+	fi
 
 	selftest_as sudo -n frs-aufgabe aushaengen "$(basename "$sloop")" >/dev/null 2>&1
 	mountpoint -q "$mp" && { echo "FRS-SELFTEST: frs-aufgabe: aushaengen hat nicht ausgehängt"; good=0; umount "$mp"; }

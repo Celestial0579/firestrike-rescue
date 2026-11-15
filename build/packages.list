@@ -33,6 +33,8 @@ os-prober
 # --- Rettung / Forensik ---
 gddrescue
 ddrescueview?
+ddrutility?
+ldmtool?
 safecopy
 testdisk
 foremost

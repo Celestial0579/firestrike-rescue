@@ -61,6 +61,15 @@ fortsetzen fall
 stand x
 notiz
 notiz a b
+pruefen /etc/hostname
+pruefen /etc/hostname x
+timeout $dev
+timeout $dev 1
+timeout $dev 999
+timeout $dev x
+timeout /etc/shadow 5
+ablegen fall
+ablegen ../x /etc/shadow
 EOF
 run einhaengen "$dev -o rw"
 check "frs-aufgabe einhaengen '$dev -o rw' (ein Argument)" '[[ $rc == 2 ]] && ! wrote'
