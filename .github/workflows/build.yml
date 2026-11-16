@@ -54,6 +54,8 @@ jobs:
       # Boot: casper durchsucht keine fremden Disks. GRUB und initrd nehmen nur das geprüfte Medium.
       # Werkzeuge: Ein Fehler wird gemeldet, die Ausgabe erreicht das Terminal nur gefiltert.
       # lf.conf: Was die Vorlage nennt, wirkt. Der Name im Bericht ist Text, nie Befehl.
+      # P2V: Werte nur geprüft und einzeln gequotet zum Knoten, nur der bestätigte SSH-Schlüssel,
+      # Kopier-Job nur für schreibgeschützte Quellen. Echt (sshd, qemu-nbd) prüft es selftest_p2v.
       - name: Schutz-Tests
         run: |
           sudo apt-get install -y -qq jq whiptail
@@ -81,6 +83,7 @@ jobs:
           bash tests/unit-boot-medium.sh
           bash tests/unit-runv.sh
           bash tests/unit-lf-conf.sh
+          bash tests/unit-p2v.sh
       - name: Unit-Tests
         run: |
           sudo apt-get install -y -qq jq whiptail

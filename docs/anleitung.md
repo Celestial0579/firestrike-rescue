@@ -58,6 +58,28 @@ Für gesunde Disks, z. B. beim Umzug von HDD auf SSD:
 
 NTFS lässt sich nur verkleinern, wenn Windows sauber heruntergefahren wurde. Der Schnellstart muss dafür aus sein, oder du fährst Windows mit `shutdown /s /t 0` herunter.
 
+Umzug in eine Proxmox-VM
+------------------------
+
+Macht aus dem Rechner, der vom Stick gestartet ist, eine VM auf einem Knoten von Proxmox VE (P2V). Die Disks gehen über das Netz direkt in die Volumes der neuen VM.
+
+Du brauchst:
+
+- **Netz** zum Knoten. Fehlt eine Adresse, richtest du sie im ersten Schritt mit nmtui ein.
+- **SSH als root** auf dem Knoten, mit Kennwort oder mit einem Schlüssel unter `~/.ssh` im persistenten Speicher. Der Knoten muss Weiterleitungen über SSH erlauben (`AllowTcpForwarding`, bei Proxmox VE voreingestellt), darüber laufen die Disks.
+- **Windows sauber heruntergefahren:** Schnellstart aus, kein Ruhezustand, BitLocker angehalten.
+
+Ablauf:
+
+1. **Knoten wählen und seinen Schlüssel bestätigen.** Der Assistent zeigt den Fingerabdruck des SSH-Schlüssels, den der Knoten meldet. Vergleiche ihn mit dem auf dem Knoten selbst (`ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub`, an der Konsole oder in der Shell der Proxmox-Oberfläche) und tippe die letzten 4 Zeichen ab. Erst dann verbindet sich ssh, und nur mit diesem Schlüssel. Das Kennwort fragt ssh selbst ab, der Assistent speichert es nicht. Die Verbindung endet mit dem Assistenten.
+2. **Speicher, VM-ID und Netz wählen.** Dünne Speicher (lvmthin, ZFS, Ceph, Verzeichnisse mit qcow2) sind empfohlen. Die VM-ID muss frei sein, bestehende VMs fasst der Assistent nie an. Die VM entsteht auf dem Knoten, mit dem du verbunden bist.
+3. **Quell-Disks wählen,** bis zu 6. Jede ist ab der Wahl schreibgeschützt. Der Stick selbst steht nicht in der Liste. Ist ein NTFS-Volume nicht sauber getrennt, warnt der Assistent. Es wird dann Block für Block kopiert.
+4. **VM-Daten festlegen:** Name, Arbeitsspeicher, Kerne, CPU-Typ, Betriebssystem, Firmware (UEFI bei GPT, sonst BIOS) und TPM 2.0 für Windows 11.
+5. **Bestätigen:** Der Assistent zeigt alles noch einmal. Zur Bestätigung tippst du die VM-ID ab.
+6. **Kopieren:** Der Assistent legt die VM an, je Quell-Disk ein Volume in passender Größe. Die Partitionstabelle wird übernommen, jede Partition mit partclone kopiert (nur belegte Blöcke), Unbekanntes mit dd. Die Volumes bleiben dünn. Mit **Strg+B, D** verlässt du die Ansicht, die Kopie läuft weiter.
+
+Die VM startet zuerst mit SATA-Disks und einer e1000e-Netzkarte, damit Windows ohne VirtIO-Treiber bootet. Danach in der VM die VirtIO-Treiber und den QEMU-Gastagenten installieren, Disks auf SCSI und Netz auf VirtIO umstellen und die Aktivierung prüfen. Den alten Rechner nicht mehr gleichzeitig im selben Netz betreiben.
+
 Claude
 ------
 

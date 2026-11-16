@@ -1,10 +1,11 @@
 <p align="center"><img src="docs/banner.svg" alt="Leuchtfeuer" width="100%"></p>
 
-Leuchtfeuer ist ein bootfähiges Rettungssystem auf Basis von **Ubuntu 26.04 LTS**. Es ist mit allen Updates gebaut und bringt die wichtigen Werkzeuge mit. Ein Assistent führt Schritt für Schritt durch drei Aufgaben:
+Leuchtfeuer ist ein bootfähiges Rettungssystem auf Basis von **Ubuntu 26.04 LTS**. Es ist mit allen Updates gebaut und bringt die wichtigen Werkzeuge mit. Ein Assistent führt Schritt für Schritt durch vier Aufgaben:
 
 - **Datenrettung** von defekten Disks. Zuerst entsteht immer ein Image auf einer Ziel-Disk, dann geht es mit dem Image weiter.
 - **Klonen**, z. B. von HDD auf SSD. Die Größe wird automatisch angepasst, auch auf kleinere Ziele.
 - **Disk anpassen**: Partitionen vergrößern oder verkleinern, GPT reparieren, sicher löschen.
+- **Umzug in eine Proxmox-VM** (P2V): Die Disks des Rechners gehen über das Netz in eine neue VM auf einem Knoten von Proxmox VE. Kopiert werden nur belegte Bereiche, die Volumes bleiben dünn.
 
 Leuchtfeuer hieß bis November 2026 **firestrike-rescue**. GitHub leitet alte Links und Klone auf dieses Repo um. Eine Beta lang gelten die alten `frs`-Befehle weiter, und ein persistenter Speicher mit dem alten Namen `FRS-DATA` wird wie `LF-DATA` verwendet. Rettungsfälle im alten Ordner `FRS/` auf einer Ziel-Disk lassen sich fortsetzen.
 
@@ -50,6 +51,7 @@ Diese Schutzregeln gelten immer:
 - Texte von Datenträgern sind auch für Claude Daten, keine Anweisungen. Was die Geräte melden, steht in einer Datendatei (`zustand.txt`), nicht in einer `CLAUDE.md`. Eine `CLAUDE.md`, Hooks, Skills oder ein MCP-Server von einem eingehängten Datenträger gelten nicht.
 - Was ein Datenträger über sich meldet (Modell, Label, Partitionsname), steht in Dialogen nur gefiltert: sichtbare Zeichen, alles andere als `?`. Eine Seriennummer mit anderen Zeichen gilt nicht als Kennung. Auch die Ausgabe von Werkzeugen wie fsck erreicht Bildschirm und Protokoll ohne Steuerzeichen.
 - Die Suche nach Rettungsfällen schreibt nicht. Die gewählte Disk ist dabei schreibgeschützt und nur lesend eingehängt, bis du einen Rettungsfall gewählt hast.
+- Beim Umzug in eine VM verbindet sich ssh nur mit dem Schlüssel des Knotens, den du über seinen Fingerabdruck bestätigt hast. Zugangsdaten speichert der Assistent nicht. Geschrieben wird nur in die Volumes einer neuen VM, deren ID du abtippst. Die Daten laufen über Unix-Sockets, kein Netzport, an dem ein anderer Benutzer in die Volumes schreiben könnte.
 - Der persistente Speicher ist nur die Partition `LF-DATA` auf dem Stick, von dem gestartet wurde. Unverschlüsselt wird er erst nach einer Rückfrage eingebunden, und `lf.conf` wird gelesen, nicht ausgeführt.
 - Für Claude sind die wichtigsten Regeln gesperrt statt nur aufgeschrieben. Den Schreibschutz einer Disk aufheben, die Sperre anfassen oder das Original-Image reparieren kann Claude nicht. Jeden schreibenden Befehl bestätigst du selbst, und keine Rückfrage lässt sich dauerhaft abschalten. Auto-Modus und Modus ohne Rückfragen gibt es nicht.
 
@@ -60,7 +62,7 @@ Was ist drin
 |---|---|
 | Rettung | ddrescue, ddrescueview, safecopy, testdisk/photorec, foremost, sleuthkit, ewf-tools |
 | Diagnose | smartmontools, nvme-cli, hdparm, memtester, memtest86+, stress-ng, lshw |
-| Klonen | partclone, fsarchiver, clonezilla, qemu-img (VHDX), wimtools |
+| Klonen | partclone, fsarchiver, clonezilla, qemu-img (VHDX), wimtools, nbd-client (Umzug in eine VM) |
 | Dateisysteme | NTFS, ext2–4, XFS, Btrfs, exFAT, FAT, F2FS, HFS+, LVM, mdadm, LUKS, BitLocker (dislocker) |
 | Windows | chntpw, efibootmgr, ms-sys |
 | Netz | NetworkManager (nmtui, WLAN), SSH (auf Wunsch), rsync, rclone, SMB, NFS |

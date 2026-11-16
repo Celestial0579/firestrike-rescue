@@ -71,7 +71,7 @@ check "die UUID hat die Form, die blkid und GRUB für ISO-Dateisysteme melden" '
 echo "Die initrd prüft das Medium, bevor casper es benutzt:"
 check "lf_medium liegt unter casper-premount und ist ausführbar" '[[ -x $PREMOUNT ]]'
 check "der Hook bringt blkid, sha256sum und isofs in die initrd" '[[ -x $HOOK ]] && grep -q "copy_exec /sbin/blkid" "$HOOK" && grep -q "copy_exec /usr/bin/sha256sum" "$HOOK" && grep -q "manual_add_modules isofs" "$HOOK"'
-check "die Dateien kommen über das Overlay vor update-initramfs ins chroot" 'grep -q "cp -a \"\$SRC/build/overlay/.\" \"\$CHROOT/\"" "$BUILD"'
+check "die Dateien kommen über das Overlay vor update-initramfs ins chroot" 'grep -q "cp -a --no-preserve=ownership \"\$SRC/build/overlay/.\" \"\$CHROOT/\"" "$BUILD"'
 l_sum=$(grep -n 'sha256sum "$ISO/casper/filesystem.squashfs"' "$BUILD" | cut -d: -f1)
 l_sq=$(grep -n '^	mksquashfs ' "$BUILD" | cut -d: -f1)
 l_iso=$(grep -n '^	xorriso -as mkisofs' "$BUILD" | cut -d: -f1)
