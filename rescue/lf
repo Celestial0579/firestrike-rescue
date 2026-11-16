@@ -461,11 +461,17 @@ selftest_p2v() {
 	head -c 300000 /dev/urandom >"$dir/p2v-inhalt/probe.bin"
 	truncate -s 48M "$img"
 	sgdisk -n 1:2048:+24M -t 1:8300 -n 2:0:+8M -t 2:0700 "$img" >/dev/null
+	# Dateisystem und Daten entstehen direkt in der Abbilddatei, ohne die Partitionsgeräte des
+	# Loop-Geräts: Die sind direkt nach losetup nicht immer schon da.
+	mkfs.ext4 -q -F -E offset=$((2048 * 512)) -d "$dir/p2v-inhalt" "$img" $((24 * 1024))k
+	head -c $((8 * 1024 * 1024)) /dev/urandom |
+		dd of="$img" bs=512 seek="$(sgdisk -i 2 "$img" | awk '/First sector/ {print $3}')" conv=notrunc status=none
 	loop=$(losetup --find --show -P "$img")
 	udevadm settle
-	mkfs.ext4 -q -d "$dir/p2v-inhalt" "${loop}p1"
-	head -c $((8 * 1024 * 1024)) /dev/urandom >"${loop}p2"
-	sync
+	if [[ $(blkid -p -o value -s TYPE "${loop}p1" 2>/dev/null) != ext4 ]]; then
+		echo "LF-SELFTEST: P2V: Quelle ohne ext4 auf Partition 1 ($(lsblk -no NAME,FSTYPE "$loop" | tr '\n' ' '))"
+		good=0
+	fi
 	safety_set_ro "$loop"
 	sum1=$(sha256sum <"$loop")
 
