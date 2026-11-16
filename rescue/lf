@@ -550,6 +550,11 @@ selftest_p2v() {
 		echo "LF-SELFTEST: P2V: Partitionen und Daten im Volume stimmen mit der Quelle überein"
 	else
 		echo "LF-SELFTEST: P2V: Volume weicht von der Quelle ab ($(lsblk -no NAME,SIZE,FSTYPE "$t" 2>/dev/null | tr '\n' ' '))"
+		echo "LF-SELFTEST:   blkid p1: $(blkid -p "${t}p1" 2>&1 | head -c 200)"
+		echo "LF-SELFTEST:   debugfs: $(debugfs -R "dump /probe.bin $dir/p2v-zurueck.bin" "${t}p1" 2>&1 | tail -n 2 | tr '\n' ' ')"
+		echo "LF-SELFTEST:   sha p1: $(sha256sum <"${loop}p1" | cut -c1-12) / $(sha256sum <"${t}p1" | cut -c1-12), p2: $(sha256sum <"${loop}p2" | cut -c1-12) / $(sha256sum <"${t}p2" | cut -c1-12)"
+		echo "LF-SELFTEST:   Größen: $(blockdev --getsize64 "${loop}p1" "${t}p1" "${loop}p2" "${t}p2" 2>&1 | tr '\n' ' ')"
+		grep -a -E '==>|FEHLER|partclone|error|Fehler' "$LF_LOG" | tail -n 12 | sed 's/^/LF-SELFTEST:   Job: /'
 		good=0
 	fi
 	losetup -d "$t" "$loop"
