@@ -179,7 +179,16 @@ jobs:
           VERSION: ${{ needs.build.outputs.version }}
         run: |
           # Solange das Projekt in der Beta ist: Tag mit -beta, Release als Vorabversion
-          if [[ $GITHUB_REF == refs/tags/v* ]]; then tag="$GITHUB_REF_NAME"; else tag="v$VERSION-beta"; fi
+          # Ziel (#52): Ein Tag-Lauf nennt kein --target. Das Tag gibt es schon, und ein --target auf
+          # einen Commit, der hinter main liegt und dessen Workflow von main abweicht, verlangt das
+          # Recht workflows, das github.token nie hat (HTTP 403). --verify-tag legt kein Tag an.
+          if [[ $GITHUB_REF == refs/tags/v* ]]; then
+            tag="$GITHUB_REF_NAME"
+            ziel=(--verify-tag)
+          else
+            tag="v$VERSION-beta"
+            ziel=(--target "$GITHUB_SHA")
+          fi
           # Die Version trägt das Datum. Ein zweiter Lauf am selben Tag ergäbe denselben Tag.
           if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             echo "::error::Das Release $tag gibt es schon. Für ein weiteres Release am selben Tag ein eigenes Tag v… setzen."
@@ -187,7 +196,7 @@ jobs:
           fi
           create() {
             gh release create "$tag" out/*.iso out/SHA256SUMS out/*.manifest \
-              --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --prerelease \
+              --repo "$GITHUB_REPOSITORY" "${ziel[@]}" --prerelease \
               --title "Leuchtfeuer $VERSION (Beta)" \
               --notes "Ubuntu 26.04 LTS mit allen Updates bis $(date -u +%F). Mit Rufus (DD-Modus), balenaEtcher oder dd auf einen USB-Stick schreiben. Prüfsummen: SHA256SUMS. Herkunft prüfen: gh attestation verify <iso> --repo $GITHUB_REPOSITORY"
           }
