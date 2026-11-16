@@ -77,6 +77,13 @@ domain fall /etc/shadow
 retten $dev --domain
 retten $dev --domain /etc/shadow
 retten $dev --mehr $dev
+retten $dev --haengt
+retten $dev --haengt --domain
+retten $dev --domain $dev --domain $dev
+retten $dev --haengt=1
+fortsetzen fall $dev --haengt
+fortsetzen fall $dev --mehr
+fortsetzen ../x $dev --haengt
 EOF
 run einhaengen "$dev -o rw"
 check "lf-aufgabe einhaengen '$dev -o rw' (ein Argument)" '[[ $rc == 2 ]] && ! wrote'

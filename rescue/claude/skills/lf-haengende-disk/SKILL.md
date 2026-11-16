@@ -1,6 +1,6 @@
 ---
 name: lf-haengende-disk
-description: Rettung einer Disk, die nach kurzer Zeit hängt oder verschwindet (typisch für SSD-Controller-Fehler). Kurze Timeouts, Abbruch statt Warten, Neustart der Disk und Fortsetzen über die Mapfile. Nutzen, wenn ddrescue stehen bleibt, die Disk sich als "becoming ready" meldet oder vom Bus verschwindet.
+description: Rettung einer Disk, die nach kurzer Zeit hängt oder verschwindet (typisch für SSD-Controller-Fehler). Modus hängende Disk (lf-aufgabe retten --haengt): kurze Timeouts, Abbruch statt Warten, Weiterlesen hinter der Hängerstelle, Warten auf dieselbe Disk nach ihrem Neustart. Nutzen, wenn ddrescue stehen bleibt, die Disk sich als "becoming ready" meldet oder vom Bus verschwindet.
 ---
 
 # Hängende oder verschwindende Disk
@@ -19,26 +19,32 @@ wieder normal. Dann lässt sich die Disk in vielen kurzen Läufen vollständig r
 
 ## Ablauf
 
-1. **Kurze Timeouts für die Quelle:** `sudo lf-aufgabe timeout /dev/sdX 5`. Der Kernel wartet bei
-   einem Hänger dann 5 Sekunden statt 30 und mehr, ein Hänger blockiert nicht minutenlang. Das gilt
-   nur für Disks, die schon als Quelle schreibgeschützt sind, und bis zum Abziehen.
-2. **Rettung starten oder fortsetzen** wie in `lf-image-zuerst`.
-3. **Hängt die Disk:** **Den Techniker bitten**, sie neu zu starten: Stromzufuhr trennen (Kabel
-   oder Adapter abziehen), etwa 10 Sekunden warten, wieder anschließen. Danach erneut
-   `sudo lf-aufgabe timeout …` (der Wert gilt nur bis zum Abziehen) und
-   `sudo lf-aufgabe fortsetzen FALL /dev/sdY`. Der Gerätename kann sich geändert haben:
-   mit `sudo lf-lesen disks` an Modell und Seriennummer prüfen.
-4. Wiederholen, bis der Stand "done" ist oder der Techniker abbricht. Über die Mapfile geht kein
-   gelesener Bereich verloren.
+1. **Rettung im Modus hängende Disk starten:** `sudo lf-aufgabe retten /dev/sdX --haengt`, oder
+   eine laufende Rettung damit fortsetzen: `sudo lf-aufgabe fortsetzen FALL /dev/sdX --haengt`.
+   Der Techniker wählt den Modus im Assistenten beim Anlegen des Falls ("Hängende Disk?").
+   Dann gilt:
+   - kurze Timeouts für die Quelle (5 s statt 30 und mehr), ddrescue gibt mit `-T` nach kurzer
+     Zeit ohne erfolgreiches Lesen auf, statt minutenlang zu warten,
+   - nach einem Hänger liest der Lauf 64 MiB hinter der Hängerstelle weiter. Die Lücke holen
+     die späteren Phasen nach, für Phase 3 ein eigener Durchlauf,
+   - antwortet die Disk nicht mehr, wartet der Lauf bis zu 30 Minuten auf genau diese Disk:
+     Seriennummer oder WWN und Größe wie in der Falldatei, und nur, wenn genau eine solche Disk
+     da ist. Die wiedergekehrte Disk wird sofort schreibgeschützt.
+2. **Hängt die Disk:** `sudo lf-aufgabe stand` zeigt den Hänger. **Den Techniker bitten**, sie neu
+   zu starten: Stromzufuhr trennen (Kabel oder Adapter abziehen), etwa 10 Sekunden warten, wieder
+   anschließen. Der Lauf macht danach von selbst weiter. Fortsetzen von Hand braucht es nur,
+   wenn der Lauf endet: nach 30 Minuten ohne die Disk, nach 100 Hängern, oder wenn der Fall nur
+   einen Gerätepfad als Kennung hat. Dann `sudo lf-aufgabe fortsetzen FALL /dev/sdY`. Der
+   Gerätename kann sich geändert haben: mit `sudo lf-lesen disks` an Modell und Seriennummer
+   prüfen. Auch dann geht es hinter der Hängerstelle weiter.
+3. Wiederholen, bis der Stand "done" ist oder der Techniker abbricht. Über die Mapfile geht kein
+   gelesener Bereich verloren. Die Zahl der Hänger steht im Bericht.
 
-## Optional: Neustart über eine schaltbare Steckdose
+Ohne den Modus helfen kurze Timeouts allein: `sudo lf-aufgabe timeout /dev/sdX 5`. Das gilt nur
+für Disks, die schon als Quelle schreibgeschützt sind, und bis zum Abziehen.
 
-Hängt die Disk an einem eigenen Netzteil (Wechselrahmen, Dock), lässt sich der Neustart
-automatisieren: eine schaltbare Steckdose, die der Techniker aus der Ferne aus- und einschaltet.
-Ablauf pro Hänger: aus, 10 Sekunden warten, an, warten bis die Disk erscheint, Timeouts setzen,
-fortsetzen. Bei wiederholtem Hänger an derselben Stelle ein Stück dahinter weiterlesen und die
-Lücke später nachholen. Eingerichtet und ausgelöst wird das nur vom Techniker. Das
-Rettungssystem steuert keine Geräte im Netz.
+Eine schaltbare Steckdose für den Neustart richtet nur der Techniker ein und löst nur er aus.
+Das Rettungssystem steuert keine Geräte im Netz.
 
 ## Wann der Techniker entscheidet
 

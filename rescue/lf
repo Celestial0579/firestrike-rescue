@@ -65,6 +65,7 @@ selftest() {
 		ok=0
 	fi
 	[[ $(casefile_peek "$dir/case/case.env" STATE) == "done" ]] || ok=0
+	selftest_hang "$dir" "$loop" || ok=0
 	selftest_target "$dir" || ok=0
 	selftest_search "$dir" || ok=0
 	selftest_boot "$dir" || ok=0
@@ -96,6 +97,70 @@ selftest() {
 	losetup -d "$loop"
 	if ((ok)); then echo "LF-SELFTEST: PASS"; else echo "LF-SELFTEST: FAIL"; fi
 	((ok))
+}
+
+# Hängende Disk (#54): Ein dm-Gerät beantwortet von 16 bis 24 MiB jede Lesung erst nach 3 s,
+# und dann mit einem Fehler, wie eine Disk, deren Controller hängt. Im Modus hängende Disk gibt
+# ddrescue dort nach kurzer Zeit auf (-T), statt zu warten. Der Fall nennt nur einen Gerätepfad,
+# der Lauf wartet deshalb nicht auf die Disk, sondern endet unterbrochen. Jedes Fortsetzen liest
+# hinter der Hängerstelle weiter. Danach antwortet das Gerät wieder (lineare Tabelle, wie eine
+# Disk nach dem Neustart), und die Rettung holt die Lücke nach: Das Image gleicht der Quelle.
+selftest_hang() {
+	local dir=$1/hang loop=$2 good=1 rc s1 s2 p1 p2 mib=$((1024 * 1024))
+	local dev=/dev/mapper/lf-hang
+	if ! modprobe dm-delay 2>/dev/null; then
+		echo "LF-SELFTEST: Hängende Disk: dm-delay fehlt im Kernel"
+		return 1
+	fi
+	mkdir -p "$dir"
+	dmsetup create lf-hang-err --readonly --table "0 16384 error" || return 1
+	dmsetup create lf-hang --readonly <<-EOF || { dmsetup remove lf-hang-err; return 1; }
+		0 32768 linear $loop 0
+		32768 16384 delay /dev/mapper/lf-hang-err 0 3000
+		49152 81920 linear $loop 49152
+	EOF
+	casefile_create "$dir/case.env" "SRC_ID=$dev" "SRC_SIZE=$((64 * mib))" \
+		"SRC_LABEL=Selbsttest (hängende Disk)" "STATE=new" "HANG_TIMEOUT=3" "HANG_SKIP=16"
+	lf-rescue-run "$dir" "$dev" --no-pause >"$dir/lauf1.txt" 2>&1
+	rc=$?
+	s1=$(casefile_peek "$dir/case.env" HANG_STEP)
+	p1=$(casefile_peek "$dir/case.env" HANG_POS)
+	if [[ $rc == 1 && $s1 == 1 && $p1 =~ ^[0-9]+$ ]] && ((p1 >= 16 * mib && p1 < 24 * mib)) &&
+		grep -q 'Hänger Nr. 1' "$dir/lauf1.txt"; then
+		echo "LF-SELFTEST: Hängende Disk: Phase 1 gibt nach kurzer Zeit auf, Hängerstelle bei $((p1 / mib)) MiB"
+	else
+		echo "LF-SELFTEST: Hängende Disk: erster Lauf rc=$rc, Schritt=$s1, Position=$p1"
+		tail -n 5 "$dir/lauf1.txt" | sed 's/^/LF-SELFTEST:   /'
+		good=0
+	fi
+	lf-rescue-run "$dir" "$dev" --no-pause >"$dir/lauf2.txt" 2>&1
+	rc=$?
+	s2=$(casefile_peek "$dir/case.env" HANG_STEP)
+	p2=$(casefile_peek "$dir/case.env" HANG_POS)
+	if [[ $rc == 1 && $s2 == 2 && $(casefile_peek "$dir/case.env" PHASE_DONE) == 1 ]] &&
+		grep -q "Weiter hinter der Hängerstelle" "$dir/lauf2.txt"; then
+		echo "LF-SELFTEST: Hängende Disk: Fortsetzen liest hinter der Hängerstelle weiter, Phase 2 hängt bei $((p2 / mib)) MiB"
+	else
+		echo "LF-SELFTEST: Hängende Disk: zweiter Lauf rc=$rc, Schritt=$s2, Position=$p2"
+		tail -n 5 "$dir/lauf2.txt" | sed 's/^/LF-SELFTEST:   /'
+		good=0
+	fi
+	# Die Disk ist neu gestartet: Sie liest wieder überall.
+	dmsetup suspend lf-hang && dmsetup reload lf-hang --readonly --table "0 131072 linear $loop 0" &&
+		dmsetup resume lf-hang || good=0
+	lf-rescue-run "$dir" "$dev" --no-pause >"$dir/lauf3.txt" 2>&1
+	rc=$?
+	if [[ $rc == 0 && $(casefile_peek "$dir/case.env" STATE) == "done" && $(casefile_peek "$dir/case.env" HANGS) == 2 ]] &&
+		cmp -s "$dir/image.img" "$loop"; then
+		echo "LF-SELFTEST: Hängende Disk: Lücke nachgeholt, Image gleicht der Quelle, 2 Hänger im Fall"
+	else
+		echo "LF-SELFTEST: Hängende Disk: dritter Lauf rc=$rc, Zustand=$(casefile_peek "$dir/case.env" STATE), Hänger=$(casefile_peek "$dir/case.env" HANGS)"
+		tail -n 5 "$dir/lauf3.txt" | sed 's/^/LF-SELFTEST:   /'
+		good=0
+	fi
+	dmsetup remove lf-hang
+	dmsetup remove lf-hang-err
+	((good))
 }
 
 # Ziel-Dateisysteme im gebooteten System: Die Schutzoptionen müssen wirken, nicht nur im Aufruf

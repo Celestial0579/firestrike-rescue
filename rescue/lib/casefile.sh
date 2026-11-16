@@ -14,7 +14,8 @@
 # Geschrieben wird mit denselben Prüfungen, erst in eine neue Datei, die dann die alte ersetzt.
 
 # Alle Schlüssel, in der Reihenfolge, in der sie geschrieben werden.
-CASEFILE_KEYS=(SRC_ID SRC_SIZE SRC_LABEL TARGET_ID STATE SRC_PATH STARTED PHASE PHASE_DONE FINISHED)
+CASEFILE_KEYS=(SRC_ID SRC_SIZE SRC_LABEL TARGET_ID STATE SRC_PATH STARTED PHASE PHASE_DONE FINISHED
+	HANG_TIMEOUT HANG_SKIP HANG_STEP HANG_POS HANGS)
 # Ohne diese ist ein Fall nicht verwendbar.
 CASEFILE_REQUIRED=(SRC_ID SRC_SIZE STATE)
 
@@ -35,6 +36,14 @@ casefile_pattern() {
 	PHASE | PHASE_DONE) echo '^[0-3]$' ;;
 	# Zeitstempel, wie "date -Is" ihn schreibt.
 	STARTED | FINISHED) echo '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[+-][0-9]{2}:[0-9]{2}$' ;;
+	# Hängende Disk (#54, lib/hang.sh): Timeout in Sekunden (3 bis 120). Steht er in der Datei,
+	# ist der Modus an. HANG_SKIP: so viele MiB liest der Lauf hinter einer Hängerstelle weiter.
+	HANG_TIMEOUT) echo '^([3-9]|[1-9][0-9]|1[01][0-9]|120)$' ;;
+	HANG_SKIP) echo '^[1-9][0-9]{0,4}$' ;;
+	# Schritt und Position (Bytes) des letzten Hängers, Anzahl der Hänger
+	HANG_STEP) echo '^(0m|0d|[1-3])$' ;;
+	HANG_POS) echo '^[0-9]{1,19}$' ;;
+	HANGS) echo '^[0-9]{1,4}$' ;;
 	*) return 1 ;;
 	esac
 }
@@ -212,6 +221,17 @@ casefile_set() {
 	local file=$1 key=$2 value=$3
 	casefile_value_ok "$key" "$value" || return 1
 	CASEFILE[$key]=$value
+	casefile_save "$file"
+}
+
+# casefile_unset DATEI SCHLÜSSEL   Entfernt einen Schlüssel aus CASEFILE und schreibt die Datei neu.
+casefile_unset() {
+	local file=$1 key=$2
+	if ! casefile_pattern "$key" >/dev/null; then
+		CASEFILE_ERROR="unbekannter Schlüssel $key"
+		return 1
+	fi
+	unset 'CASEFILE[$key]'
 	casefile_save "$file"
 }
 

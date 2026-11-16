@@ -56,6 +56,8 @@ LIB=$HERE/../lib/lf
 [[ -r $LIB/casefile.sh ]] || { echo "lf-rescue-run: $LIB/casefile.sh fehlt." >&2; exit 2; }
 # shellcheck disable=SC1090
 . "$LIB/casefile.sh"
+# shellcheck disable=SC1090
+. "$LIB/hang.sh"
 
 # Der Name steht nur im Bericht, als Text: höchstens 100 Zeichen, Steuerzeichen und die Zeichen
 # " $ ` \ werden zu "_". Dieselben Grenzen gelten für LF_TECHNIKER in der lf.conf.
@@ -117,11 +119,18 @@ if [[ -z $INFO ]]; then
 	finish 1
 fi
 NOTE=""
-casefile_source_check "$(jq -r '(.serial // "") | gsub("^\\s+|\\s+$"; "")' <<<"$INFO")" \
-	"$(jq -r '.wwn // ""' <<<"$INFO")" "$(jq -r '.size // ""' <<<"$INFO")"
+# Was die gewählte Disk über sich meldet. Nach einem Hänger (lib/hang.sh) wird nur eine Disk
+# angenommen, die genau dasselbe meldet.
+SRC_SERIAL=$(jq -r '(.serial // "") | gsub("^\\s+|\\s+$"; "")' <<<"$INFO")
+SRC_WWN=$(jq -r '.wwn // ""' <<<"$INFO")
+ID_STRICT=1
+casefile_source_check "$SRC_SERIAL" "$SRC_WWN" "$(jq -r '.size // ""' <<<"$INFO")"
 case $? in
 0) ;;
-3) NOTE="Die Falldatei nennt für die Quelle nur einen Gerätepfad, keine Seriennummer und keinen WWN. Geprüft ist deshalb allein die Größe." ;;
+3)
+	NOTE="Die Falldatei nennt für die Quelle nur einen Gerätepfad, keine Seriennummer und keinen WWN. Geprüft ist deshalb allein die Größe."
+	ID_STRICT=0
+	;;
 *)
 	echo "Die Rettung wird nicht gestartet: $SRC ist nicht die Quelle dieses Rettungsfalls." >&2
 	echo "  $CASEFILE_ERROR" >&2
@@ -129,7 +138,30 @@ case $? in
 	finish 2
 	;;
 esac
-blockdev --setro "$SRC" 2>/dev/null || true
+# set_ro GERÄT   Schreibschutz für die Disk und ihre Partitionen, vermerkt wie im Assistenten.
+set_ro() {
+	local p
+	blockdev --setro "$1" 2>/dev/null || true
+	for p in $(lsblk -nr -o PATH "$1" 2>/dev/null | tail -n +2); do
+		blockdev --setro "$p" 2>/dev/null || true
+	done
+	[[ -d /run/lf && ! -L /run/lf/readonly ]] && echo "$1" >>/run/lf/readonly
+}
+set_ro "$SRC"
+
+# Modus "hängende Disk" (#54), eingeschaltet über HANG_TIMEOUT in der Falldatei
+HANG_T=$(casefile_get HANG_TIMEOUT)
+HANG=0
+[[ -n $HANG_T ]] && HANG=1
+SKIP=$(($(casefile_get HANG_SKIP 64) * 1024 * 1024))
+HANG_MAX=100
+HANG_WAIT=1800
+# Die Disk, auf der der Fall liegt. Sie wird nie als wiedergekehrte Quelle angenommen.
+TARGET_DISK=$(findmnt -no SOURCE -T "$CASE" 2>/dev/null)
+if [[ -n $TARGET_DISK ]]; then
+	pk=$(lsblk -dno PKNAME "$TARGET_DISK" 2>/dev/null)
+	[[ -n $pk ]] && TARGET_DISK=/dev/$pk
+fi
 
 # Sparse schreiben, wo das Ziel-Dateisystem es kann
 SPARSE=()
@@ -144,14 +176,124 @@ setv SRC_PATH "$SRC"
 
 say "Leuchtfeuer · Datenrettung von $SRC ($SRC_ID) nach $IMG"
 [[ -n $NOTE ]] && say "Hinweis: $NOTE"
+if ((HANG)); then
+	say "Modus hängende Disk: Timeout $HANG_T s, bei einem Hänger Abbruch statt Warten, danach weiter $((SKIP / 1024 / 1024)) MiB hinter der Hängerstelle. Die Lücke wird später nachgeholt."
+	hang_set_timeout "$SRC" "$HANG_T" || say "Hinweis: $SRC hat keinen einstellbaren Timeout (etwa NVMe). ddrescue gibt trotzdem nach kurzer Zeit ohne Erfolg auf."
+	((ID_STRICT)) || say "Hinweis: Ohne Seriennummer und WWN wartet der Lauf nach einem Hänger nicht auf die Disk. Fortsetzen geht dann von Hand."
+fi
 echo "Mit Strg+B, D verlässt du die Ansicht; die Rettung läuft weiter." | tee -a "$LOG"
 
 PHASES=(
-	"1|Schneller Durchlauf: gut lesbare Bereiche zuerst, schwache überspringen|-n"
-	"2|Rückwärts-Durchlauf über die übersprungenen Bereiche|-n -R"
-	"3|Fehlerbereiche einzeln mit Direktzugriff und 3 Wiederholungen|-d -r3"
+	"1|vor|Schneller Durchlauf: gut lesbare Bereiche zuerst, schwache überspringen|-n"
+	"2|rueck|Rückwärts-Durchlauf über die übersprungenen Bereiche|-n -R"
+	"3|vor|Fehlerbereiche einzeln mit Direktzugriff und 3 Wiederholungen|-d -r3"
 )
 DONE=$(casefile_get PHASE_DONE 0)
+
+# hang_wait   Wartet nach einem Hänger auf genau die Quell-Disk. Ist sie wieder da, gilt sie
+# als Quelle (SRC), schreibgeschützt und mit kurzen Timeouts. Rückgabe 1 nach HANG_WAIT Sekunden.
+hang_wait() {
+	local i dev gone=0
+	for ((i = 0; i < HANG_WAIT; i++)); do
+		sleep 1
+		hang_present "$SRC" || gone=1
+		dev=$(hang_find "$SRC_SERIAL" "$SRC_WWN" "$SRC_SIZE") || continue
+		# Dieselbe Gerätedatei zählt erst, wenn die Disk zwischendurch weg war: Eine Disk, die
+		# noch hängt, wäre sonst sofort wieder die Quelle.
+		[[ $dev != "$SRC" ]] || ((gone)) || continue
+		casefile_value_ok SRC_PATH "$dev" || continue
+		[[ -n $TARGET_DISK && $dev == "$TARGET_DISK" ]] && continue
+		SRC=$dev
+		set_ro "$SRC"
+		hang_set_timeout "$SRC" "$HANG_T" || true
+		setv SRC_PATH "$SRC"
+		say "Die Disk ist wieder da: $SRC. Seriennummer/WWN und Größe stimmen, sie ist schreibgeschützt."
+		return 0
+	done
+	say "Die Disk ist in $((HANG_WAIT / 60)) Minuten nicht wieder erschienen. Stand gespeichert, später fortsetzen."
+	return 1
+}
+
+# hang_handle SCHRITT GERETTET_VORHER   Nach einem Abbruch im Modus hängende Disk: Hängerstelle
+# merken, dann weiter oder auf die Disk warten. Rückgabe 1: Der Lauf endet, Stand gespeichert.
+hang_handle() {
+	local id=$1 before=$2 pos n dev
+	pos=$(hang_map_pos "$MAP") || pos=0
+	n=$(($(casefile_get HANGS 0) + 1))
+	setv HANG_STEP "$id"
+	setv HANG_POS "$pos"
+	setv HANGS "$n"
+	say "Hänger Nr. $n bei $((pos / 1024 / 1024)) MiB (Schritt $id). Der Stand ist gespeichert."
+	if ((n >= HANG_MAX)); then
+		say "Die Disk ist $n-mal hängen geblieben. Der Lauf endet hier. Ob es weitergeht, entscheidet der Techniker."
+		return 1
+	fi
+	if ((!ID_STRICT)); then
+		say "Nach dem Neustart der Disk 'Unterbrochene Rettung fortsetzen' wählen. Gelesen wird dann hinter der Hängerstelle weiter."
+		return 1
+	fi
+	dev=$(hang_find "$SRC_SERIAL" "$SRC_WWN" "$SRC_SIZE")
+	if [[ $dev == "$SRC" ]] && (($(hang_map_rescued "$MAP") > before)); then
+		say "Die Disk antwortet noch. Es geht gleich hinter der Hängerstelle weiter."
+		return 0
+	fi
+	say "Die Disk antwortet nicht mehr. Bitte neu starten: Strom trennen (Kabel oder Adapter abziehen), etwa 10 Sekunden warten, wieder anschließen. Gewartet wird bis zu $((HANG_WAIT / 60)) Minuten auf genau diese Disk."
+	hang_wait
+}
+
+# step SCHRITT RICHTUNG ddrescue-Optionen …   Ein ddrescue-Durchlauf. RICHTUNG ist vor oder rueck.
+# Im Modus hängende Disk beginnt der Durchlauf nach einem Hänger in diesem Schritt hinter der
+# Hängerstelle (vor: ab Position + SKIP, rueck: bis Position − SKIP). Was davor liegt, holen
+# die späteren Phasen nach, für Phase 3 ein weiterer Durchlauf ohne Versatz.
+# Rückgabe 0, wenn der Schritt fertig ist. Sonst endet das Skript mit gespeichertem Stand.
+step() {
+	local id=$1 dir=$2 rc pos before skipped empty
+	local -a off topt
+	shift 2
+	while :; do
+		off=() topt=() skipped=0 empty=0
+		if ((HANG)); then
+			topt=(-T "$(hang_ddrescue_timeout "$id" "$HANG_T")")
+			if [[ $(casefile_get HANG_STEP) == "$id" ]]; then
+				skipped=1
+				pos=$(casefile_get HANG_POS 0)
+				if [[ $dir == vor ]]; then
+					if ((pos + SKIP < SRC_SIZE)); then off=(-i "$((pos + SKIP))"); else empty=1; fi
+				else
+					if ((pos > SKIP)); then off=(-s "$((pos - SKIP))"); else empty=1; fi
+				fi
+				say "Weiter hinter der Hängerstelle bei $((pos / 1024 / 1024)) MiB."
+			fi
+		fi
+		before=$(hang_map_rescued "$MAP")
+		rc=0
+		if ((!empty)); then
+			ddrescue "${SPARSE[@]}" "${topt[@]}" "$@" "${off[@]}" "$SRC" "$IMG" "$MAP" 2>&1 | tee -a "$LOG"
+			rc=${PIPESTATUS[0]}
+		fi
+		if ((rc == 0)); then
+			((skipped)) || return 0
+			casefile_unset "$ENV" HANG_STEP && casefile_unset "$ENV" HANG_POS ||
+				{ say "Die Falldatei lässt sich nicht fortschreiben: $CASEFILE_ERROR"; finish 2; }
+			[[ $id == 3 ]] || return 0
+			say "Phase 3: die Lücke hinter der Hängerstelle nachholen"
+			continue
+		fi
+		if ((!HANG)); then
+			if [[ ! -b $SRC ]]; then
+				say "Die Quell-Disk ist verschwunden (USB-Reset oder Ausfall). Stand gespeichert, später fortsetzen."
+			else
+				say "ddrescue meldet Fehler (rc=$rc). Stand gespeichert, Fortsetzen ist möglich."
+			fi
+			setv STATE interrupted
+			finish "$rc"
+		fi
+		if ! hang_handle "$id" "$before"; then
+			setv STATE interrupted
+			finish 1
+		fi
+	done
+}
 
 # Phase 0 (#46): Liegen im Fall Domains (lf-aufgabe domain, aus der NTFS-Bitmap der Quelle),
 # liest ddrescue zuerst nur sie: die MFT, dann die belegten Cluster. Danach holen die Phasen
@@ -166,41 +308,21 @@ if ((DONE == 0)); then
 			continue
 		fi
 		case $d in
-		domain-mft.map) title="nur die MFT (Verwaltung des Dateisystems)" ;;
-		*) title="nur die belegten Cluster" ;;
+		domain-mft.map) title="nur die MFT (Verwaltung des Dateisystems)" id=0m ;;
+		*) title="nur die belegten Cluster" id=0d ;;
 		esac
 		say "Phase 0: $title"
-		ddrescue "${SPARSE[@]}" -n -m "$f" "$SRC" "$IMG" "$MAP" 2>&1 | tee -a "$LOG"
-		rc=${PIPESTATUS[0]}
-		if ((rc != 0)); then
-			if [[ ! -b $SRC ]]; then
-				say "Die Quell-Disk ist verschwunden (USB-Reset oder Ausfall). Stand gespeichert, später fortsetzen."
-			else
-				say "ddrescue meldet Fehler (rc=$rc). Stand gespeichert, Fortsetzen ist möglich."
-			fi
-			setv STATE interrupted
-			finish "$rc"
-		fi
+		step "$id" vor -n -m "$f"
 	done
 fi
 
 for ph in "${PHASES[@]}"; do
-	IFS='|' read -r n title opts <<<"$ph"
+	IFS='|' read -r n dir title opts <<<"$ph"
 	((n <= DONE)) && continue
 	say "Phase $n/3: $title"
 	setv PHASE "$n"
 	# shellcheck disable=SC2086
-	ddrescue "${SPARSE[@]}" $opts "$SRC" "$IMG" "$MAP" 2>&1 | tee -a "$LOG"
-	rc=${PIPESTATUS[0]}
-	if ((rc != 0)); then
-		if [[ ! -b $SRC ]]; then
-			say "Die Quell-Disk ist verschwunden (USB-Reset oder Ausfall). Stand gespeichert, später fortsetzen."
-		else
-			say "ddrescue meldet Fehler (rc=$rc). Stand gespeichert, Fortsetzen ist möglich."
-		fi
-		setv STATE interrupted
-		finish "$rc"
-	fi
+	step "$n" "$dir" $opts
 	setv PHASE_DONE "$n"
 	DONE=$n
 done
@@ -221,6 +343,7 @@ setv STATE "done"
 	echo "Beendet:     $(date -Is)"
 	echo "System:      Leuchtfeuer $(. /etc/lf-release 2>/dev/null; echo "${LF_VERSION:-dev}")"
 	[[ -n $TECH ]] && echo "Techniker:   $TECH"
+	[[ -n $(casefile_get HANGS) ]] && echo "Hänger:      $(casefile_get HANGS) (Modus hängende Disk)"
 	echo
 	echo "Ergebnis (ddrescuelog -t):"
 	ddrescuelog -t "$MAP"

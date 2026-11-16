@@ -2,7 +2,7 @@
 
 Leuchtfeuer ist ein bootfähiges Rettungssystem auf Basis von **Ubuntu 26.04 LTS**. Es ist mit allen Updates gebaut und bringt die wichtigen Werkzeuge mit. Ein Assistent führt Schritt für Schritt durch vier Aufgaben:
 
-- **Datenrettung** von defekten Disks. Zuerst entsteht immer ein Image auf einer Ziel-Disk, dann geht es mit dem Image weiter.
+- **Datenrettung** von defekten Disks. Zuerst entsteht immer ein Image auf einer Ziel-Disk, dann geht es mit dem Image weiter. Für Disks, die nach kurzer Zeit hängen, gibt es einen eigenen Modus: kurze Timeouts, Weiterlesen hinter der Hängerstelle, Warten auf genau dieselbe Disk.
 - **Klonen**, z. B. von HDD auf SSD. Die Größe wird automatisch angepasst, auch auf kleinere Ziele.
 - **Disk anpassen**: Partitionen vergrößern oder verkleinern, GPT reparieren, sicher löschen.
 - **Umzug in eine Proxmox-VM** (P2V): Die Disks des Rechners gehen über das Netz in eine neue VM auf einem Knoten von Proxmox VE. Kopiert werden nur belegte Bereiche, die Volumes bleiben dünn.
