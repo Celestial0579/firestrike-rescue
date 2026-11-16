@@ -434,11 +434,13 @@ selftest_tmux() {
 # selftest_owner   Was root und lf-claude per sudo starten, und was diese Werkzeuge laden, gehört
 #   root und ist für niemanden sonst beschreibbar. Die Dateien im Arbeitsbaum der CI gehören
 #   dem Benutzer der CI. Mit ihrem Eigentümer kopiert, könnte ein Benutzer mit derselben Nummer
-#   sie ändern (build.sh kopiert mit --no-preserve=ownership).
+#   sie ändern (build.sh kopiert mit --no-preserve=ownership). Geprüft werden alle Ordner, in die
+#   build/overlay schreibt. /etc/skel gehört dazu: Was dort liegt, landet in jedem neuen Konto.
 selftest_owner() {
 	local bad
 	bad=$(find /usr/local/lib/lf /usr/local/share/lf /usr/local/bin /etc/claude-code /etc/sudoers.d \
-		/etc/systemd/system /etc/udev/rules.d /etc/initramfs-tools /etc/ssh/sshd_config.d \
+		/etc/systemd/system /etc/systemd/journald.conf.d /etc/udev/rules.d /etc/initramfs-tools \
+		/etc/ssh/sshd_config.d /etc/skel \
 		\( ! -user root -o -perm /022 \) ! -type l -print 2>/dev/null | head -n 5)
 	if [[ -n $bad ]]; then
 		echo "LF-SELFTEST: Eigentümer: nicht root oder für andere beschreibbar:"
