@@ -28,6 +28,12 @@ DIGITS=${KEY//-/}
 INPUT="271828 182845 904523 536028 747135 266249 775724 709369"
 
 ui_input() { printf '%s\n' "$INPUT"; }
+# dislocker selbst ist ein Programm (die root-Shell startet es mit exec): Es schreibt auf, was es
+# bekommt, und nennt den Schlüssel wie ein gesprächiges dislocker in seiner Ausgabe.
+mkdir -p "$T/bin"
+printf '#!/bin/bash\nprintf "%%s\\n" "$*" >>"%s/dislocker"\necho "dislocker: recovery password %s"\n' "$T" "$KEY" >"$T/bin/dislocker"
+chmod +x "$T/bin/dislocker"
+PATH="$T/bin:$PATH"
 ui_msg() { :; }
 lsblk() { :; }
 disks_overview() { echo "sda  500 GB  Etikett mit Notiz: $KEY"; }
@@ -40,8 +46,8 @@ sudo() {
 	printf '%s\n' "$*" >>"$T/sudo"
 	case $1 in
 	blkid) echo BitLocker ;;
-	# Wie ein gesprächiges dislocker: Es nennt den Schlüssel in seiner Ausgabe.
-	dislocker) echo "dislocker: recovery password $KEY" ;;
+	# Die root-Shell, die den Schlüssel von der Standardeingabe liest und dislocker startet.
+	bash) "$@" ;;
 	mount)
 		echo "ro,nodev,nosuid,noexec,nosymfollow" >"$T/mounted"
 		echo "$LF_RUN/dislocker-loop0p2/dislocker-file" >"$T/source"
@@ -56,7 +62,8 @@ has_key() { grep -qE -- "$KEY|$DIGITS" "$1" 2>/dev/null; }
 # no_raw_paths   Im Code geht der Schlüssel nirgends über run, und das Protokoll kommt nirgends
 #   ungefiltert in den Fallordner.
 no_raw_paths() {
-	! grep -nE '(^|[[:space:]])run sudo dislocker' rescue/lib/*.sh rescue/lf rescue/bin/* &&
+	! grep -nE '(^|[[:space:]])run sudo dislocker|sudo dislocker .*-p' rescue/lib/*.sh rescue/lf rescue/bin/* &&
+		grep -qF "IFS= read -r k && exec dislocker" rescue/lib/recover.sh &&
 		! grep -nF 'cp -f --remove-destination "$LF_LOG"' rescue/lib/*.sh rescue/lf rescue/bin/*
 }
 
@@ -72,8 +79,9 @@ check "47 oder 49 Ziffern, Buchstaben und eine leere Eingabe sind kein Schlüsse
 echo "Entsperren im Assistenten:"
 part_mount_ro /dev/loop0p2 /mnt/lf-image/loop0p2
 RC=$?
-check "dislocker bekommt den Schlüssel, die Partition wird eingehängt" '[[ $RC == 0 ]] && grep -qF -- "dislocker -r -V /dev/loop0p2 -p$KEY -- " "$T/sudo"'
-check "im Protokoll steht weder im Befehl noch in der Ausgabe der Schlüssel" '! has_key "$LF_LOG" && grep -qF -- "-p$LF_RECOVERY_KEY_MASK" "$LF_LOG" && grep -qF "recovery password $LF_RECOVERY_KEY_MASK" "$LF_LOG"'
+check "dislocker bekommt den Schlüssel, die Partition wird eingehängt" '[[ $RC == 0 && -s $T/mounted ]] && grep -qxF -- "-r -V /dev/loop0p2 -p$KEY -- $LF_RUN/dislocker-loop0p2" "$T/dislocker"'
+check "keine Befehlszeile von sudo enthält den Schlüssel (ps, Journal)" '[[ -s $T/sudo ]] && ! has_key "$T/sudo" && grep -q "^bash -c " "$T/sudo"'
+check "im Protokoll steht weder im Befehl noch in der Ausgabe der Schlüssel" '! has_key "$LF_LOG" && grep -qF "recovery password $LF_RECOVERY_KEY_MASK" "$LF_LOG"'
 log "Notiz mit Schlüssel $KEY und als Ziffern $DIGITS"
 check "auch ein gewöhnlicher Protokolleintrag verliert ihn" '! has_key "$LF_LOG"'
 
@@ -83,6 +91,7 @@ INPUT="1234-5678"
 part_mount_ro /dev/loop0p2 /mnt/lf-image/loop0p2
 RC=$?
 check "kein gültiger Schlüssel: kein dislocker, nichts eingehängt" '[[ $RC != 0 ]] && ! grep -q dislocker "$T/sudo" && [[ ! -s $T/mounted ]]'
+: >"$T/dislocker"
 INPUT="271828 182845 904523 536028 747135 266249 775724 709369"
 
 echo "Protokoll einer älteren Fassung (Schlüssel steht noch darin):"

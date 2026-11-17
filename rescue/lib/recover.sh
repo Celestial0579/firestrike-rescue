@@ -283,9 +283,14 @@ part_mount_ro() {
 		key=$(bitlocker_key_normalize "$key") ||
 			{ die "Das ist kein BitLocker-Wiederherstellungsschlüssel (8 Gruppen zu 6 Ziffern)."; return 1; }
 		sudo install -d "$LF_RUN/dislocker-$(basename "$part")"
-		# Der Schlüssel geht nur an dislocker. Befehlszeile und Ausgabe stehen ohne ihn im
+		# Der Schlüssel geht nur an dislocker, über die Standardeingabe einer root-Shell und nie über
+		# eine Befehlszeile: sudo schreibt seine Befehlszeile ins Journal, und ps zeigt sie, solange
+		# dislocker den Schlüssel ableitet. dislocker überschreibt -p beim Start selbst mit X
+		# (hide_opt); sein eigener Prompt liest nur von /dev/tty. Die Ausgabe steht maskiert im
 		# Protokoll (run_masked, GHSA-cwvh-chmr-9xg8).
-		run_masked sudo dislocker -r -V "$part" -p"$key" -- "$LF_RUN/dislocker-$(basename "$part")" ||
+		printf '%s\n' "$key" |
+			run_masked sudo bash -c 'IFS= read -r k && exec dislocker -r -V "$1" -p"$k" -- "$2"' lf-dislocker \
+				"$part" "$LF_RUN/dislocker-$(basename "$part")" ||
 			{ die "Entschlüsselung fehlgeschlagen. Schlüssel prüfen."; return 1; }
 		run sudo mount -o "$opts,loop" "$LF_RUN/dislocker-$(basename "$part")/dislocker-file" "$mp" ||
 			run sudo ntfs-3g -o ro,nodev,nosuid,noexec "$LF_RUN/dislocker-$(basename "$part")/dislocker-file" "$mp"

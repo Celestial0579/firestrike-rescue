@@ -138,7 +138,9 @@ check "kein Dateisystem erkannt: nichts eingehängt" '[[ $RC != 0 && -z $OPTS &&
 echo "BitLocker:"
 reset
 mount_ro BitLocker
-check "Schlüssel erfragt, entschlüsselt, mit allen Schutzoptionen eingehängt" '[[ $RC == 0 && -s $T/input ]] && safe && [[ $CALLS == *"dislocker -r -V /dev/loop0p2"* && $CALLS == *"mount -o $ALL,loop $LF_RUN/dislocker-loop0p2/dislocker-file $MP"* ]]'
+# dislocker startet eine root-Shell, die den Schlüssel von der Standardeingabe liest: Er steht in
+# keiner Befehlszeile hinter sudo (GHSA-cwvh-chmr-9xg8).
+check "Schlüssel erfragt, entschlüsselt, mit allen Schutzoptionen eingehängt" '[[ $RC == 0 && -s $T/input ]] && safe && [[ $CALLS == *"exec dislocker -r -V \"\$1\""*"lf-dislocker /dev/loop0p2 $LF_RUN/dislocker-loop0p2"* && $CALLS != *111111-222222* && $CALLS == *"mount -o $ALL,loop $LF_RUN/dislocker-loop0p2/dislocker-file $MP"* ]]'
 reset
 REFUSE=",loop"
 mount_ro BitLocker
