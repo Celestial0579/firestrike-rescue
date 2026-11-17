@@ -17,6 +17,9 @@ export LC_ALL=C.UTF-8
 REPO=$PWD
 
 T=$(mktemp -d)
+# common.sh liefert log_copy_masked für die Kopie des Protokolls in den Fallordner.
+# shellcheck disable=SC1091
+. rescue/lib/common.sh
 # shellcheck disable=SC1091
 . rescue/lib/casefile.sh
 # shellcheck disable=SC1091

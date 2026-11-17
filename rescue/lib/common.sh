@@ -21,6 +21,9 @@ log_init() {
 	local dir="$LF_RUN/logs"
 	mountpoint -q "$LF_PERSIST" 2>/dev/null && dir="$LF_PERSIST/logs"
 	sudo install -d -o "$(id -u)" -g "$(id -g)" "$dir" "$LF_RUN" 2>/dev/null || mkdir -p "$dir"
+	# Ältere Fassungen schrieben den BitLocker-Wiederherstellungsschlüssel ins Protokoll
+	# (GHSA-cwvh-chmr-9xg8). Was davon im persistenten Speicher liegt, wird hier bereinigt.
+	log_scrub_dir "$dir"
 	if [[ -z ${LF_LOG:-} || ! -f $LF_LOG ]]; then
 		LF_LOG="$dir/lf-$(date +%Y%m%d-%H%M%S).log"
 		: >"$LF_LOG"
@@ -31,8 +34,55 @@ log_init() {
 	export LF_LOG
 }
 
+# Ein BitLocker-Wiederherstellungsschlüssel (8 Gruppen zu 6 Ziffern, auch ohne Bindestriche)
+# kommt nie ins Protokoll, nie in eine Kopie davon und nie in den Zustand für Claude
+# (GHSA-cwvh-chmr-9xg8). Wer den Schlüssel hat, entschlüsselt die Disk des Kunden, und das
+# Protokoll liegt auf dem Stick, im Fallordner neben dem Image und im Kontext von Claude.
+LF_RECOVERY_KEY_RE='[0-9]{6}(-[0-9]{6}){7}|[0-9]{48}'
+# Nur ASCII: Claude bekommt Zeilen auf 400 Zeichen gekürzt, die Maske soll sie in Bytes nicht verlängern.
+LF_RECOVERY_KEY_MASK='[BitLocker-Schluessel entfernt]'
+
+# log_mask TEXT   Gibt TEXT ohne Wiederherstellungsschlüssel in REPLY zurück (ohne Unterprozess).
+log_mask() {
+	local s=$1
+	while [[ $s =~ $LF_RECOVERY_KEY_RE ]]; do
+		s=${s/"${BASH_REMATCH[0]}"/$LF_RECOVERY_KEY_MASK}
+	done
+	REPLY=$s
+}
+
+# log_mask_stream   Dasselbe als Filter für Ausgaben und Dateien.
+log_mask_stream() {
+	sed -E "s/$LF_RECOVERY_KEY_RE/$LF_RECOVERY_KEY_MASK/g"
+}
+
+# log_scrub_dir ORDNER   Nimmt Wiederherstellungsschlüssel aus den eigenen Protokollen im ORDNER.
+log_scrub_dir() {
+	local f
+	for f in "$1"/*.log; do
+		[[ -f $f && ! -L $f && -O $f ]] || continue
+		grep -qE "$LF_RECOVERY_KEY_RE" "$f" 2>/dev/null || continue
+		sed -E -i "s/$LF_RECOVERY_KEY_RE/$LF_RECOVERY_KEY_MASK/g" "$f"
+	done
+	return 0
+}
+
+# log_copy_masked PROTOKOLL ORDNER   Legt eine Kopie des Protokolls ohne Wiederherstellungsschlüssel
+#   im ORDNER ab. Was dort schon unter dem Namen liegt, wird ersetzt und nie durchschrieben.
+log_copy_masked() {
+	local src=$1 dir=${2%/} tmp
+	[[ -f $src ]] || return 1
+	tmp=$(mktemp "$dir/.lf-log.XXXXXX") || return 1
+	if log_mask_stream <"$src" >"$tmp" && chmod 0644 "$tmp" && mv -f "$tmp" "$dir/$(basename "$src")"; then
+		return 0
+	fi
+	rm -f "$tmp"
+	return 1
+}
+
 log() {
-	printf '%s %s\n' "$(date '+%F %T')" "$*" >>"${LF_LOG:-/dev/null}"
+	log_mask "$*"
+	printf '%s %s\n' "$(date '+%F %T')" "$REPLY" >>"${LF_LOG:-/dev/null}"
 }
 
 # run CMD...   Führt einen Befehl aus, protokolliert Befehl, Ausgabe und Rückgabewert.
@@ -42,6 +92,30 @@ run() {
 	"$@" >>"${LF_LOG:-/dev/null}" 2>&1 || rc=$?
 	log "  -> rc=$rc"
 	return "$rc"
+}
+
+# run_masked BEFEHL...   Wie run, nur geht auch die Ausgabe ohne Wiederherstellungsschlüssel ins
+#   Protokoll. Für Befehle, die den Schlüssel bekommen (dislocker). Die Ausgabe läuft über eine
+#   Datei, nicht über eine Pipe: Ein Hintergrunddienst, der sie offen hält, hält so nichts auf.
+run_masked() {
+	local rc=0 out
+	log "\$ $*"
+	out=$(mktemp) || return 1
+	"$@" >"$out" 2>&1 || rc=$?
+	log_mask_stream <"$out" >>"${LF_LOG:-/dev/null}"
+	rm -f "$out"
+	log "  -> rc=$rc"
+	return "$rc"
+}
+
+# bitlocker_key_normalize EINGABE   Gibt den Wiederherstellungsschlüssel als 8 Gruppen zu 6 Ziffern
+#   mit Bindestrichen aus. Leerzeichen und Bindestriche in der Eingabe zählen nicht. Rückgabe 1,
+#   wenn es nicht genau 48 Ziffern sind.
+bitlocker_key_normalize() {
+	local d=${1//[ -]/} out="" i
+	[[ $d =~ ^[0-9]{48}$ ]] || return 1
+	for ((i = 0; i < 48; i += 6)); do out+="${out:+-}${d:i:6}"; done
+	printf '%s\n' "$out"
 }
 
 # term_clean   Nimmt Steuerzeichen aus der Ausgabe eines Werkzeugs, bevor sie Bildschirm und

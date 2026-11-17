@@ -89,7 +89,10 @@ CLAUDE_STATE_FILE="zustand.txt"
 #     auch sehen.
 #   - Eine Zeile hat höchstens 400 Zeichen.
 claude_data_filter() {
-	jq -Rr --arg re "$TEXT_UNSAFE_RE" '"| " + (.[0:400] | gsub($re; "?"))'
+	# Zuerst die Wiederherstellungsschlüssel, dann kürzen: Ein Schlüssel an der Grenze der 400
+	# Zeichen bliebe sonst zur Hälfte stehen (GHSA-cwvh-chmr-9xg8).
+	jq -Rr --arg re "$TEXT_UNSAFE_RE" --arg key "$LF_RECOVERY_KEY_RE" --arg mask "$LF_RECOVERY_KEY_MASK" \
+		'"| " + (gsub($key; $mask) | .[0:400] | gsub($re; "?"))'
 }
 
 # Schreibt den aktuellen Zustand in das Sitzungsverzeichnis (Datei $CLAUDE_STATE_FILE).
@@ -129,7 +132,7 @@ claude_context() {
 		echo
 		echo "## Protokoll der Sitzung, letzte Zeilen"
 		echo "$LF_LOG" | claude_data_filter
-		tail -n 40 "$LF_LOG" 2>/dev/null | claude_data_filter
+		tail -n 40 "$LF_LOG" 2>/dev/null | log_mask_stream | claude_data_filter
 	} >"$dir/$CLAUDE_STATE_FILE"
 	chmod 640 "$dir/$CLAUDE_STATE_FILE"
 }
