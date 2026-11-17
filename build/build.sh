@@ -280,6 +280,11 @@ squash() {
 	chroot "$CHROOT" dpkg-query -W --showformat='${Package} ${Version}\n' >"$ISO/casper/filesystem.manifest"
 	cp "$ISO/casper/filesystem.manifest" "$OUT/${ISO_NAME%.iso}.manifest"
 	rm -f "$ISO/casper/filesystem.squashfs"
+	# Keine SSH-Hostschlüssel im Image (GHSA-72hw-w482-prv6), siehe chroot-setup.sh.
+	if compgen -G "$CHROOT/etc/ssh/ssh_host_*" >/dev/null; then
+		echo "FEHLER: SSH-Hostschlüssel im chroot: $(cd "$CHROOT/etc/ssh" && echo ssh_host_*)" >&2
+		exit 1
+	fi
 	mksquashfs "$CHROOT" "$ISO/casper/filesystem.squashfs" \
 		-comp zstd -Xcompression-level 19 -b 1M -noappend -no-progress \
 		-wildcards -e 'proc/*' 'sys/*' 'dev/*' 'run/*' 'tmp/*' 'boot/*' 'var/cache/apt/archives/*.deb'

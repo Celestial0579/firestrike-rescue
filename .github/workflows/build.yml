@@ -57,6 +57,7 @@ jobs:
       # P2V: Werte nur geprüft und einzeln gequotet zum Knoten, nur der bestätigte SSH-Schlüssel,
       # Kopier-Job nur für schreibgeschützte Quellen. Echt (sshd, qemu-nbd) prüft es selftest_p2v.
       # Hängende Disk: weiter nur mit genau derselben Disk, die Lücke wird nachgeholt (echtes ddrescue).
+      # SSH: keine Hostschlüssel im ISO, eigene je Start, Fingerabdruck im Dialog.
       - name: Schutz-Tests
         run: |
           sudo apt-get update -qq && sudo apt-get install -y -qq jq whiptail gddrescue
@@ -85,6 +86,7 @@ jobs:
           bash tests/unit-runv.sh
           bash tests/unit-lf-conf.sh
           bash tests/unit-p2v.sh
+          bash tests/unit-ssh-hostkeys.sh
           bash tests/unit-hang.sh
       - name: Unit-Tests
         run: |
