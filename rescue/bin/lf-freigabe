@@ -4,7 +4,7 @@
 #
 #   sudo lf-freigabe an [MINUTEN]   freischalten oder verlängern (Vorgabe 30, höchstens 240)
 #   sudo lf-freigabe aus            sofort beenden
-#   lf-freigabe status              "aus" oder "an bis HH:MM"
+#   lf-freigabe status              "aus", "an bis HH:MM", "an, ohne Ablauf" oder "an: Rückstand …"
 #   lf-freigabe zeile               Statuszeile für Claude Code (managed-settings.json)
 #
 # Auslösen kann nur ein Benutzer mit sudo, also der Techniker, nie lf-claude: Dessen sudo-Regel
@@ -12,12 +12,23 @@
 # selbst verlängern. Deshalb lehnt "an" einen Aufruf ab, der von lf-claude kommt, und der
 # Assistent zeigt die Freigabe in jedem Menü an. Ein systemd-Timer nimmt sie nach Ablauf zurück,
 # ein Neustart ebenso (/etc liegt im RAM). Jedes An und Aus steht im Protokoll und im Journal.
+#
+# Ob ein Aufruf von lf-claude kommt, zeigen nicht nur SUDO_USER und SUDO_UID (die entfernt
+# "sudo env -u SUDO_USER" einfach), sondern alle Vorfahren des Aufrufs. Am Ende (aus, Ablauf)
+# beendet lf-freigabe, was lf-claude mit der Freigabe als root gestartet hat, und prüft, ob
+# lf-claude danach noch mehr darf als lf-lesen und lf-aufgabe. Findet es etwas, zeigt status
+# "an: Rückstand …" bis zum Neustart. Ob die Freigabe gilt, entscheidet die Regel selbst, nicht
+# die Uhr; das Ende kommt aus dem monotonen Timer (GHSA-799j-44qx-x7xj).
 set -u
 PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 export LC_ALL=C.UTF-8
 RULE=/etc/sudoers.d/lf-claude-freigabe
 UNTIL=/run/lf/claude-freigabe-bis
 UNIT=lf-claude-freigabe-ende
+CLAUDE=lf-claude
+# Was lf-claude nach dem Ende einer Freigabe noch mehr darf als die Grundregel.
+RESIDUE=/run/lf/claude-freigabe-rueckstand
+BASE_RULE="(root) NOPASSWD: /usr/local/bin/lf-lesen, /usr/local/bin/lf-aufgabe"
 
 note() {
 	logger -t lf-freigabe -- "$*" 2>/dev/null || true
@@ -25,26 +36,163 @@ note() {
 	echo "$*"
 }
 
+# st PID   "RUID EUID PPID ZUSTAND" aus /proc/PID/status, leer wenn es PID nicht gibt.
+st() {
+	awk '$1 == "Uid:" {r = $2; e = $3} $1 == "PPid:" {p = $2} $1 == "State:" {s = $2}
+		END {if (r != "") print r, e, p, s}' "/proc/$1/status" 2>/dev/null
+}
+
+# caller_from_claude   Kommt dieser Aufruf von lf-claude? SUDO_USER, SUDO_UID oder ein Vorfahr,
+#   der als lf-claude läuft.
+caller_from_claude() {
+	local cu pid=$PPID n=0 r e p s
+	[[ ${SUDO_USER:-} == "$CLAUDE" ]] && return 0
+	cu=$(id -u "$CLAUDE" 2>/dev/null) || return 1
+	[[ ${SUDO_UID:-} == "$cu" ]] && return 0
+	while [[ $pid =~ ^[0-9]+$ ]] && ((pid > 1 && n++ < 64)); do
+		read -r r e p s <<<"$(st "$pid")"
+		[[ $r == "$cu" || $e == "$cu" ]] && return 0
+		pid=$p
+	done
+	return 1
+}
+
+# caller_name   Wer freischaltet: der erste Vorfahr, der nicht als root läuft (der Techniker vor
+#   sudo), sonst SUDO_USER, sonst root.
+caller_name() {
+	local pid=$PPID n=0 r e p s
+	while [[ $pid =~ ^[0-9]+$ ]] && ((pid > 1 && n++ < 64)); do
+		read -r r e p s <<<"$(st "$pid")"
+		if [[ $r =~ ^[0-9]+$ ]] && ((r != 0)); then
+			id -nu "$r" 2>/dev/null || echo "uid $r"
+			return 0
+		fi
+		pid=$p
+	done
+	echo "${SUDO_USER:-root}"
+}
+
+# from_claude PID UID   Hat lf-claude (UID) diesen Prozess über die Freigabe gestartet? Erkannt an
+#   SUDO_USER=lf-claude in seiner Umgebung oder an den Vorfahren: über sudo von einem Prozess von
+#   lf-claude. Was über die Grundregel läuft (lf-lesen, lf-aufgabe und ihre Jobs), zählt nicht,
+#   ebenso wenig ein setuid-Programm, das lf-claude ohne sudo startet (etwa chrome-sandbox).
+from_claude() {
+	local pid=$1 n=0 r e p s c via_sudo=0
+	grep -qzE '^SUDO_COMMAND=/usr/local/bin/lf-(lesen|aufgabe)( |$)' "/proc/$pid/environ" 2>/dev/null && return 1
+	grep -qzx "SUDO_USER=$CLAUDE" "/proc/$pid/environ" 2>/dev/null && return 0
+	while [[ $pid =~ ^[0-9]+$ ]] && ((pid > 1 && n++ < 64)); do
+		grep -qaE '/usr/local/bin/lf-(lesen|aufgabe)' "/proc/$pid/cmdline" 2>/dev/null && return 1
+		read -r r e p s <<<"$(st "$pid")"
+		c=$(cat "/proc/$pid/comm" 2>/dev/null)
+		if [[ $c == sudo ]]; then
+			via_sudo=1
+		elif [[ $r == "$2" || $e == "$2" ]]; then
+			((via_sudo)) && return 0
+			return 1
+		fi
+		pid=$p
+	done
+	return 1
+}
+
+# granted_pids   Laufende Prozesse, die lf-claude über die Freigabe gestartet hat, als root oder
+#   als ein anderer Benutzer (sudo -u).
+granted_pids() {
+	local d pid cu r e p s
+	cu=$(id -u "$CLAUDE" 2>/dev/null) || return 0
+	for d in /proc/[0-9]*; do
+		pid=${d##*/}
+		((pid == $$ || pid == PPID)) && continue
+		read -r r e p s <<<"$(st "$pid")"
+		[[ $e != "$cu" && $s != Z ]] || continue
+		kill -0 "$pid" 2>/dev/null || continue
+		from_claude "$pid" "$cu" && echo "$pid"
+	done
+	return 0
+}
+
+# stop_granted   Beendet die Prozesse aus granted_pids: TERM, nach 5 Sekunden KILL.
+stop_granted() {
+	local pid i
+	local -a pids
+	mapfile -t pids < <(granted_pids)
+	((${#pids[@]})) || return 0
+	for pid in "${pids[@]}"; do
+		note "beendet: $pid $(tr '\0' ' ' <"/proc/$pid/cmdline" 2>/dev/null | cut -c1-120)"
+		kill -TERM "$pid" 2>/dev/null
+	done
+	for ((i = 0; i < 10; i++)); do
+		mapfile -t pids < <(granted_pids)
+		((${#pids[@]})) || return 0
+		sleep 0.5
+	done
+	for pid in "${pids[@]}"; do kill -KILL "$pid" 2>/dev/null; done
+	return 0
+}
+
+# residue   Leer, wenn lf-claude nur die Grundregel hat, sonst je Zeile ein Fund. Wer mit der
+#   Freigabe root war, kann sich weitere Wege eingerichtet haben, etwa eine zweite sudo-Regel oder
+#   die Gruppe sudo. Das prüft residue, aber nicht alles: Sicher ist nur ein Neustart.
+residue() {
+	local rules groups procs
+	rules=$(sudo -l -U "$CLAUDE" 2>&1 | sed -nE 's/^[[:space:]]+(\(.*)$/\1/p')
+	[[ $rules == "$BASE_RULE" ]] || echo "sudo: ${rules//$'\n'/, }"
+	groups=$(id -Gn "$CLAUDE" 2>&1 | tr ' ' '\n' | sort | tr '\n' ' ')
+	[[ $groups == "lf-claude render " ]] || echo "Gruppen: $groups"
+	procs=$(granted_pids | tr '\n' ' ')
+	[[ -z $procs ]] || echo "Prozesse: $procs"
+}
+
+# timer_end   Ende der Freigabe in Sekunden seit 1970, aus dem Timer. Der zählt monoton, systemd
+#   rechnet das Ende mit der aktuellen Uhr aus, auch wenn sie sich nach dem Freischalten
+#   umgestellt hat (NTP nach dem Start). Ohne Timer: Rückgabe 1.
+timer_end() {
+	local next
+	next=$(systemctl list-timers --all -o json "$UNIT.timer" 2>/dev/null | jq -r '.[0].next // empty' 2>/dev/null)
+	[[ $next =~ ^[0-9]+$ ]] && ((next > 0)) || return 1
+	echo $((next / 1000000))
+}
+
+# status   Maßgeblich ist, ob die Regel besteht, nicht die Uhr.
 status() {
-	local until
-	until=$(cat "$UNTIL" 2>/dev/null)
-	if [[ -f $RULE && $until =~ ^[0-9]+$ ]] && ((until > $(date +%s))); then
-		echo "an bis $(date -d "@$until" +%H:%M)"
+	local end
+	if [[ -e $RULE ]]; then
+		if end=$(timer_end); then
+			echo "an bis $(date -d "@$end" +%H:%M)"
+		else
+			echo "an, ohne Ablauf"
+		fi
+	elif [[ -s $RESIDUE ]]; then
+		echo "an: Rückstand nach der Freigabe ($(head -n 1 "$RESIDUE")), Neustart empfohlen"
 	else
 		echo "aus"
 	fi
 }
 
 off() {
+	local r
 	rm -f "$RULE" "$UNTIL"
 	systemctl stop "$UNIT.timer" 2>/dev/null || true
+	stop_granted
+	r=$(residue)
+	if [[ -n $r ]]; then
+		install -d /run/lf
+		printf '%s\n' "$r" >"$RESIDUE"
+		chmod 0644 "$RESIDUE"
+		note "WARNUNG: lf-claude darf nach der Freigabe noch mehr als lf-lesen und lf-aufgabe: ${r//$'\n'/; }. Neustart empfohlen"
+	else
+		rm -f "$RESIDUE"
+	fi
 }
 
 case ${1:-} in
 an)
 	((EUID == 0)) || { echo "lf-freigabe: nur mit sudo" >&2; exit 2; }
-	[[ ${SUDO_USER:-} == lf-claude ]] &&
-		{ echo "lf-freigabe: Die Freigabe schaltet nur der Techniker frei." >&2; exit 2; }
+	if caller_from_claude; then
+		note "abgelehnt: Freischalten aus der Sitzung von lf-claude" >/dev/null
+		echo "lf-freigabe: Die Freigabe schaltet nur der Techniker frei." >&2
+		exit 2
+	fi
 	min=${2:-30}
 	[[ $min =~ ^[0-9]{1,3}$ ]] && ((10#$min >= 1 && 10#$min <= 240)) || { echo "lf-freigabe: MINUTEN 1 bis 240" >&2; exit 2; }
 	min=$((10#$min))
@@ -61,7 +209,8 @@ an)
 	# Type=oneshot: Wer den Dienst von Hand startet, kehrt erst zurück, wenn die Freigabe weg ist.
 	systemd-run --quiet --unit="$UNIT" --on-active="${min}min" --timer-property=AccuracySec=1s -p Type=oneshot \
 		/usr/local/bin/lf-freigabe ablauf || { off; echo "lf-freigabe: Timer ließ sich nicht setzen, Freigabe zurückgenommen" >&2; exit 1; }
-	note "Claude (lf-claude) hat volles sudo bis $(date -d "@$(cat "$UNTIL")" +%H:%M), freigegeben von ${SUDO_USER:-root}"
+	end=$(timer_end) || end=$(cat "$UNTIL")
+	note "Claude (lf-claude) hat volles sudo bis $(date -d "@$end" +%H:%M), freigegeben von $(caller_name)"
 	;;
 aus)
 	((EUID == 0)) || { echo "lf-freigabe: nur mit sudo" >&2; exit 2; }

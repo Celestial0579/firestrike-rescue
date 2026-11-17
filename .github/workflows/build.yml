@@ -53,6 +53,8 @@ jobs:
       # Dialoge: Texte von Datenträgern nur gefiltert (auch mit echtem whiptail geprüft).
       # Sperre für Claude: Der Hook entscheidet, nicht das Modell. Mit der CLI der ISO prüft es
       # der Selbsttest im Boot-Test (selftest_claude).
+      # Freigabe: "an" erkennt lf-claude an den Vorfahren, am Ende endet, was Claude damit als root
+      # gestartet hat, Rückstände bleiben sichtbar, status folgt der Regel, nicht der Uhr.
       # Disks: nur über eine eindeutige Kennung, bestätigt wird das Gerät, das beschrieben wird.
       # Boot: casper durchsucht keine fremden Disks. GRUB und initrd nehmen nur das geprüfte Medium.
       # Werkzeuge: Ein Fehler wird gemeldet, die Ausgabe erreicht das Terminal nur gefiltert.
@@ -86,6 +88,7 @@ jobs:
           bash tests/unit-claude-wrapper.sh
           bash tests/unit-lf-lesen.sh
           bash tests/unit-lf-aufgabe.sh
+          bash tests/unit-lf-freigabe.sh
           bash tests/unit-claude-skills.sh
           bash tests/unit-disk-identity.sh
           bash tests/unit-boot-config.sh
