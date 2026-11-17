@@ -85,7 +85,29 @@ target_ok() {
 	target_mount_has_opts || fail "Das Ziel ist nicht mit den Schutzoptionen eingehängt."
 }
 
-# source_ok GERÄT   GERÄT darf Quelle sein: nicht der Stick, nicht das Ziel.
+# disk_written DISK   Hat ein Prozess DISK, eine ihrer Partitionen oder ein Gerät darauf zum
+#   Schreiben offen (etwa dd oder partclone eines laufenden Klons)?
+disk_written() {
+	local -a nodes
+	local f n pid fd flags
+	mapfile -t nodes < <(lsblk -lnpo NAME "$1" 2>/dev/null)
+	((${#nodes[@]})) || return 1
+	for f in /proc/[0-9]*/fd/*; do
+		for n in "${nodes[@]}"; do
+			[[ $f -ef $n ]] || continue
+			pid=${f#/proc/}
+			pid=${pid%%/*}
+			fd=${f##*/}
+			flags=$(awk '$1 == "flags:" {print $2}' "/proc/$pid/fdinfo/$fd" 2>/dev/null)
+			[[ $flags =~ ^[0-7]+$ ]] && (((8#$flags & 3) != 0)) && return 0
+		done
+	done
+	return 1
+}
+
+# source_ok GERÄT   GERÄT darf Quelle sein: nicht der Stick, nicht das Ziel, kein Hilfsgerät
+#   (nbd: Overlay eines Klons, zram) und keine Disk, auf die gerade ein Job schreibt. Ein
+#   blockdev --setro darauf ließe den Job mitten im Lauf scheitern (GHSA-p86q-3456-f288).
 source_ok() {
 	local d bd td
 	d=$(disk_of "$1")
@@ -93,6 +115,8 @@ source_ok() {
 	td=$(target_disk)
 	[[ -n $bd && $d == "$bd" ]] && fail "$1 liegt auf dem Leuchtfeuer-Stick."
 	[[ -n $td && $d == "$td" ]] && fail "$1 liegt auf dem Ziel. Das Ziel ist keine Quelle."
+	[[ $d =~ ^/dev/(nbd|zram)[0-9]+$ ]] && fail "$1 ist ein Hilfsgerät (nbd, zram), keine Quelle."
+	disk_written "$d" && fail "$1 wird gerade beschrieben (laufender Klon oder anderer Job), keine Quelle."
 	return 0
 }
 
