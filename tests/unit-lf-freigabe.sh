@@ -145,5 +145,9 @@ echo "lf-claude render" >"$T/groups"
 bash "$F" ablauf >"$T/out" 2>&1
 check "ohne Rückstand: nach dem Ablauf wieder aus" '[[ $(bash "$F" status) == aus && ! -e $T/run/claude-freigabe-rueckstand ]] && grep -q "abgelaufen" "$LOG"'
 
+echo "Hinweise für Techniker und Claude:"
+check "der Freigabe-Dialog sagt, dass das Ende auch laufende root-Jobs von Claude beendet" 'grep -q "Am Ende der Freigabe beendet Leuchtfeuer, was Claude damit als root gestartet hat, auch mitten im Schreiben." rescue/lib/claude.sh'
+check "CLAUDE.md: lange Kopien nur über lf-aufgabe, nie direkt mit sudo" 'tr "\n" " " <rescue/claude/CLAUDE.md | grep -q "Lange Kopien (dd, ddrescue, partclone) startest du auch dann nur über lf-aufgabe, nie direkt mit sudo"'
+
 rm -rf "$T"
 ((fails == 0)) && echo "Alle Tests bestanden." || { echo "$fails Test(s) fehlgeschlagen."; exit 1; }

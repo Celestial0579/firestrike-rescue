@@ -44,7 +44,7 @@ claude_freigabe_menu() {
 	local s c min
 	s=$(lf-freigabe status)
 	if [[ $s == aus ]]; then
-		ui_yesno "Claude-Freigabe" "Claude arbeitet mit den lf-Werkzeugen: Diagnose, Quelle nur lesend einhängen, Retten und Kopieren auf das bestätigte Ziel.\n\nMit der Freigabe bekommt Claude volles sudo, für diese Sitzung und eine begrenzte Zeit. Dann kann Claude alles, auch Quell-Disks beschreiben, formatieren und partitionieren. Die Sperre in Claude Code fragt weiter nach, ist aber keine Grenze mehr.\n\nNur freischalten, wenn eine Aufgabe es wirklich braucht. Freischalten?" --defaultno || return 0
+		ui_yesno "Claude-Freigabe" "Claude arbeitet mit den lf-Werkzeugen: Diagnose, Quelle nur lesend einhängen, Retten und Kopieren auf das bestätigte Ziel.\n\nMit der Freigabe bekommt Claude volles sudo, für diese Sitzung und eine begrenzte Zeit. Dann kann Claude alles, auch Quell-Disks beschreiben, formatieren und partitionieren. Die Sperre in Claude Code fragt weiter nach, ist aber keine Grenze mehr. Am Ende der Freigabe beendet Leuchtfeuer, was Claude damit als root gestartet hat, auch mitten im Schreiben.\n\nNur freischalten, wenn eine Aufgabe es wirklich braucht. Freischalten?" --defaultno || return 0
 		min=$(ui_input "Claude-Freigabe" "Für wie viele Minuten? (1 bis 240)" 30) || return 0
 		run sudo lf-freigabe an "$min" || { ui_msg "Claude-Freigabe" "Nicht freigeschaltet. Details im Protokoll."; return 0; }
 		log "Claude-Freigabe: an, $min Minuten"
