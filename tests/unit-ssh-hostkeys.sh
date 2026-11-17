@@ -49,7 +49,8 @@ check "chroot-setup löscht die Hostschlüssel nach der letzten Paketinstallatio
 check "build.sh baut kein squashfs, solange Hostschlüssel im chroot liegen" 'grep -q "compgen -G \"\$CHROOT/etc/ssh/ssh_host_\*\"" build/build.sh && [[ $(grep -n "compgen -G \"\$CHROOT/etc/ssh/ssh_host_" build/build.sh | cut -d: -f1) -lt $(grep -n "^	mksquashfs" build/build.sh | cut -d: -f1) ]]'
 
 echo "Dienst für jeden Start:"
-check "lf-ssh-hostkeys erzeugt fehlende Schlüssel vor ssh" 'grep -qx "ExecStart=/usr/bin/ssh-keygen -A" "$UNIT" && grep -qx "Before=ssh.service ssh.socket" "$UNIT" && grep -qx "Type=oneshot" "$UNIT"'
+check "lf-ssh-hostkeys erzeugt fehlende Schlüssel vor ssh" 'grep -qx "ExecStart=/usr/bin/ssh-keygen -A" "$UNIT" && grep -qx "Before=ssh.service ssh.socket shutdown.target" "$UNIT" && grep -qx "Type=oneshot" "$UNIT"'
+check "kein Zyklus mit ssh.socket: ohne Standard-Abhängigkeiten, nach local-fs" 'grep -qx "DefaultDependencies=no" "$UNIT" && grep -qx "After=local-fs.target" "$UNIT" && ! grep -q "^After=.*basic.target" "$UNIT"'
 check "er läuft bei jedem Start und vor jedem Start von ssh" 'grep -qx "WantedBy=multi-user.target ssh.service ssh.socket" "$UNIT"'
 check "chroot-setup schaltet ihn ein" 'grep -q "^systemctl enable .*lf-ssh-hostkeys.service" build/chroot-setup.sh'
 
