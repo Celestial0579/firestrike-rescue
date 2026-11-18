@@ -454,7 +454,8 @@ selftest_owner() {
 #   127.0.0.1, qm, pvesm und pvesh als Skripte, qemu-nbd echt. Die Quelle ist ein Loop-Gerät mit
 #   GPT, einer ext4-Partition und einer ohne Dateisystem. Geprüft wird:
 #   - ohne den bestätigten Schlüssel des Knotens keine Verbindung (Gegenprobe: fremder Schlüssel),
-#   - eine leere oder falsche Eingabe bestätigt den Schlüssel nicht,
+#   - eine leere, falsche oder zu kurze Eingabe (die letzten 4 Zeichen) bestätigt den Schlüssel
+#     nicht, die letzten P2V_FP_CONFIRM Zeichen bestätigen ihn,
 #   - ein Name mit Shell-Zeichen legt keine VM an, die Beschreibung kommt als ein Argument an,
 #   - die Volumes der VM tragen danach dieselben Partitionen und Daten, die Quelle bleibt
 #     schreibgeschützt und unverändert, auf dem Knoten bleibt kein Socket-Ordner zurück.
@@ -548,8 +549,8 @@ selftest_p2v() {
 		echo "LF-SELFTEST: P2V: Schlüssel der Attrappe nicht oder falsch gelesen ($P2V_FP)"
 		good=0
 	fi
-	if p2v_hostkey_accept "" || p2v_hostkey_accept "XXXX" || [[ -e $P2V_DIR/known_hosts ]]; then
-		echo "LF-SELFTEST: P2V: leere oder falsche Eingabe bestätigte den Schlüssel"
+	if p2v_hostkey_accept "" || p2v_hostkey_accept "XXXX" || p2v_hostkey_accept "${P2V_FP: -4}" || [[ -e $P2V_DIR/known_hosts ]]; then
+		echo "LF-SELFTEST: P2V: leere, falsche oder zu kurze Eingabe bestätigte den Schlüssel"
 		good=0
 	fi
 	# Gegenprobe: In known_hosts steht ein anderer Schlüssel als der des Knotens.
@@ -562,7 +563,7 @@ selftest_p2v() {
 	fi
 	p2v_logout
 	local lrc=1
-	if p2v_hostkey_scan && p2v_hostkey_accept "${P2V_FP: -4}"; then
+	if p2v_hostkey_scan && p2v_hostkey_accept "${P2V_FP: -P2V_FP_CONFIRM}"; then
 		p2v_login
 		lrc=$?
 	fi

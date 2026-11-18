@@ -9,7 +9,7 @@
 # Sicherheitsregeln:
 #   - Die Quell-Disks werden sofort schreibgeschützt (safety_set_ro), bevor etwas von ihnen
 #     gelesen wird. Der Kopier-Job prüft vor jedem Schritt, dass es noch dieselben Disks sind.
-#   - Den SSH-Schlüssel des Knotens bestätigt der Techniker, indem er die letzten 4 Zeichen des
+#   - Den SSH-Schlüssel des Knotens bestätigt der Techniker, indem er die letzten 10 Zeichen des
 #     Fingerabdrucks abtippt. ssh vertraut danach nur diesem einen Schlüssel (eigene
 #     known_hosts-Datei im RAM, StrictHostKeyChecking=yes). Eine leere Eingabe bestätigt nie.
 #   - Zugangsdaten speichert der Assistent nicht. Das Kennwort fragt ssh selbst ab, die

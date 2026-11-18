@@ -155,7 +155,7 @@ sum_ldb=$(sha256sum <"$LDB/000003.log")
 sum_md=$(sha256sum <"$H/.claude/CLAUDE.md")
 claude_as() { printf '%s\n' "$*" >>"$T/claude_as"; "$@"; }
 log_scrub_tree claude_as -- "$H"
-check "Verläufe, Eingabeverlauf, Einstellungen und Protokolle von Claude ohne Schlüssel" '! has_key "$P/sitzung.jsonl" && ! has_key "$H/.claude/history.jsonl" && ! has_key "$H/.claude.json" && ! has_key "$H/.config/Claude/logs/main.log" && [[ $(grep -c "$LF_RECOVERY_KEY_MASK" "$P/sitzung.jsonl") == 2 ]] && grep -qF "$LF_RECOVERY_KEY_MASK" "$H/.claude/history.jsonl"'
+check "Verläufe, Eingabeverlauf, Einstellungen und Protokolle von Claude ohne Schlüssel" '! has_key "$P/sitzung.jsonl" && ! has_key "$H/.claude/history.jsonl" && ! has_key "$H/.claude.json" && ! has_key "$H/.config/Claude/logs/main.log" && [[ $(grep -cF -- "$LF_RECOVERY_KEY_MASK" "$P/sitzung.jsonl") == 2 ]] && grep -qF "$LF_RECOVERY_KEY_MASK" "$H/.claude/history.jsonl"'
 check "maskiert, nicht gelöscht: gültiges JSON, der Rest jeder Zeile und die Rechte bleiben" 'jq -e . "$P/sitzung.jsonl" "$H/.claude.json" >/dev/null && grep -qF "dislocker -r -V /dev/sdb2 -p$LF_RECOVERY_KEY_MASK -- /run/lf/dislocker-sdb2" "$P/sitzung.jsonl" && [[ $(stat -c %a "$H/.claude.json") == 600 && $(sha256sum <"$H/.claude/CLAUDE.md") == "$sum_md" ]]'
 check "Datenbanken, Verknüpfungen und ihr Ziel bleiben unberührt" '[[ $(sha256sum <"$LDB/000003.log") == "$sum_ldb" && -L $H/.claude/verknuepfung ]] && has_key "$T/fremd"'
 check "find und sed laufen als Besitzer der Daten (claude_as)" 'grep -q "^env LC_ALL=C find $H " "$T/claude_as" && grep -q "^env LC_ALL=C sed -E -i " "$T/claude_as"'
