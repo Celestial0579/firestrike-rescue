@@ -60,7 +60,8 @@ recover_run() {
 		return 0
 	fi
 	# Liegt im Fallordner schon etwas unter diesem Namen, wird es ersetzt und nie durchschrieben.
-	cp -f --remove-destination "$LF_LOG" "$case/" 2>/dev/null || true
+	# Wiederherstellungsschlüssel kommen nie mit (GHSA-cwvh-chmr-9xg8).
+	log_copy_masked "$LF_LOG" "$case" 2>/dev/null || true
 	local state
 	if ! state=$(casefile_peek "$case/case.env" STATE); then
 		recover_case_invalid "$case"
@@ -147,6 +148,9 @@ recover_resume() {
 		recover_case_invalid "$c"
 		return 0
 	fi
+	# Ältere Fassungen legten das Protokoll ungefiltert in den Fallordner, samt BitLocker-
+	# Wiederherstellungsschlüssel (GHSA-cwvh-chmr-9xg8). Wer den Fall wieder öffnet, bereinigt es.
+	log_scrub_case "$c"
 	st=$(casefile_get STATE)
 	if [[ $st == "done" ]]; then
 		recover_after "$c"
@@ -279,8 +283,17 @@ part_mount_ro() {
 	BitLocker)
 		local key
 		key=$(ui_input "BitLocker" "$(basename "$part") ist mit BitLocker verschlüsselt.\n\nWiederherstellungsschlüssel (48 Ziffern, mit Bindestrichen):") || return 1
+		key=$(bitlocker_key_normalize "$key") ||
+			{ die "Das ist kein BitLocker-Wiederherstellungsschlüssel (8 Gruppen zu 6 Ziffern)."; return 1; }
 		sudo install -d "$LF_RUN/dislocker-$(basename "$part")"
-		run sudo dislocker -r -V "$part" -p"$key" -- "$LF_RUN/dislocker-$(basename "$part")" ||
+		# Der Schlüssel geht nur an dislocker, über die Standardeingabe einer root-Shell und nie über
+		# eine Befehlszeile: sudo schreibt seine Befehlszeile ins Journal, und ps zeigt sie, solange
+		# dislocker den Schlüssel ableitet. dislocker überschreibt -p beim Start selbst mit X
+		# (hide_opt); sein eigener Prompt liest nur von /dev/tty. Die Ausgabe steht maskiert im
+		# Protokoll (run_masked, GHSA-cwvh-chmr-9xg8).
+		printf '%s\n' "$key" |
+			run_masked sudo bash -c 'IFS= read -r k && exec dislocker -r -V "$1" -p"$k" -- "$2"' lf-dislocker \
+				"$part" "$LF_RUN/dislocker-$(basename "$part")" ||
 			{ die "Entschlüsselung fehlgeschlagen. Schlüssel prüfen."; return 1; }
 		run sudo mount -o "$opts,loop" "$LF_RUN/dislocker-$(basename "$part")/dislocker-file" "$mp" ||
 			run sudo ntfs-3g -o ro,nodev,nosuid,noexec "$LF_RUN/dislocker-$(basename "$part")/dislocker-file" "$mp"

@@ -156,6 +156,12 @@ persist_bind() {
 	done
 	chmod 700 "$HOME/.ssh" 2>/dev/null || true
 	persist_bind_claude
+	# Ältere Fassungen schrieben den BitLocker-Wiederherstellungsschlüssel ins Protokoll, und
+	# Claude las es (GHSA-cwvh-chmr-9xg8). Bevor Claude startet, wird er in seinen Verläufen und
+	# Protokollen auf dem Speicher maskiert: als Claude in dessen Home und als Live-Benutzer in den
+	# Ordnern aus der Zeit, als Claude als Live-Benutzer lief.
+	log_scrub_tree claude_as -- "$CLAUDE_HOME" || true
+	log_scrub_tree -- "$LF_PERSIST/home/.claude" "$LF_PERSIST/home/.config/Claude" || true
 	# Eigene Konfiguration: /persist/config wird zu /etc/lf
 	sudo install -d /etc/lf
 	mountpoint -q /etc/lf || run sudo mount --bind "$LF_PERSIST/config" /etc/lf
