@@ -126,7 +126,7 @@ fi
 systemctl mask swap.target >/dev/null 2>&1 || true
 
 log "Dienste"
-systemctl enable lf-theme.service lf-ready.service lf-selftest.service NetworkManager.service
+systemctl enable lf-theme.service lf-ready.service lf-selftest.service lf-ssh-hostkeys.service NetworkManager.service
 # SSH nur auf Wunsch über den Assistenten
 systemctl disable ssh.service ssh.socket >/dev/null 2>&1 || true
 # Keine Wartezeit auf Netzwerk beim Booten
@@ -138,6 +138,10 @@ log "initramfs neu bauen"
 update-initramfs -u -k all
 
 log "Aufräumen"
+# SSH-Hostschlüssel entstehen bei der Installation von openssh-server. Im öffentlichen ISO wären sie
+# auf jedem Stick dieselben, und jeder könnte sich mit ihnen als das Rettungssystem ausgeben
+# (GHSA-72hw-w482-prv6). Eigene erzeugt lf-ssh-hostkeys.service bei jedem Start.
+rm -f /etc/ssh/ssh_host_*
 apt-get clean
 rm -rf /var/lib/apt/lists/* /var/log/*.log /var/log/apt/* /root/.cache
 rm -f /usr/sbin/policy-rc.d

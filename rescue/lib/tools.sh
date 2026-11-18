@@ -67,13 +67,27 @@ tools_ssh() {
 		return 0
 	fi
 	is_online || { ui_msg "SSH" "Keine Netzwerkverbindung."; return 0; }
-	local pw ips
+	local pw ips fps
+	# Die Hostschlüssel dieses Starts (lf-ssh-hostkeys.service). Fehlen sie noch, entstehen sie
+	# hier, nie aus dem Image (GHSA-72hw-w482-prv6).
+	run sudo ssh-keygen -A || { ui_msg "SSH" "Die SSH-Hostschlüssel ließen sich nicht erzeugen. SSH bleibt aus."; return 0; }
+	fps=$(tools_ssh_fingerprints)
+	[[ -n $fps ]] || { ui_msg "SSH" "Die SSH-Hostschlüssel fehlen. SSH bleibt aus."; return 0; }
 	pw=$(tr -dc 'a-km-zA-HJ-NP-Z2-9' </dev/urandom | head -c 12)
 	echo "$(id -un):$pw" | sudo chpasswd
 	run sudo systemctl start ssh
 	ips=$(ip -4 -o addr show scope global | awk '{print $4}' | cut -d/ -f1 | tr '\n' ' ')
-	log "SSH eingeschaltet (Einmal-Passwort gesetzt)"
-	ui_msg "SSH ist an" "Verbinden mit:\n\n   ssh $(id -un)@${ips%% *}\n\nAdressen: $ips\nPasswort (nur für diese Sitzung): $pw\n\nLaufende Rettung ansehen: tmux attach -t lf-rettung"
+	log "SSH eingeschaltet (Einmal-Passwort gesetzt), Hostschlüssel: ${fps//$'\n'/, }"
+	ui_msg "SSH ist an" "Verbinden mit:\n\n   ssh $(id -un)@${ips%% *}\n\nAdressen: $ips\nPasswort (nur für diese Sitzung): $pw\n\nSchlüssel dieses Rechners. Beim ersten Verbinden mit dem vergleichen, den ssh nennt:\n${fps//$'\n'/\\n}\n\nLaufende Rettung ansehen: tmux attach -t lf-rettung"
+}
+
+# tools_ssh_fingerprints   SHA256-Fingerabdrücke der Hostschlüssel, je Zeile "   SHA256:… (TYP)".
+tools_ssh_fingerprints() {
+	local k d=${LF_SSH_DIR:-/etc/ssh}
+	for k in "$d/ssh_host_ed25519_key.pub" "$d/ssh_host_ecdsa_key.pub" "$d/ssh_host_rsa_key.pub"; do
+		[[ -r $k ]] || continue
+		ssh-keygen -l -E sha256 -f "$k" 2>/dev/null | awk '$2 ~ /^SHA256:/ {print "   " $2 " " $NF}'
+	done
 }
 
 tools_logs() {

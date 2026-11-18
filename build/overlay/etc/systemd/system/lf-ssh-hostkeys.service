@@ -1,0 +1,18 @@
+[Unit]
+# Das ISO enthält keine SSH-Hostschlüssel (GHSA-72hw-w482-prv6): Sie wären auf jedem Stick
+# dieselben und stünden im öffentlichen Image. Jeder Start bekommt eigene, bevor ssh startet.
+Description=Leuchtfeuer: eigene SSH-Hostschlüssel für diesen Start
+# Ohne die Standard-Abhängigkeiten (After=basic.target): Sonst entstünde ein Zyklus, sobald
+# ssh.socket beim Start aktiv ist, denn sockets.target liegt vor basic.target.
+DefaultDependencies=no
+After=local-fs.target
+Before=ssh.service ssh.socket shutdown.target
+Conflicts=shutdown.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/bin/ssh-keygen -A
+
+[Install]
+WantedBy=multi-user.target ssh.service ssh.socket
