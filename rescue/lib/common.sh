@@ -34,11 +34,13 @@ log_init() {
 	export LF_LOG
 }
 
-# Ein BitLocker-Wiederherstellungsschlüssel (8 Gruppen zu 6 Ziffern, auch ohne Bindestriche)
-# kommt nie ins Protokoll, nie in eine Kopie davon und nie in den Zustand für Claude
-# (GHSA-cwvh-chmr-9xg8). Wer den Schlüssel hat, entschlüsselt die Disk des Kunden, und das
-# Protokoll liegt auf dem Stick, im Fallordner neben dem Image und im Kontext von Claude.
-LF_RECOVERY_KEY_RE='[0-9]{6}(-[0-9]{6}){7}|[0-9]{48}'
+# Ein BitLocker-Wiederherstellungsschlüssel (8 Gruppen zu 6 Ziffern, mit Bindestrichen, mit
+# Leerzeichen oder am Stück) kommt nie ins Protokoll, nie in eine Kopie davon und nie in den
+# Zustand für Claude (GHSA-cwvh-chmr-9xg8). Wer den Schlüssel hat, entschlüsselt die Disk des
+# Kunden, und das Protokoll liegt auf dem Stick, im Fallordner neben dem Image und im Kontext
+# von Claude. Ältere Fassungen schrieben ihn so ins Protokoll, wie er getippt war, oft mit
+# Leerzeichen.
+LF_RECOVERY_KEY_RE='[0-9]{6}([- ][0-9]{6}){7}|[0-9]{48}'
 # Nur ASCII: Claude bekommt Zeilen auf 400 Zeichen gekürzt, die Maske soll sie in Bytes nicht verlängern.
 LF_RECOVERY_KEY_MASK='[BitLocker-Schluessel entfernt]'
 
@@ -65,6 +67,31 @@ log_scrub_dir() {
 		sed -E -i "s/$LF_RECOVERY_KEY_RE/$LF_RECOVERY_KEY_MASK/g" "$f"
 	done
 	return 0
+}
+
+# log_scrub_tree [BEFEHL …] -- PFAD …   Nimmt Wiederherstellungsschlüssel aus den Textdateien
+#   unter PFAD, etwa aus Verläufen und Protokollen von Claude, in die ältere Fassungen ihn
+#   gebracht haben. Nur gewöhnliche Dateien ohne Nullbytes (Datenbanken bleiben unberührt), keine
+#   Verknüpfungen, kein anderes Dateisystem. Maskiert wird an Ort und Stelle, gelöscht wird
+#   nichts, ein zweiter Lauf ändert nichts. Vor dem -- steht, als wer find und sed laufen (etwa
+#   claude_as): Sie dürfen dann nur, was der Besitzer der Daten selbst darf.
+log_scrub_tree() {
+	local -a as=() files=()
+	while (($#)) && [[ $1 != -- ]]; do
+		as+=("$1")
+		shift
+	done
+	shift
+	(($#)) || return 0
+	mapfile -d '' files < <("${as[@]}" env LC_ALL=C find "$@" -xdev -type f \
+		-exec grep -lIZE -- "$LF_RECOVERY_KEY_RE" {} + 2>/dev/null)
+	((${#files[@]})) || return 0
+	if "${as[@]}" env LC_ALL=C sed -E -i "s/$LF_RECOVERY_KEY_RE/$LF_RECOVERY_KEY_MASK/g" -- "${files[@]}"; then
+		log "Wiederherstellungsschlüssel in ${#files[@]} Datei(en) maskiert: $*"
+	else
+		log "Wiederherstellungsschlüssel nicht in allen Dateien maskiert: $*"
+		return 1
+	fi
 }
 
 # log_copy_masked PROTOKOLL ORDNER   Legt eine Kopie des Protokolls ohne Wiederherstellungsschlüssel
