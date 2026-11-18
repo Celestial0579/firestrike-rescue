@@ -73,7 +73,7 @@ Du brauchst:
 
 Ablauf:
 
-1. **Knoten wählen und seinen Schlüssel bestätigen.** Der Assistent zeigt den Fingerabdruck des SSH-Schlüssels, den der Knoten meldet. Vergleiche ihn mit dem auf dem Knoten selbst (`ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub`, an der Konsole oder in der Shell der Proxmox-Oberfläche) und tippe die letzten 4 Zeichen ab. Erst dann verbindet sich ssh, und nur mit diesem Schlüssel. Das Kennwort fragt ssh selbst ab, der Assistent speichert es nicht. Die Verbindung endet mit dem Assistenten.
+1. **Knoten wählen und seinen Schlüssel bestätigen.** Der Assistent zeigt den Fingerabdruck des SSH-Schlüssels, den der Knoten meldet. Vergleiche ihn mit dem auf dem Knoten selbst (`ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub`, an der Konsole oder in der Shell der Proxmox-Oberfläche) und tippe die letzten 10 Zeichen ab, Groß- und Kleinschreibung zählt. Erst dann verbindet sich ssh, und nur mit diesem Schlüssel. Das Kennwort fragt ssh selbst ab, der Assistent speichert es nicht. Die Verbindung endet mit dem Assistenten.
 2. **Speicher, VM-ID und Netz wählen.** Dünne Speicher (lvmthin, ZFS, Ceph, Verzeichnisse mit qcow2) sind empfohlen. Die VM-ID muss frei sein, bestehende VMs fasst der Assistent nie an. Die VM entsteht auf dem Knoten, mit dem du verbunden bist.
 3. **Quell-Disks wählen,** bis zu 6. Jede ist ab der Wahl schreibgeschützt. Der Stick selbst steht nicht in der Liste. Ist ein NTFS-Volume nicht sauber getrennt, warnt der Assistent. Es wird dann Block für Block kopiert.
 4. **VM-Daten festlegen:** Name, Arbeitsspeicher, Kerne, CPU-Typ, Betriebssystem, Firmware (UEFI bei GPT, sonst BIOS) und TPM 2.0 für Windows 11.
