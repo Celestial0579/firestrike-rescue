@@ -45,6 +45,8 @@ jobs:
       # Claude: Texte von Datenträgern stehen in einer Datendatei, nie in einer CLAUDE.md.
       # Persistenter Speicher: nur vom eigenen Stick, nie ungefragt, lf.conf als Daten.
       # Klon-Job: Label und Namen der Quelle werden nie zum Befehl.
+      # P2V: Der Schlüssel des Knotens gilt erst nach 10 Zeichen seines Fingerabdrucks. lf-claude nie per SSH.
+      # Quellen: keine Disk, auf die gerade ein Job schreibt, kein nbd oder zram.
       # Image-Partitionen: nur lesend und mit Schutzoptionen, am Einhängepunkt nachgeprüft.
       # BitLocker: Der Wiederherstellungsschlüssel geht nur an dislocker, nie in Protokoll, Fall oder Claude.
       # Fortsetzen: Die Suche nach Rettungsfällen schreibt nicht.
@@ -87,6 +89,8 @@ jobs:
           bash tests/unit-boot-medium.sh
           bash tests/unit-runv.sh
           bash tests/unit-lf-conf.sh
+          bash tests/unit-p2v-hostkey.sh
+          bash tests/unit-source-busy.sh
           bash tests/unit-p2v.sh
           bash tests/unit-ssh-hostkeys.sh
           bash tests/unit-hang.sh

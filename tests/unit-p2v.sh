@@ -143,10 +143,13 @@ p2v_hostkey_scan
 check "ed25519 wird genommen, der Fingerabdruck ist der des Schlüssels" '[[ $P2V_HKTYPE == ed25519 && $P2V_HKALG == ssh-ed25519 && $P2V_FP == "$want" ]]'
 check "leere Eingabe bestätigt nie" '! p2v_hostkey_accept "" && ! p2v_hostkey_accept "   " && [[ ! -e $P2V_DIR/known_hosts ]]'
 check "falsche Eingabe bestätigt nicht" '! p2v_hostkey_accept "abcd" && [[ ! -e $P2V_DIR/known_hosts ]]'
-other=$(tr 'A-Za-z' 'a-zA-Z' <<<"${P2V_FP: -4}")
-[[ $other == "${P2V_FP: -4}" ]] && other=XXXX
+# Bestätigt wird mit den letzten P2V_FP_CONFIRM Zeichen (10, GHSA-p86q-3456-f288).
+want=${P2V_FP: -P2V_FP_CONFIRM}
+other=$(tr 'A-Za-z' 'a-zA-Z' <<<"$want")
+[[ $other == "$want" ]] && other=XXXXXXXXXX
 check "Groß- und Kleinschreibung zählen" '! p2v_hostkey_accept "$other"'
-check "richtige Eingabe: known_hosts enthält genau diesen Schlüssel" 'p2v_hostkey_accept " ${P2V_FP: -4} " && [[ $(cat "$P2V_DIR/known_hosts") == "pve.example $(cut -d" " -f1,2 "$T/hostkey.pub")" ]]'
+check "die letzten 4 Zeichen reichen nicht" '! p2v_hostkey_accept "${P2V_FP: -4}" && [[ ! -e $P2V_DIR/known_hosts ]]'
+check "richtige Eingabe: known_hosts enthält genau diesen Schlüssel" 'p2v_hostkey_accept " $want " && [[ $(cat "$P2V_DIR/known_hosts") == "pve.example $(cut -d" " -f1,2 "$T/hostkey.pub")" ]]'
 check "der Ordner ist nur für den Benutzer" '[[ $(stat -c %a "$P2V_DIR") == 700 ]]'
 ssh-keyscan() { echo "pve.example ssh-ed25519 A;B C"; }
 check "eine Antwort, die kein Schlüssel ist, gilt nicht" '! p2v_hostkey_scan && [[ -z $P2V_FP ]]'

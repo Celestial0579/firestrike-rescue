@@ -122,12 +122,15 @@ p2v_hostkey_scan() {
 	return 1
 }
 
-# p2v_hostkey_accept EINGABE   Prüft die Eingabe gegen die letzten 4 Zeichen des Fingerabdrucks
-# (Groß- und Kleinschreibung zählen, Base64). Erst dann gilt der Schlüssel für ssh.
+# p2v_hostkey_accept EINGABE   Prüft die Eingabe gegen die letzten P2V_FP_CONFIRM Zeichen des
+# Fingerabdrucks (Groß- und Kleinschreibung zählen, Base64). Erst dann gilt der Schlüssel für ssh.
+# 4 Zeichen (24 Bit) trifft ein Angreifer mit einem passend erzeugten Schlüssel in Minuten,
+# 10 Zeichen (60 Bit) nicht (GHSA-p86q-3456-f288).
+P2V_FP_CONFIRM=10
 p2v_hostkey_accept() {
 	local got
 	got=$(_safety_trim "$1")
-	[[ -n $got && -n $P2V_FP && $got == "${P2V_FP: -4}" ]] || return 1
+	[[ -n $got && ${#P2V_FP} -gt $P2V_FP_CONFIRM && $got == "${P2V_FP: -P2V_FP_CONFIRM}" ]] || return 1
 	install -m 600 "$P2V_DIR/hostkey.scan" "$P2V_DIR/known_hosts"
 	log "SSH-Schlüssel von $P2V_HOST bestätigt: $P2V_FP ($P2V_HKTYPE)"
 }
@@ -403,7 +406,7 @@ p2v_connect_step() {
 			ui_msg "Knoten" "$P2V_HOST antwortet nicht per SSH auf Port $P2V_PORT."
 			continue
 		fi
-		got=$(ui_input "SSH-Schlüssel bestätigen" "Der Knoten $P2V_HOST meldet diesen Schlüssel ($P2V_HKTYPE):\n\n   $P2V_FP\n\nVergleiche ihn mit dem Schlüssel auf dem Knoten selbst, an seiner Konsole oder in der Shell der Proxmox-Oberfläche:\n\n   ssh-keygen -lf /etc/ssh/ssh_host_${P2V_HKTYPE}_key.pub\n\nStimmt er nicht, verbindet sich hier ein anderer Rechner. Dann abbrechen.\n\nZur Bestätigung die letzten 4 Zeichen des Fingerabdrucks eingeben (Groß- und Kleinschreibung zählt):") || return 1
+		got=$(ui_input "SSH-Schlüssel bestätigen" "Der Knoten $P2V_HOST meldet diesen Schlüssel ($P2V_HKTYPE):\n\n   $P2V_FP\n\nVergleiche ihn mit dem Schlüssel auf dem Knoten selbst, an seiner Konsole oder in der Shell der Proxmox-Oberfläche:\n\n   ssh-keygen -lf /etc/ssh/ssh_host_${P2V_HKTYPE}_key.pub\n\nStimmt er nicht, verbindet sich hier ein anderer Rechner. Dann abbrechen.\n\nZur Bestätigung die letzten $P2V_FP_CONFIRM Zeichen des Fingerabdrucks eingeben (Groß- und Kleinschreibung zählt):") || return 1
 		if ! p2v_hostkey_accept "$got"; then
 			log "P2V: SSH-Schlüssel von $P2V_HOST nicht bestätigt"
 			ui_msg "Nicht bestätigt" "Die Eingabe passt nicht zum Fingerabdruck. Es wird keine Verbindung aufgebaut."

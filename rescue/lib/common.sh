@@ -377,18 +377,70 @@ is_online() { timeout 3 bash -c 'exec 3<>/dev/tcp/1.1.1.1/443' 2>/dev/null; }
 # tmux-Sitzung starten (falls nicht vorhanden) und anzeigen.
 # Die Arbeit läuft weiter, auch wenn man die Ansicht mit Strg+B, D verlässt.
 tmux_run() {
+	tmux_start "$@"
+	tmux attach -t "$1" || true
+}
+
+# tmux_start NAME BEFEHL …   Startet die Sitzung NAME, falls es sie noch nicht gibt.
+tmux_start() {
 	local name=$1
 	shift
-	if ! tmux has-session -t "$name" 2>/dev/null; then
-		tmux new-session -d -s "$name" -x 200 -y 50 "$@"
-		tmux set-option -t "$name" status-style "bg=colour4,fg=colour7" >/dev/null
-		tmux set-option -t "$name" status-left " Leuchtfeuer · $name " >/dev/null
-		tmux set-option -t "$name" status-left-length 60 >/dev/null
-		tmux set-option -t "$name" status-right " Strg+B, D = Ansicht verlassen (läuft weiter) " >/dev/null
-		tmux set-option -t "$name" status-right-length 60 >/dev/null
-		tmux set-option -t "$name" remain-on-exit off >/dev/null
-	fi
+	tmux has-session -t "$name" 2>/dev/null && return 0
+	tmux new-session -d -s "$name" -x 200 -y 50 "$@" || return 1
+	tmux set-option -t "$name" status-style "bg=colour4,fg=colour7" >/dev/null
+	tmux set-option -t "$name" status-left " Leuchtfeuer · $name " >/dev/null
+	tmux set-option -t "$name" status-left-length 60 >/dev/null
+	tmux set-option -t "$name" status-right " Strg+B, D = Ansicht verlassen (läuft weiter) " >/dev/null
+	tmux set-option -t "$name" status-right-length 60 >/dev/null
+	tmux set-option -t "$name" remain-on-exit off >/dev/null
+	return 0
+}
+
+# Jobs, die auf eine Disk außerhalb des Ziels schreiben (etwa die Ziel-Disk eines Klons), stehen
+# mit dieser Disk in LF_JOBS. lf-aufgabe nimmt eine solche Disk nicht als Quelle: Ein blockdev
+# --setro ließe den Job scheitern, auch zwischen zwei Kopierschritten, in denen kein Prozess sie
+# offen hat (GHSA-p86q-3456-f288). Der Ordner gehört dem Live-Benutzer, Claude kann dort nichts
+# eintragen oder löschen.
+LF_JOBS="$LF_RUN/jobs"
+
+# tmux_run_writing NAME DISK BEFEHL …   Wie tmux_run, für einen Job, der auf DISK schreibt.
+#   Der Eintrag gilt, solange der Prozess der Sitzung lebt.
+tmux_run_writing() {
+	local name=$1 disk=$2
+	shift 2
+	tmux_start "$name" "$@" && job_register "$name" "$disk"
 	tmux attach -t "$name" || true
+}
+
+# job_register NAME DISK   Trägt den Prozess der Sitzung NAME (PID und Startzeit) mit DISK ein.
+job_register() {
+	local pid start
+	pid=$(tmux display-message -p -t "$1" '#{pane_pid}' 2>/dev/null)
+	[[ $pid =~ ^[0-9]+$ ]] && start=$(job_starttime "$pid") || return 1
+	mkdir -p "$LF_JOBS" && printf '%s %s %s\n' "$pid" "$start" "$2" >"$LF_JOBS/$1"
+}
+
+# job_starttime PID   Startzeit des Prozesses (Feld 22 in /proc/PID/stat). Damit gilt eine
+#   später neu vergebene PID nicht als derselbe Job.
+job_starttime() {
+	local s
+	local -a f
+	{ read -r s <"/proc/$1/stat"; } 2>/dev/null || return 1
+	s=${s##*) }
+	read -ra f <<<"$s"
+	[[ ${f[19]:-} =~ ^[0-9]+$ ]] && echo "${f[19]}"
+}
+
+# job_disks   Die Disks, auf die gerade ein eingetragener Job schreibt, je Zeile eine.
+job_disks() {
+	local f pid start disk
+	for f in "$LF_JOBS"/*; do
+		[[ -f $f && ! -L $f ]] || continue
+		read -r pid start disk <"$f" || continue
+		[[ $pid =~ ^[0-9]+$ && -n $disk ]] || continue
+		[[ $(job_starttime "$pid") == "$start" ]] && printf '%s\n' "$disk"
+	done
+	return 0
 }
 
 # ---------------------------------------------------------------------------

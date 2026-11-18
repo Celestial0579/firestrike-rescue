@@ -79,7 +79,7 @@ clone_from_device() {
 		((tsize >= ssize)) || { die "Quelle ohne Partitionstabelle und Ziel ist kleiner. Das geht nicht."; return 0; }
 		safety_confirm_target "$tid" "Ziel wird mit dem Inhalt von $sdev überschrieben." "$tdev" || return 0
 		# Die Pfade sind eigene Argumente, nie Teil des Befehlstexts.
-		tmux_run "lf-klon" bash -c 'sudo dd if="$1" of="$2" bs=4M iflag=fullblock conv=fsync status=progress; echo; read -r -p "Fertig. Enter … " _' _ "$sdev" "$tdev"
+		tmux_run_writing "lf-klon" "$tdev" bash -c 'sudo dd if="$1" of="$2" bs=4M iflag=fullblock conv=fsync status=progress; echo; read -r -p "Fertig. Enter … " _' _ "$sdev" "$tdev"
 		return 0
 	fi
 
@@ -342,7 +342,8 @@ clone_copy() {
 	} >"$job"
 	chmod +x "$job"
 	log "Klon-Job: $job"
-	tmux_run "lf-klon" sudo "$job"
+	# Die Ziel-Disk steht in der Jobliste, solange der Job läuft (GHSA-p86q-3456-f288).
+	tmux_run_writing "lf-klon" "$tdev" sudo "$job"
 	while tmux has-session -t lf-klon 2>/dev/null; do
 		ui_msg "Klon läuft" "Der Klon läuft noch im Hintergrund.\n\nOK zeigt die Ansicht wieder an." && tmux attach -t lf-klon
 	done
