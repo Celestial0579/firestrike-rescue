@@ -105,18 +105,40 @@ disk_written() {
 	return 1
 }
 
+# disk_mounted_rw DISK   Ist DISK oder eine ihrer Partitionen irgendwo schreibbar eingehängt?
+#   Wer über ein Dateisystem schreibt, hat das Gerät selbst nicht offen.
+disk_mounted_rw() {
+	local -a nodes
+	local src opts n
+	mapfile -t nodes < <(lsblk -lnpo NAME "$1" 2>/dev/null)
+	((${#nodes[@]})) || return 1
+	while read -r src opts; do
+		for n in "${nodes[@]}"; do
+			[[ $src == "$n" && ",$opts," == *,rw,* ]] && return 0
+		done
+	done < <(findmnt -rn -o SOURCE,OPTIONS 2>/dev/null)
+	return 1
+}
+
 # source_ok GERÄT   GERÄT darf Quelle sein: nicht der Stick, nicht das Ziel, kein Hilfsgerät
 #   (nbd: Overlay eines Klons, zram) und keine Disk, auf die gerade ein Job schreibt. Ein
 #   blockdev --setro darauf ließe den Job mitten im Lauf scheitern (GHSA-p86q-3456-f288).
+#   Maßgeblich ist die Jobliste des Assistenten (LF_JOBS), denn zwischen zwei Kopierschritten hat
+#   kein Prozess die Ziel-Disk offen. Offene Schreibzugriffe und schreibbar eingehängte
+#   Dateisysteme fangen ab, was nicht in der Liste steht.
 source_ok() {
-	local d bd td
+	local d bd td j
 	d=$(disk_of "$1")
 	bd=$(boot_disk 2>/dev/null || true)
 	td=$(target_disk)
 	[[ -n $bd && $d == "$bd" ]] && fail "$1 liegt auf dem Leuchtfeuer-Stick."
 	[[ -n $td && $d == "$td" ]] && fail "$1 liegt auf dem Ziel. Das Ziel ist keine Quelle."
 	[[ $d =~ ^/dev/(nbd|zram)[0-9]+$ ]] && fail "$1 ist ein Hilfsgerät (nbd, zram), keine Quelle."
+	while IFS= read -r j; do
+		[[ $(disk_of "$j") == "$d" ]] && fail "$1 ist Ziel eines laufenden Jobs (Klon), keine Quelle."
+	done < <(job_disks)
 	disk_written "$d" && fail "$1 wird gerade beschrieben (laufender Klon oder anderer Job), keine Quelle."
+	disk_mounted_rw "$d" && fail "$1 ist schreibbar eingehängt, keine Quelle."
 	return 0
 }
 

@@ -40,6 +40,8 @@ ui_msg() { :; }
 sleep() { :; }
 tmux() { return 1; }
 tmux_run() { printf '%s\n' "$*" >>"$T/tmux"; }
+# Wie tmux_run, dazu die Disk, die der Job beschreibt (Jobliste für lf-aufgabe).
+tmux_run_writing() { printf '%s\n' "$1 ${*:3}" >>"$T/tmux"; printf '%s\n' "$2" >>"$T/writes"; }
 # blkid meldet, was die Quell-Partition über sich sagt. sfdisk bekommt sein Skript auf der
 # Standardeingabe: Es wird nur mitgeschrieben.
 sudo() {
@@ -131,6 +133,7 @@ SWAP_UUID=$GOOD_UUID SWAP_LABEL="swap"
 plan "/dev/sda1 vfat" "/dev/sda2 ext4" "/dev/sda3 swap" "/dev/sda4 "
 job
 check "Job erzeugt und gestartet" '[[ -n $JOB && $STARTED == "lf-klon sudo $LF_RUN/clone-job.sh" ]]'
+check "die Ziel-Disk steht für den Job in der Jobliste (GHSA-p86q-3456-f288)" '[[ $(tail -n1 "$T/writes" 2>/dev/null) == /dev/sdb ]]'
 check "der Job ist gültiges Shell-Skript" 'bash -n "$LF_RUN/clone-job.sh"'
 check "jede Partition hat ihre Zeile" '[[ $JOB == *"partclone.vfat -b -s '"'"'/dev/sda1'"'"' -o '"'"'/dev/sdb1'"'"'"* && $JOB == *"partclone.extfs -b -s '"'"'/dev/sda2'"'"'"* && $JOB == *"mkswap -U $GOOD_UUID -L '"'"'swap'"'"' '"'"'/dev/sdb3'"'"'"* && $JOB == *"dd if='"'"'/dev/sda4'"'"' of='"'"'/dev/sdb4'"'"'"* ]]'
 
