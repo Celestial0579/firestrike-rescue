@@ -120,6 +120,21 @@ printf 'ohne Schlüssel\n' >"$T/persist/logs/lf-20261115-130000.log"
 log_scrub_dir "$T/persist/logs"
 check "ältere Protokolle werden bereinigt, andere bleiben unverändert" '! has_key "$T/persist/logs/lf-20261115-120000.log" && grep -qF "$LF_RECOVERY_KEY_MASK" "$T/persist/logs/lf-20261115-120000.log" && [[ $(cat "$T/persist/logs/lf-20261115-130000.log") == "ohne Schlüssel" ]]'
 
+echo "Fallordner auf der Ziel-Disk (Kopien älterer Fassungen):"
+F="$T/fall"
+mkdir -p "$F"
+printf '2026-11-16 10:00:00 $ sudo dislocker -r -V /dev/sdb2 -p%s -- /run/lf/dislocker-sdb2\n' "$INPUT" >"$F/lf-20261116-100000.log"
+printf 'Protokoll ohne Schlüssel\n' >"$F/lf-20261116-110000.log"
+printf 'image %s\n' "$KEY" >"$F/image.map"
+printf 'woanders %s\n' "$KEY" >"$T/woanders"
+ln -s "$T/woanders" "$F/lf-verknuepfung.log"
+touch -d '2026-11-16 11:00' "$F/lf-20261116-110000.log"
+mt_ohne=$(stat -c %Y "$F/lf-20261116-110000.log")
+log_scrub_case "$F"
+check "die alte Protokollkopie im Fallordner verliert den Schlüssel" '! has_key "$F/lf-20261116-100000.log" && grep -qF "dislocker -r -V /dev/sdb2 -p$LF_RECOVERY_KEY_MASK" "$F/lf-20261116-100000.log"'
+check "Kopien ohne Schlüssel, andere Dateien, Verknüpfungen und ihr Ziel bleiben" '[[ $(stat -c %Y "$F/lf-20261116-110000.log") == "$mt_ohne" && -L $F/lf-verknuepfung.log ]] && has_key "$T/woanders" && has_key "$F/image.map" && [[ -z $(find "$F" -name ".lf-log.*") ]]'
+check "beim Fortsetzen wird der Fallordner bereinigt, sobald die Falldatei gültig ist" 'grep -A6 "if ! casefile_load \"\$c/case.env\"; then" rescue/lib/recover.sh | grep -qxF "	log_scrub_case \"\$c\""'
+
 echo "Daten von Claude auf dem Speicher (von älteren Fassungen):"
 H="$T/claude-home"
 P="$H/.claude/projects/-var-lib-lf-claude"

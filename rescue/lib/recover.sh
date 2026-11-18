@@ -148,6 +148,9 @@ recover_resume() {
 		recover_case_invalid "$c"
 		return 0
 	fi
+	# Ältere Fassungen legten das Protokoll ungefiltert in den Fallordner, samt BitLocker-
+	# Wiederherstellungsschlüssel (GHSA-cwvh-chmr-9xg8). Wer den Fall wieder öffnet, bereinigt es.
+	log_scrub_case "$c"
 	st=$(casefile_get STATE)
 	if [[ $st == "done" ]]; then
 		recover_after "$c"

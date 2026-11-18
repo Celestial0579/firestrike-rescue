@@ -107,6 +107,21 @@ log_copy_masked() {
 	return 1
 }
 
+# log_scrub_case FALLORDNER   Nimmt Wiederherstellungsschlüssel aus den Protokollkopien (lf-*.log)
+#   im Fallordner. Ältere Fassungen kopierten das Protokoll ungefiltert dorthin, auf die Ziel-Disk
+#   (GHSA-cwvh-chmr-9xg8). Eine betroffene Kopie wird maskiert neu geschrieben und ersetzt, nie
+#   durchschrieben (log_copy_masked); Verknüpfungen bleiben, wie sie sind.
+log_scrub_case() {
+	local dir=${1%/} f n=0
+	for f in "$dir"/lf-*.log; do
+		[[ -f $f && ! -L $f ]] || continue
+		grep -qE "$LF_RECOVERY_KEY_RE" "$f" 2>/dev/null || continue
+		log_copy_masked "$f" "$dir" && n=$((n + 1))
+	done
+	((n == 0)) || log "Wiederherstellungsschlüssel in $n Protokollkopie(n) im Fallordner maskiert: $dir"
+	return 0
+}
+
 log() {
 	log_mask "$*"
 	printf '%s %s\n' "$(date '+%F %T')" "$REPLY" >>"${LF_LOG:-/dev/null}"
