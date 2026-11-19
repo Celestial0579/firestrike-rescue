@@ -112,7 +112,7 @@ echo "Einbau:"
 check "sudo erlaubt lf-claude nur lf-lesen und lf-aufgabe" 'grep -q "^lf-claude ALL=(root) NOPASSWD: /usr/local/bin/lf-lesen, /usr/local/bin/lf-aufgabe$" build/chroot-setup.sh && [[ $(grep -c "NOPASSWD" build/chroot-setup.sh) == 1 ]]'
 check "lf-claude ist nur zusätzlich in der Gruppe render" 'grep -q "^useradd --system --home-dir /var/lib/lf-claude --create-home --shell /bin/bash --groups render lf-claude$" build/chroot-setup.sh'
 check "lf-rescue-run lässt je Fall nur einen Lauf zu" 'grep -q "flock -n 8" rescue/bin/lf-rescue-run'
-check "Claude Desktop läuft als lf-claude" 'grep -q "exec sudo -u \"\$CLAUDE_USER\" -H env WAYLAND_DISPLAY" rescue/lib/claude-desktop-start && [[ -x rescue/lib/claude-desktop-start ]]'
+check "Claude Desktop läuft als lf-claude, in eigener cgroup" 'grep -qF "exec sudo systemd-run --scope --quiet --slice=\"\$CLAUDE_SLICE\" --" rescue/lib/claude-desktop-start && grep -q "^	sudo -u \"\$CLAUDE_USER\" -H env WAYLAND_DISPLAY" rescue/lib/claude-desktop-start && [[ -x rescue/lib/claude-desktop-start ]]'
 check "cage legt seinen Socket in ein eigenes Verzeichnis, nicht ins Laufzeitverzeichnis des Live-Benutzers" 'grep -q "XDG_RUNTIME_DIR=\$CLAUDE_WAYLAND_DIR cage" rescue/lib/claude.sh'
 check "der Selbsttest prüft Aufgaben, Freigabe und Socket" 'grep -q "selftest_claude_aufgabe \"\$dir\" || good=0" rescue/lf && grep -q "selftest_claude_freigabe || good=0" rescue/lf && grep -q "selftest_claude_wayland \"\$dir\" || good=0" rescue/lf'
 

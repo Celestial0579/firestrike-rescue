@@ -8,24 +8,43 @@
 #   lf-freigabe zeile               Statuszeile für Claude Code (managed-settings.json)
 #
 # Auslösen kann nur ein Benutzer mit sudo, also der Techniker, nie lf-claude: Dessen sudo-Regel
-# erlaubt nur lf-lesen und lf-aufgabe. Solange die Freigabe gilt, hat Claude root und könnte sie
-# selbst verlängern. Deshalb lehnt "an" einen Aufruf ab, der von lf-claude kommt, und der
-# Assistent zeigt die Freigabe in jedem Menü an. Ein systemd-Timer nimmt sie nach Ablauf zurück,
-# ein Neustart ebenso (/etc liegt im RAM). Jedes An und Aus steht im Protokoll und im Journal.
+# erlaubt nur lf-lesen und lf-aufgabe, und "an" lehnt jeden Aufruf ab, der von lf-claude kommt.
+# Solange Claude root hat (Freigabe oder Rückstand), könnte Claude selbst verlängern. Dann gilt
+# "an" nur von einer Konsole des Geräts (tty1 bis tty63, nicht über SSH, tmux oder systemd-run)
+# und nur, wenn dort jemand die Rückfrage mit "j" beantwortet. Der Assistent zeigt die Freigabe
+# in jedem Menü an. Ein systemd-Timer nimmt sie nach Ablauf zurück, ein Neustart ebenso (/etc
+# liegt im RAM). Jedes An und Aus steht im Protokoll und im Journal.
 #
-# Ob ein Aufruf von lf-claude kommt, zeigen nicht nur SUDO_USER und SUDO_UID (die entfernt
-# "sudo env -u SUDO_USER" einfach), sondern alle Vorfahren des Aufrufs. Am Ende (aus, Ablauf)
-# beendet lf-freigabe, was lf-claude mit der Freigabe als root gestartet hat, und prüft, ob
-# lf-claude danach noch mehr darf als lf-lesen und lf-aufgabe. Findet es etwas, zeigt status
-# "an: Rückstand …" bis zum Neustart. Ob die Freigabe gilt, entscheidet die Regel selbst, nicht
-# die Uhr; das Ende kommt aus dem monotonen Timer (GHSA-799j-44qx-x7xj).
+# Ob ein Aufruf von lf-claude kommt, zeigen SUDO_USER und SUDO_UID, alle Vorfahren des Aufrufs
+# und die cgroup: Claude läuft in einer eigenen (lf-claude.slice, claude_scope in claude.sh), und
+# ein Prozess behält sie, auch wenn er sich abkoppelt. Am Ende (aus, Ablauf) hält lf-freigabe
+# diese cgroup an und beendet Einheiten, Timer, at-Aufträge und cron-Dateien, die während der
+# Freigabe entstanden sind. Dann nimmt es die Regel zurück, beendet jeden root-Prozess in der
+# cgroup (außer sudo selbst und Jobs von lf-lesen und lf-aufgabe) und alles, was lf-claude sonst
+# nachweislich mit der Freigabe gestartet hat, und lässt Claude weiterlaufen. Danach prüft es,
+# ob lf-claude noch mehr darf als lf-lesen und lf-aufgabe; solange es etwas findet, sagt status
+# nicht "aus". Ob die Freigabe gilt, entscheidet die Regel selbst, nicht die Uhr; das Ende kommt
+# aus dem monotonen Timer. Keine Prüfung findet jeden Weg, den sich root einrichten kann: Sicher
+# endet eine Freigabe nur mit einem Neustart (GHSA-799j-44qx-x7xj).
 set -u
 PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 export LC_ALL=C.UTF-8
 RULE=/etc/sudoers.d/lf-claude-freigabe
+SUDOERS_D=/etc/sudoers.d/
+SUDOERS=/etc/sudoers
 UNTIL=/run/lf/claude-freigabe-bis
 UNIT=lf-claude-freigabe-ende
 CLAUDE=lf-claude
+SUDO_EXE=/usr/bin/sudo
+# Die cgroup von Claude, CLI und Desktop (claude_scope in claude.sh).
+SLICE=lf-claude.slice
+CGROOT=/sys/fs/cgroup
+# Was es beim Freischalten schon gab: Einheiten, at-Aufträge, cron- und sudo-Dateien.
+SNAP=/run/lf/claude-freigabe-vorher
+LINGER=/var/lib/systemd/linger
+CRON_PATHS=(/etc/crontab /etc/cron.d /var/spool/cron/crontabs)
+# Die Rückfrage beim Verlängern geht an das Terminal, nie über Standardein- und -ausgabe.
+TTY=/dev/tty
 # Was lf-claude nach dem Ende einer Freigabe noch mehr darf als die Grundregel.
 RESIDUE=/run/lf/claude-freigabe-rueckstand
 BASE_RULE="(root) NOPASSWD: /usr/local/bin/lf-lesen, /usr/local/bin/lf-aufgabe"
@@ -36,14 +55,77 @@ note() {
 	echo "$*"
 }
 
+# trace TEXT   Nur ins Protokoll: welcher Schritt am Ende einer Freigabe gerade dran ist.
+trace() {
+	printf '%s %s\n' "$(date '+%F %T')" "$*" >>/run/lf/claude-aufgaben.log 2>/dev/null || true
+}
+
 # st PID   "RUID EUID PPID ZUSTAND" aus /proc/PID/status, leer wenn es PID nicht gibt.
 st() {
 	awk '$1 == "Uid:" {r = $2; e = $3} $1 == "PPid:" {p = $2} $1 == "State:" {s = $2}
 		END {if (r != "") print r, e, p, s}' "/proc/$1/status" 2>/dev/null
 }
 
-# caller_from_claude   Kommt dieser Aufruf von lf-claude? SUDO_USER, SUDO_UID oder ein Vorfahr,
-#   der als lf-claude läuft.
+# ttynr PID   Das steuernde Terminal von PID als Gerätenummer (Feld 7 in /proc/PID/stat), 0 ohne.
+ttynr() {
+	local s
+	local -a f
+	{ read -r s <"/proc/$1/stat"; } 2>/dev/null || return 1
+	s=${s##*) }
+	read -ra f <<<"$s"
+	echo "${f[4]:-0}"
+}
+
+# gone PID   Gibt es PID nicht mehr? Ein fremder Prozess (kill ohne Recht) gilt als vorhanden.
+gone() {
+	local err
+	err=$(kill -0 "$1" 2>&1) && return 1
+	[[ $err == *"No such process"* ]]
+}
+
+# prog PID   Das Programm von PID. /proc/PID/exe ist für andere Benutzer ohne root nicht lesbar,
+#   dann gilt das erste Wort der Befehlszeile.
+prog() {
+	local x
+	x=$(readlink "/proc/$1/exe" 2>/dev/null)
+	[[ -n $x ]] || x=$(tr '\0' '\n' <"/proc/$1/cmdline" 2>/dev/null | head -n 1)
+	echo "$x"
+}
+
+# is_sudo PID   Läuft in PID sudo selbst? Als root zählt nur das Programm, nicht der Name.
+is_sudo() {
+	if [[ -n $(readlink "/proc/$1/exe" 2>/dev/null) ]]; then
+		[[ /proc/$1/exe -ef $SUDO_EXE ]]
+	else
+		[[ $(cat "/proc/$1/comm" 2>/dev/null) == sudo ]]
+	fi
+}
+
+# claude_cgroups   Die cgroups von Claude: lf-claude.slice (CLI und Desktop) und, falls es sie
+#   gibt, die Benutzer-Slice von lf-claude (Anmeldungen und Benutzerdienste).
+claude_cgroups() {
+	local cg cu
+	cg=$(systemctl show -p ControlGroup --value "$SLICE" 2>/dev/null)
+	[[ $cg == /?* && -d $CGROOT$cg ]] && echo "$CGROOT$cg"
+	cu=$(id -u "$CLAUDE" 2>/dev/null) || return 0
+	[[ -d $CGROOT/user.slice/user-$cu.slice ]] && echo "$CGROOT/user.slice/user-$cu.slice"
+	return 0
+}
+
+# in_claude_cgroup   Läuft dieser Aufruf selbst in einer cgroup von Claude?
+in_claude_cgroup() {
+	local own cg
+	own=$(sed -n 's/^0:://p' /proc/self/cgroup 2>/dev/null)
+	[[ -n $own ]] || return 1
+	while IFS= read -r cg; do
+		cg=${cg#"$CGROOT"}
+		[[ $own == "$cg" || $own == "$cg"/* ]] && return 0
+	done < <(claude_cgroups)
+	return 1
+}
+
+# caller_from_claude   Kommt dieser Aufruf von lf-claude? SUDO_USER, SUDO_UID, ein Vorfahr, der
+#   als lf-claude läuft, oder die cgroup von Claude.
 caller_from_claude() {
 	local cu pid=$PPID n=0 r e p s
 	[[ ${SUDO_USER:-} == "$CLAUDE" ]] && return 0
@@ -52,6 +134,26 @@ caller_from_claude() {
 	while [[ $pid =~ ^[0-9]+$ ]] && ((pid > 1 && n++ < 64)); do
 		read -r r e p s <<<"$(st "$pid")"
 		[[ $r == "$cu" || $e == "$cu" ]] && return 0
+		pid=$p
+	done
+	in_claude_cgroup
+}
+
+# caller_on_console   Sitzt der Aufrufer an einer Konsole des Geräts? Der erste Vorfahr, der nicht
+#   als root läuft (der Techniker vor sudo), hat ein virtuelles Terminal als steuerndes Terminal
+#   (tty1 bis tty63, Hauptnummer 4). Ein Pseudo-Terminal (SSH, tmux) zählt nicht, ein Aufruf über
+#   systemd-run hat keinen solchen Vorfahren.
+caller_on_console() {
+	local pid=$PPID n=0 r e p s t min
+	while [[ $pid =~ ^[0-9]+$ ]] && ((pid > 1 && n++ < 64)); do
+		read -r r e p s <<<"$(st "$pid")"
+		if [[ $r =~ ^[0-9]+$ ]] && ((r != 0)); then
+			t=$(ttynr "$pid") || return 1
+			[[ $t =~ ^[0-9]+$ ]] || return 1
+			min=$(((t & 0xff) | ((t >> 12) & 0xfff00)))
+			((((t >> 8) & 0xfff) == 4 && min >= 1 && min <= 63))
+			return
+		fi
 		pid=$p
 	done
 	return 1
@@ -130,17 +232,248 @@ stop_granted() {
 	return 0
 }
 
-# residue   Leer, wenn lf-claude nur die Grundregel hat, sonst je Zeile ein Fund. Wer mit der
-#   Freigabe root war, kann sich weitere Wege eingerichtet haben, etwa eine zweite sudo-Regel oder
-#   die Gruppe sudo. Das prüft residue, aber nicht alles: Sicher ist nur ein Neustart.
-residue() {
-	local rules groups procs
-	rules=$(sudo -l -U "$CLAUDE" 2>&1 | sed -nE 's/^[[:space:]]+(\(.*)$/\1/p')
-	[[ $rules == "$BASE_RULE" ]] || echo "sudo: ${rules//$'\n'/, }"
+# cg_pids   Alle Prozesse in den cgroups von Claude, auch in ihren Unter-cgroups.
+cg_pids() {
+	local cg
+	while IFS= read -r cg; do
+		find "$cg" -name cgroup.procs -type f -exec cat {} + 2>/dev/null
+	done < <(claude_cgroups)
+	return 0
+}
+
+# base_job PID   Gehört PID zu einem Job der Grundregel? PID oder ein Vorfahr ist bash mit
+#   /usr/local/bin/lf-lesen oder lf-aufgabe als Skript, direkt von sudo gestartet.
+base_job() {
+	local pid=$1 n=0 r e p s
+	local -a a
+	while [[ $pid =~ ^[0-9]+$ ]] && ((pid > 1 && n++ < 64)); do
+		read -r r e p s <<<"$(st "$pid")"
+		a=()
+		{ mapfile -d '' -t a <"/proc/$pid/cmdline"; } 2>/dev/null
+		if [[ ${a[1]:-} == /usr/local/bin/lf-lesen || ${a[1]:-} == /usr/local/bin/lf-aufgabe ]] &&
+			[[ $(prog "$pid") == */bash ]] && is_sudo "$p"; then
+			return 0
+		fi
+		pid=$p
+	done
+	return 1
+}
+
+# setuid_helper PID   Das setuid-Hilfsprogramm von Claude Desktop (chrome-sandbox), das lf-claude
+#   ohne sudo startet.
+setuid_helper() {
+	[[ $(prog "$1") =~ ^/(opt|usr/lib)/[^/]+/chrome-sandbox$ ]]
+}
+
+# root_in_claude   Prozesse in den cgroups von Claude, die als root laufen. Nicht dazu zählen sudo
+#   selbst (es startet Claude als lf-claude und wartet nur), Jobs von lf-lesen und lf-aufgabe und
+#   chrome-sandbox.
+root_in_claude() {
+	local pid r e p s
+	while IFS= read -r pid; do
+		read -r r e p s <<<"$(st "$pid")"
+		[[ $r =~ ^[0-9]+$ && $e =~ ^[0-9]+$ && $s != Z ]] || continue
+		((r == 0 || e == 0)) || continue
+		gone "$pid" && continue
+		is_sudo "$pid" && continue
+		((r != 0)) && setuid_helper "$pid" && continue
+		base_job "$pid" && continue
+		echo "$pid"
+	done < <(cg_pids | sort -un)
+	return 0
+}
+
+# stop_root_in_claude   KILL für jeden Prozess aus root_in_claude. In einer angehaltenen cgroup
+#   wirkt KILL trotzdem, und dort startet vorher nichts Neues mehr. KILL wirkt nicht sofort:
+#   Danach wartet es höchstens 2 Sekunden, bis die Prozesse weg sind.
+stop_root_in_claude() {
+	local pid i
+	local -a pids
+	mapfile -t pids < <(root_in_claude)
+	((${#pids[@]})) || return 0
+	for pid in "${pids[@]}"; do
+		note "beendet: $pid $(tr '\0' ' ' <"/proc/$pid/cmdline" 2>/dev/null | cut -c1-120)"
+		kill -KILL "$pid" 2>/dev/null
+	done
+	for ((i = 0; i < 20; i++)); do
+		[[ -z $(root_in_claude) ]] && return 0
+		sleep 0.1
+	done
+	return 0
+}
+
+# cg_freeze 1|0   Hält die cgroups von Claude an oder lässt sie weiterlaufen. Angehaltene
+#   Prozesse starten nichts mehr und rufen kein sudo mehr auf.
+cg_freeze() {
+	local cg i
+	while IFS= read -r cg; do
+		[[ -e $cg/cgroup.freeze ]] || continue
+		echo "$1" >"$cg/cgroup.freeze" 2>/dev/null || continue
+		[[ $1 == 1 ]] || continue
+		for ((i = 0; i < 30; i++)); do
+			grep -qx 'frozen 1' "$cg/cgroup.events" 2>/dev/null && break
+			sleep 0.1
+		done
+	done < <(claude_cgroups)
+	return 0
+}
+
+# units_now   Dienste, Scopes, Timer, Sockets und Pfad-Einheiten, die systemd gerade kennt.
+units_now() {
+	systemctl list-units --all --plain --no-legend --full --type=service,scope,timer,socket,path 2>/dev/null |
+		awk '$1 ~ /\./ {print $1}' | sort -u
+}
+
+# unit_info EINHEIT   Füllt ui mit den Eigenschaften, die new_units braucht.
+declare -A ui
+unit_info() {
+	local k v
+	ui=()
+	while IFS='=' read -r k v; do
+		[[ -n $k ]] && ui[$k]=$v
+	done < <(systemctl show -p Transient,ActiveState,ControlGroup,FragmentPath,ExecStart "$1" 2>/dev/null)
+	return 0
+}
+
+# new_units   Laufende Einheiten, die seit dem Freischalten entstanden sind: vorübergehende
+#   (systemd-run) und solche aus einer Unit-Datei, die neuer ist als das Freischalten. Nicht dazu
+#   zählen die eigenen Einheiten, die Rettungen von lf-aufgabe (Grundregel), die Sitzungen von
+#   Claude selbst (claude_scope) und Anmeldungen von Benutzern außer root (der Techniker an tty2
+#   oder über SSH). root-Prozesse in den cgroups von Claude beendet stop_root_in_claude.
+new_units() {
+	local u
+	[[ -f $SNAP/units ]] || return 0
+	while IFS= read -r u; do
+		case $u in "$UNIT.timer" | "$UNIT.service" | "$UNIT-aus.service") continue ;; esac
+		unit_info "$u"
+		case ${ui[ActiveState]:-} in inactive | failed | "") continue ;; esac
+		if [[ ${ui[Transient]:-} != yes ]]; then
+			[[ -n ${ui[FragmentPath]:-} && ${ui[FragmentPath]} -nt $SNAP/units ]] || continue
+		fi
+		[[ $u == lf-claude-rettung-*.service && ${ui[ExecStart]:-} == *"path=/usr/local/bin/lf-rescue-run ;"* ]] && continue
+		[[ $u == *.scope && ${ui[ControlGroup]:-} == /lf.slice/lf-claude.slice/* ]] && continue
+		[[ $u == session-*.scope && ${ui[ControlGroup]:-} =~ ^/user\.slice/user-([0-9]+)\.slice/ && ${BASH_REMATCH[1]} != 0 ]] && continue
+		echo "$u"
+	done < <(comm -13 "$SNAP/units" <(units_now))
+	return 0
+}
+
+# stop_new_units   Hält jede Einheit aus new_units an, beendet ihre Prozesse und stoppt sie. Neue,
+#   die eine davon noch gestartet hat, folgen in der nächsten Runde.
+stop_new_units() {
+	local i u
+	local -a us
+	for ((i = 0; i < 5; i++)); do
+		mapfile -t us < <(new_units)
+		((${#us[@]})) || return 0
+		for u in "${us[@]}"; do
+			note "beendet: Einheit $u"
+			systemctl freeze "$u" 2>/dev/null
+			systemctl kill -s KILL "$u" 2>/dev/null
+			systemctl stop "$u" 2>/dev/null
+			systemctl reset-failed "$u" 2>/dev/null
+		done
+	done
+	return 0
+}
+
+# at_now   Nummern der at-Aufträge (leer ohne at; im Rettungssystem ist at nicht installiert).
+at_now() {
+	command -v atq >/dev/null || return 0
+	atq 2>/dev/null | awk '{print $1}' | sort -u
+}
+
+# stop_new_at   Entfernt at-Aufträge, die während der Freigabe entstanden sind.
+stop_new_at() {
+	local j
+	[[ -f $SNAP/at ]] || return 0
+	while IFS= read -r j; do
+		[[ -n $j ]] || continue
+		note "entfernt: at-Auftrag $j"
+		atrm "$j" 2>/dev/null
+	done < <(comm -13 "$SNAP/at" <(at_now))
+	return 0
+}
+
+# cron_files   "PFAD ÄNDERUNGSZEIT" je cron-Datei (im Rettungssystem ist cron nicht installiert).
+cron_files() {
+	find "${CRON_PATHS[@]}" -maxdepth 1 -type f -printf '%p %T@\n' 2>/dev/null | sort
+}
+
+# cron_new   cron-Dateien, die seit dem Freischalten entstanden oder geändert sind.
+cron_new() {
+	[[ -f $SNAP/cron ]] || return 0
+	comm -13 "$SNAP/cron" <(cron_files) | cut -d' ' -f1 | grep -v '\.lf-gesperrt$'
+	return 0
+}
+
+# disable_new_cron   Neue oder geänderte cron-Dateien bekommen die Endung .lf-gesperrt; cron liest
+#   Namen mit Punkt nicht. Gelöscht wird nichts. Eine geänderte /etc/crontab bleibt und steht im
+#   Rückstand.
+disable_new_cron() {
+	local f
+	while IFS= read -r f; do
+		[[ -n $f && $f != */crontab ]] || continue
+		mv -f -- "$f" "$f.lf-gesperrt" 2>/dev/null && note "gesperrt: cron-Datei $f"
+	done < <(cron_new)
+	return 0
+}
+
+# sudo_files   "PFAD ÄNDERUNGSZEIT GRÖSSE" für /etc/sudoers und jede Datei in /etc/sudoers.d, die
+#   sudo liest (keine Namen mit Punkt oder Tilde am Ende), ohne die Regel der Freigabe.
+sudo_files() {
+	find "$SUDOERS" "${SUDOERS_D%/}" -maxdepth 1 \( -type f -o -type l \) -printf '%p %T@ %s\n' 2>/dev/null |
+		awk -v rule="$RULE" -v d="$SUDOERS_D" '{
+			if ($1 == rule) next
+			if (index($1, d) == 1) { n = substr($1, length(d) + 1); if (n ~ /\./ || n ~ /~$/) next }
+			print
+		}' | sort
+}
+
+# snapshot   Hält fest, was es beim Freischalten schon gab. Neu ist, was danach dazukommt.
+snapshot() {
+	install -d -m 0755 "$SNAP"
+	units_now >"$SNAP/units"
+	at_now >"$SNAP/at"
+	cron_files >"$SNAP/cron"
+	sudo_files >"$SNAP/sudoers"
+	chmod 0644 "$SNAP"/*
+}
+
+# quick_residue   Je Zeile ein Weg zu root, den lf-claude ohne die Regel noch hat, soweit ihn jeder
+#   sehen kann. status läuft auch als lf-claude und als Techniker.
+quick_residue() {
+	local f groups procs units
+	# Ohne den Benutzer lf-claude gibt es auch keinen Weg zu root für ihn.
+	id -u "$CLAUDE" >/dev/null 2>&1 || return 0
+	if [[ -f $SNAP/sudoers ]]; then
+		while IFS= read -r f; do
+			[[ -n $f ]] && echo "sudo-Datei neu oder geändert: ${f%% *}"
+		done < <(comm -13 "$SNAP/sudoers" <(sudo_files))
+	fi
 	groups=$(id -Gn "$CLAUDE" 2>&1 | tr ' ' '\n' | sort | tr '\n' ' ')
 	[[ $groups == "lf-claude render " ]] || echo "Gruppen: $groups"
+	[[ -e $LINGER/$CLAUDE ]] && echo "linger: $CLAUDE"
+	procs=$(root_in_claude | tr '\n' ' ')
+	[[ -z $procs ]] || echo "root-Prozesse bei Claude: $procs"
+	units=$(new_units | tr '\n' ' ')
+	[[ -z $units ]] || echo "Einheiten: $units"
+	return 0
+}
+
+# residue   Leer, wenn lf-claude nur die Grundregel hat, sonst je Zeile ein Fund. Läuft als root.
+#   Wer mit der Freigabe root war, kann sich weitere Wege eingerichtet haben. residue prüft die
+#   naheliegenden, nicht alle: Sicher ist nur ein Neustart.
+residue() {
+	local rules procs c
+	rules=$(sudo -l -U "$CLAUDE" 2>&1 | sed -nE 's/^[[:space:]]+(\(.*)$/\1/p')
+	[[ $rules == "$BASE_RULE" ]] || echo "sudo: ${rules//$'\n'/, }"
+	quick_residue
 	procs=$(granted_pids | tr '\n' ' ')
 	[[ -z $procs ]] || echo "Prozesse: $procs"
+	c=$(cron_new | tr '\n' ' ')
+	[[ -z $c ]] || echo "cron: $c"
+	return 0
 }
 
 # timer_end   Ende der Freigabe in Sekunden seit 1970, aus dem Timer. Der zählt monoton, systemd
@@ -153,27 +486,60 @@ timer_end() {
 	echo $((next / 1000000))
 }
 
-# status   Maßgeblich ist, ob die Regel besteht, nicht die Uhr.
+# status   "an", solange die Regel besteht. Ohne Regel nur "aus", wenn auch kein Timer mehr läuft
+#   und kein anderer Weg zu root zu sehen ist.
 status() {
-	local end
+	local end r
 	if [[ -e $RULE ]]; then
 		if end=$(timer_end); then
 			echo "an bis $(date -d "@$end" +%H:%M)"
 		else
 			echo "an, ohne Ablauf"
 		fi
-	elif [[ -s $RESIDUE ]]; then
-		echo "an: Rückstand nach der Freigabe ($(head -n 1 "$RESIDUE")), Neustart empfohlen"
+		return 0
+	fi
+	r=$({
+		[[ -s $RESIDUE ]] && head -n 1 "$RESIDUE"
+		end=$(timer_end) && echo "Regel fehlt, Timer bis $(date -d "@$end" +%H:%M)"
+		quick_residue
+	} | head -n 1)
+	if [[ -n $r ]]; then
+		echo "an: Rückstand nach der Freigabe ($r), Neustart empfohlen"
 	else
 		echo "aus"
 	fi
 }
 
+# confirm MINUTEN STATUS   Rückfrage an der Konsole: Verlängern gilt nur, wenn dort "j" getippt
+#   wird. Ohne Terminal (systemd-run, Pipe) gibt es keine Antwort, also auch keine Verlängerung.
+confirm() {
+	local a=""
+	{
+		printf '\nClaude hat noch root (%s).\nFreigabe für %s Minuten ab jetzt? [j/N] ' "$2" "$1" >>"$TTY" &&
+			read -r -t 60 a <"$TTY"
+	} 2>/dev/null || return 1
+	[[ $a == [jJ] || $a == [jJ][aA] ]]
+}
+
 off() {
 	local r
+	trap 'cg_freeze 0' EXIT
+	# Erst anhalten, dann aufräumen und die Regel nehmen: In der angehaltenen cgroup startet
+	# zwischen Suchen und Beenden nichts Neues.
+	cg_freeze 1
+	trace "Ende der Freigabe: Claude angehalten"
+	stop_new_units
+	stop_new_at
+	disable_new_cron
 	rm -f "$RULE" "$UNTIL"
+	trace "Ende der Freigabe: Regel entfernt"
 	systemctl stop "$UNIT.timer" 2>/dev/null || true
+	stop_root_in_claude
 	stop_granted
+	if [[ -e $LINGER/$CLAUDE ]]; then loginctl disable-linger "$CLAUDE" 2>/dev/null || true; fi
+	cg_freeze 0
+	trap - EXIT
+	trace "Ende der Freigabe: Claude läuft weiter"
 	r=$(residue)
 	if [[ -n $r ]]; then
 		install -d /run/lf
@@ -196,7 +562,22 @@ an)
 	min=${2:-30}
 	[[ $min =~ ^[0-9]{1,3}$ ]] && ((10#$min >= 1 && 10#$min <= 240)) || { echo "lf-freigabe: MINUTEN 1 bis 240" >&2; exit 2; }
 	min=$((10#$min))
+	s=$(status)
+	if [[ $s != aus ]]; then
+		# Claude hat root und könnte selbst verlängern: nur an der Konsole und mit Rückfrage dort.
+		if ! caller_on_console; then
+			note "abgelehnt: Verlängern nicht von einer Konsole des Geräts ($s)" >/dev/null
+			echo "lf-freigabe: Solange Claude root hat ($s), verlängert nur der Techniker an einer Konsole des Geräts (tty1 bis tty63), nicht über SSH, tmux oder systemd-run." >&2
+			exit 2
+		fi
+		if ! confirm "$min" "$s"; then
+			note "abgelehnt: Verlängern ohne Bestätigung an der Konsole ($s)" >/dev/null
+			echo "lf-freigabe: Nicht verlängert." >&2
+			exit 2
+		fi
+	fi
 	install -d /run/lf
+	[[ $s == aus || ! -f $SNAP/units ]] && snapshot
 	tmp=$(mktemp /etc/sudoers.d/.lf-claude-freigabe.XXXXXX)
 	echo "lf-claude ALL=(ALL:ALL) NOPASSWD: ALL" >"$tmp"
 	chmod 0440 "$tmp"
@@ -210,10 +591,19 @@ an)
 	systemd-run --quiet --unit="$UNIT" --on-active="${min}min" --timer-property=AccuracySec=1s -p Type=oneshot \
 		/usr/local/bin/lf-freigabe ablauf || { off; echo "lf-freigabe: Timer ließ sich nicht setzen, Freigabe zurückgenommen" >&2; exit 1; }
 	end=$(timer_end) || end=$(cat "$UNTIL")
-	note "Claude (lf-claude) hat volles sudo bis $(date -d "@$end" +%H:%M), freigegeben von $(caller_name)"
+	if [[ $s == aus ]]; then
+		note "Claude (lf-claude) hat volles sudo bis $(date -d "@$end" +%H:%M), freigegeben von $(caller_name)"
+	else
+		note "Claude (lf-claude) hat volles sudo bis $(date -d "@$end" +%H:%M), verlängert an der Konsole von $(caller_name)"
+	fi
 	;;
 aus)
 	((EUID == 0)) || { echo "lf-freigabe: nur mit sudo" >&2; exit 2; }
+	if in_claude_cgroup; then
+		# Aus der cgroup von Claude heraus hielte lf-freigabe sich selbst an. Das Ende läuft dann
+		# als eigener Dienst; dieser Aufruf wartet darauf, sofern er nicht selbst beendet wird.
+		exec systemd-run --quiet --wait --collect --unit="$UNIT-aus" /usr/local/bin/lf-freigabe aus
+	fi
 	off
 	note "Volles sudo für Claude (lf-claude) beendet"
 	;;

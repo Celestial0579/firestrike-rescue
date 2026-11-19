@@ -1,24 +1,42 @@
 #!/usr/bin/env bash
 # Unit-Test (GHSA-799j-44qx-x7xj): lf-freigabe beim Freischalten und am Ende einer Freigabe.
 #   - status sagt "an", solange die Regel besteht, auch wenn sich die Uhr umgestellt hat; das
-#     Ende kommt aus dem Timer.
-#   - "an" erkennt lf-claude auch ohne SUDO_USER (sudo env -u SUDO_USER ...) an den Vorfahren.
-#   - "aus" und der Ablauf beenden, was lf-claude mit der Freigabe als root gestartet hat, lassen
-#     Jobs von lf-aufgabe und Prozesse des Technikers laufen und melden, was lf-claude danach
-#     noch darf.
+#     Ende kommt aus dem Timer. Ohne Regel sagt status erst "aus", wenn kein Timer mehr läuft und
+#     kein Rückstand zu sehen ist (root-Prozess bei Claude, neue sudo-Datei, neue Einheit, linger).
+#   - "an" erkennt lf-claude auch ohne SUDO_USER an den Vorfahren und an der cgroup. Solange
+#     Claude root hat, verlängert "an" nur von einer Konsole (tty1 bis tty63) mit "j" dort.
+#   - "aus" und der Ablauf halten die cgroup von Claude an und beenden darin jeden root-Prozess
+#     (außer sudo, Jobs von lf-lesen und lf-aufgabe, chrome-sandbox), dazu neue Einheiten,
+#     at-Aufträge und cron-Dateien und was lf-claude sonst mit der Freigabe gestartet hat. Jobs
+#     von lf-aufgabe und Prozesse des Technikers laufen weiter; gemeldet wird, was lf-claude
+#     danach noch darf.
 #
 # Hier läuft nichts als root: Eine Kopie von lf-freigabe arbeitet mit eigenen Ordnern statt
-# /etc/sudoers.d, /run/lf und /proc. sudo, systemctl, systemd-run, visudo, logger und id sind
-# Attrappen. Beendet werden nur sleep-Prozesse, die der Test selbst startet.
+# /etc/sudoers.d, /run/lf, /proc und /sys/fs/cgroup. sudo, systemctl, systemd-run, loginctl, atq,
+# atrm, visudo, logger und id sind Attrappen. Beendet werden nur sleep-Prozesse, die der Test
+# selbst startet.
 set -u
 cd "$(dirname "$0")/.." || exit 1
 unset SUDO_USER SUDO_UID SUDO_COMMAND
 
 T=$(mktemp -d)
-mkdir -p "$T/bin" "$T/sudoers.d" "$T/run" "$T/proc"
+mkdir -p "$T/bin" "$T/sudoers.d" "$T/run" "$T/proc" "$T/unit" "$T/unitfiles" "$T/cron.d" "$T/linger"
+# Die cgroups von Claude: lf-claude.slice mit der Sitzung der CLI und die Benutzer-Slice von lf-claude.
+CG="$T/cg/lf.slice/lf-claude.slice"
+CGU="$T/cg/user.slice/user-1001.slice"
+mkdir -p "$CG/cli.scope" "$CGU"
+for c in "$CG" "$CGU"; do
+	echo 0 >"$c/cgroup.freeze"
+	echo "frozen 1" >"$c/cgroup.events"
+done
+: >"$CG/cli.scope/cgroup.procs"
+: >"$CGU/cgroup.procs"
+touch "$T/sudoers"
 F="$T/lf-freigabe"
 sed -e "s|^PATH=.*|PATH=$T/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin|" \
-	-e "s|/etc/sudoers.d/|$T/sudoers.d/|g" -e "s|/run/lf|$T/run|g" -e "s|/proc/|$T/proc/|g" \
+	-e "s|/etc/sudoers.d/|$T/sudoers.d/|g" -e "s|^SUDOERS=.*|SUDOERS=$T/sudoers|" -e "s|/run/lf|$T/run|g" \
+	-e "s|/proc/|$T/proc/|g" -e "s|^SUDO_EXE=.*|SUDO_EXE=$T/bin/sudo|" -e "s|^CGROOT=.*|CGROOT=$T/cg|" \
+	-e "s|^LINGER=.*|LINGER=$T/linger|" -e "s|^CRON_PATHS=.*|CRON_PATHS=($T/cron.d)|" -e "s|^TTY=.*|TTY=$T/tty|" \
 	-e "s|((EUID == 0))|((EUID == $(id -u)))|g" rescue/bin/lf-freigabe >"$F"
 
 cat >"$T/bin/id" <<MOCK
@@ -36,13 +54,29 @@ cat >"$T/bin/sudo" <<MOCK
 [[ "\$*" == "-l -U lf-claude" ]] && { cat "$T/sudo-l"; exit 0; }
 exit 1
 MOCK
+# systemctl: Timer aus timers.json, Einheiten aus units (Liste) und unit/NAME (Eigenschaften).
 cat >"$T/bin/systemctl" <<MOCK
 #!/bin/bash
 echo "\$*" >>"$T/systemctl.log"
-[[ \$1 == list-timers ]] && { cat "$T/timers.json" 2>/dev/null || echo "[]"; }
+u=\${!#}
+case \$1 in
+list-timers) cat "$T/timers.json" 2>/dev/null || echo "[]" ;;
+list-units) cat "$T/units" 2>/dev/null ;;
+show)
+	if [[ "\$*" == "show -p ControlGroup --value lf-claude.slice" ]]; then
+		echo /lf.slice/lf-claude.slice
+	else
+		cat "$T/unit/\$u" 2>/dev/null
+	fi
+	;;
+stop) [[ -f "$T/unit/\$u" ]] && sed -i 's/^ActiveState=.*/ActiveState=inactive/' "$T/unit/\$u" ;;
+esac
 exit 0
 MOCK
 printf '#!/bin/bash\necho "$*" >>"%s/systemd-run.log"\n' "$T" >"$T/bin/systemd-run"
+printf '#!/bin/bash\necho "$*" >>"%s/loginctl.log"\n[[ $1 == disable-linger ]] && rm -f "%s/linger/$2"\nexit 0\n' "$T" "$T" >"$T/bin/loginctl"
+printf '#!/bin/bash\ncat "%s/atq" 2>/dev/null\n' "$T" >"$T/bin/atq"
+printf '#!/bin/bash\necho "$*" >>"%s/atrm.log"\n' "$T" >"$T/bin/atrm"
 printf '#!/bin/bash\nexit 0\n' >"$T/bin/visudo"
 printf '#!/bin/bash\nexit 0\n' >"$T/bin/logger"
 chmod +x "$T/bin/"*
@@ -53,9 +87,13 @@ sudo_l
 echo "lf-claude render" >"$T/groups"
 LOG="$T/run/claude-aufgaben.log"
 RULE="$T/sudoers.d/lf-claude-freigabe"
+SNAP="$T/run/claude-freigabe-vorher"
+TTY1=$(((4 << 8) | 1))
+PTS=$(((136 << 8) | 3))
 
-# fake PID RUID EUID PPID [UMGEBUNG] [BEFEHL]   Eintrag in der Attrappe von /proc. UMGEBUNG mit |
-#   getrennt, BEFEHL mit Leerzeichen.
+# fake PID RUID EUID PPID [UMGEBUNG] [BEFEHL] [PROGRAMM] [TTY]   Eintrag in der Attrappe von /proc.
+#   UMGEBUNG mit | getrennt, BEFEHL mit Leerzeichen, PROGRAMM wird /proc/PID/exe, TTY die
+#   Gerätenummer des steuernden Terminals.
 fake() {
 	mkdir -p "$T/proc/$1"
 	printf 'Name:\tx\nState:\tS (sleeping)\nPPid:\t%s\nUid:\t%s\t%s\t%s\t%s\n' "$4" "$2" "$3" "$3" "$3" >"$T/proc/$1/status"
@@ -64,10 +102,23 @@ fake() {
 	local cmd=${6:-x}
 	cmd=${cmd%% *}
 	printf '%s\n' "${cmd##*/}" >"$T/proc/$1/comm"
+	rm -f "$T/proc/$1/exe"
+	[[ -z ${7:-} ]] || ln -s "$7" "$T/proc/$1/exe"
+	printf '%s (%s) S %s %s %s %s 0 0\n' "$1" "${cmd##*/}" "$4" "$1" "$1" "${8:-0}" >"$T/proc/$1/stat"
+}
+# self CGROUP   Die cgroup dieses Aufrufs (/proc/self/cgroup).
+self() { mkdir -p "$T/proc/self" && echo "0::$1" >"$T/proc/self/cgroup"; }
+self /user.slice/user-1000.slice/session-1.scope
+# unit NAME TRANSIENT CGROUP [UNIT-DATEI] [EXECSTART]   Eine laufende Einheit für die Attrappe von systemctl.
+unit() {
+	printf 'Transient=%s\nActiveState=active\nControlGroup=%s\nFragmentPath=%s\nExecStart=%s\n' "$2" "$3" "${4:-}" "${5:-}" >"$T/unit/$1"
+	echo "$1 loaded active running x" >>"$T/units"
 }
 # spawn   Startet sleep losgelöst (nicht als Kind dieses Tests) und gibt die PID aus.
 spawn() { (sleep 300 >/dev/null 2>&1 &
 	echo $!); }
+# line TEXT   Zeile, in der TEXT zum ersten Mal im Protokoll steht.
+line() { grep -n -m1 -F -- "$1" "$LOG" | cut -d: -f1; }
 
 fails=0
 check() {
@@ -105,10 +156,53 @@ SUDO_UID=1001 bash "$F" an 30 >"$T/out" 2>&1
 RC=$?
 check "SUDO_UID von lf-claude: abgelehnt" '[[ $RC == 2 && ! -e $RULE ]]'
 rm -f "$RULE"
+self /lf.slice/lf-claude.slice/cli.scope
+bash "$F" an 30 >"$T/out" 2>&1
+RC=$?
+check "aus der cgroup von Claude, Vorfahren unauffällig: abgelehnt" '[[ $RC == 2 && ! -e $RULE ]] && grep -q "nur der Techniker" "$T/out"'
+self /user.slice/user-1000.slice/session-1.scope
+# Das erste Freischalten braucht keine Konsole: Der Selbsttest der ISO schaltet aus einem Dienst frei.
 bash "$F" an 30 >"$T/out" 2>&1
 RC=$?
 check "vom Techniker: frei, mit Ablauf, im Protokoll mit seinem Namen" '[[ $RC == 0 && -e $RULE ]] && grep -q -- "--on-active=30min" "$T/systemd-run.log" && grep -q "freigegeben von rescue" "$LOG"'
-rm -rf "$T/proc/$$" "$T/proc/4194399001"
+
+echo "Verlängern, solange Claude root hat:"
+echo "[{\"next\": $(((NOW + 600) * 1000000)), \"unit\": \"lf-claude-freigabe-ende.timer\"}]" >"$T/timers.json"
+# Vorfahren: dieser Test (root wie sudo), darüber die Shell des Technikers an tty1.
+fake $$ 0 0 4194399101
+fake 4194399101 1000 1000 1 "" "bash" "" "$TTY1"
+: >"$T/systemd-run.log"
+rm -rf "$T/tty"
+bash "$F" an 30 >"$T/out" 2>&1
+RC=$?
+check "an der Konsole ohne Antwort: nicht verlängert" '[[ $RC == 2 && ! -s $T/systemd-run.log ]] && grep -q "Nicht verlängert" "$T/out" && grep -q "ohne Bestätigung" "$LOG"'
+printf 'n\n' >"$T/tty"
+bash "$F" an 30 >"$T/out" 2>&1
+RC=$?
+check "an der Konsole mit n: nicht verlängert" '[[ $RC == 2 && ! -s $T/systemd-run.log ]]'
+printf 'j\n' >"$T/tty"
+bash "$F" an 30 >"$T/out" 2>&1
+RC=$?
+check "an der Konsole mit j: verlängert, die Rückfrage stand am Terminal" '[[ $RC == 0 ]] && grep -q -- "--on-active=30min" "$T/systemd-run.log" && grep -q "Freigabe für 30 Minuten ab jetzt" "$T/tty" && grep -q "verlängert an der Konsole von rescue" "$LOG"'
+: >"$T/systemd-run.log"
+fake 4194399101 1000 1000 1 "" "bash" "" "$PTS"
+printf 'j\n' >"$T/tty"
+bash "$F" an 30 >"$T/out" 2>&1
+RC=$?
+check "über ein Pseudo-Terminal (SSH, tmux), auch mit j: abgelehnt" '[[ $RC == 2 && ! -s $T/systemd-run.log ]] && grep -q "Verlängern nicht von einer Konsole" "$LOG"'
+# Wie "sudo systemd-run lf-freigabe an": Elternprozess PID 1, keine Umgebung von sudo.
+fake $$ 0 0 1
+printf 'j\n' >"$T/tty"
+bash "$F" an 240 >"$T/out" 2>&1
+RC=$?
+check "wie über systemd-run (Elternprozess PID 1), auch mit j: abgelehnt" '[[ $RC == 2 && ! -s $T/systemd-run.log ]]'
+# "aus" aus der cgroup von Claude hielte sich selbst an: Das Ende läuft als eigener Dienst.
+self /lf.slice/lf-claude.slice/cli.scope
+bash "$F" aus >"$T/out" 2>&1
+check "aus aus der cgroup von Claude: das Ende läuft als eigener Dienst" 'grep -q -- "--unit=lf-claude-freigabe-ende-aus" "$T/systemd-run.log" && [[ -e $RULE ]]'
+self /user.slice/user-1000.slice/session-1.scope
+rm -f "$T/timers.json"
+rm -rf "$T/proc/"[0-9]*
 
 echo "aus:"
 P1=$(spawn) P2=$(spawn) P3=$(spawn) P4=$(spawn) P5=$(spawn) P6=$(spawn)
@@ -130,7 +224,93 @@ check "Regel weg, status aus" '[[ $RC == 0 && ! -e $RULE && $(bash "$F" status) 
 check "beendet, was lf-claude mit der Freigabe gestartet hat, auch ohne SUDO_USER und als anderer Benutzer" '! kill -0 "$P1" 2>/dev/null && ! kill -0 "$P4" 2>/dev/null && ! kill -0 "$P6" 2>/dev/null && grep -q "beendet: $P1 sleep 300" "$LOG" && grep -q "beendet: $P4" "$LOG"'
 check "Jobs von lf-aufgabe, Prozesse des Technikers und setuid-Programme ohne sudo laufen weiter" 'kill -0 "$P2" 2>/dev/null && kill -0 "$P3" 2>/dev/null && kill -0 "$P5" 2>/dev/null'
 kill "$P2" "$P3" "$P5" "$P1" "$P4" "$P6" 2>/dev/null
-rm -rf "$T/proc/"*
+rm -rf "$T/proc/"[0-9]*
+
+echo "aus, cgroup von Claude:"
+rm -rf "$SNAP"
+: >"$T/units"
+: >"$LOG"
+: >"$T/systemctl.log"
+touch -d '-2 minutes' "$T/unitfiles/a.service" "$T/unitfiles/getty@.service"
+unit a.service no /system.slice/a.service "$T/unitfiles/a.service"
+echo 1 >"$T/atq"
+echo "* * * * * root true" >"$T/cron.d/alt"
+fake $$ 0 0 4194399001
+fake 4194399001 1000 1000 1 "" "bash"
+bash "$F" an 30 >"$T/out" 2>&1
+check "Freischalten hält fest, was es schon gab" '[[ -e $RULE ]] && grep -qx a.service "$SNAP/units" && grep -qx 1 "$SNAP/at" && grep -q "/cron.d/alt " "$SNAP/cron"'
+touch -d '-1 minute' "$SNAP/units"
+# Während der Freigabe entstanden: Einheiten, ein at-Auftrag, eine cron-Datei, linger.
+unit run-u7.service yes /system.slice/run-u7.service
+touch "$T/unitfiles/boese.timer"
+unit boese.timer no "" "$T/unitfiles/boese.timer"
+unit lf-claude-rettung-sdb.service yes /system.slice/lf-claude-rettung-sdb.service "" "{ path=/usr/local/bin/lf-rescue-run ; argv[]=/usr/local/bin/lf-rescue-run /dev/sdb ; }"
+unit session-5.scope yes /user.slice/user-1000.slice/session-5.scope
+unit run-u9.scope yes /lf.slice/lf-claude.slice/run-u9.scope
+unit getty@tty2.service no /system.slice/system-getty.slice/getty@tty2.service "$T/unitfiles/getty@.service"
+printf '1\n2\n' >"$T/atq"
+echo "* * * * * root true" >"$T/cron.d/neu"
+touch "$T/linger/lf-claude"
+# Prozesse in den cgroups von Claude
+Q1=$(spawn) Q2=$(spawn) Q3=$(spawn) Q4=$(spawn) Q5=$(spawn) Q6=$(spawn) Q7=$(spawn) Q8=$(spawn)
+# abgekoppelt, ohne Umgebung von sudo: nur an der cgroup zu erkennen
+fake "$Q1" 0 0 1 "" "sleep 300"
+# Claude selbst
+fake "$Q2" 1001 1001 1 "" "claude"
+# sudo, das Claude als lf-claude gestartet hat (claude_scope)
+fake "$Q3" 0 0 1 "" "sudo -u lf-claude -H sh -c x" "$T/bin/sudo"
+# Job der Grundregel: bash mit lf-aufgabe, von sudo gestartet, und sein Kind
+fake 4194399201 0 0 1 "" "sudo /usr/local/bin/lf-aufgabe einhaengen /dev/sdb1" "$T/bin/sudo"
+fake "$Q4" 0 0 4194399201 "" "/bin/bash /usr/local/bin/lf-aufgabe einhaengen /dev/sdb1" /usr/bin/bash
+fake "$Q5" 0 0 "$Q4" "" "mount -o ro /dev/sdb1 /mnt"
+# sieht aus wie lf-aufgabe, kommt aber nicht von sudo
+fake "$Q6" 0 0 1 "" "/bin/bash /usr/local/bin/lf-aufgabe x" /usr/bin/bash
+# chrome-sandbox von Claude Desktop
+fake "$Q7" 1001 0 1 "" "/opt/claude/chrome-sandbox --type=zygote" /opt/claude/chrome-sandbox
+# root in der Benutzer-Slice von lf-claude
+fake "$Q8" 0 0 1 "" "sleep 300"
+printf '%s\n' "$Q1" "$Q2" "$Q3" "$Q4" "$Q5" "$Q6" "$Q7" >"$CG/cli.scope/cgroup.procs"
+echo "$Q8" >"$CGU/cgroup.procs"
+bash "$F" aus >"$T/out" 2>&1
+RC=$?
+check "Regel weg" '[[ $RC == 0 && ! -e $RULE ]]'
+check "jeder root-Prozess in den cgroups von Claude ist beendet, auch abgekoppelt und in der Benutzer-Slice" '! kill -0 "$Q1" 2>/dev/null && ! kill -0 "$Q6" 2>/dev/null && ! kill -0 "$Q8" 2>/dev/null && grep -q "beendet: $Q1 sleep 300" "$LOG"'
+check "Claude selbst, sudo, Jobs der Grundregel und chrome-sandbox laufen weiter" 'kill -0 "$Q2" 2>/dev/null && kill -0 "$Q3" 2>/dev/null && kill -0 "$Q4" 2>/dev/null && kill -0 "$Q5" 2>/dev/null && kill -0 "$Q7" 2>/dev/null'
+check "neue Einheiten und Timer sind gestoppt" 'grep -qx "kill -s KILL run-u7.service" "$T/systemctl.log" && grep -qx "stop run-u7.service" "$T/systemctl.log" && grep -qx "stop boese.timer" "$T/systemctl.log"'
+check "Rettungen, Anmeldungen des Technikers, Claudes Sitzung und ältere Einheiten bleiben" '! grep -qE "^(stop|kill -s KILL|freeze) (lf-claude-rettung-sdb.service|session-5.scope|run-u9.scope|getty@tty2.service|a.service)$" "$T/systemctl.log"'
+check "der neue at-Auftrag ist entfernt, der alte bleibt" 'grep -qx 2 "$T/atrm.log" && ! grep -qx 1 "$T/atrm.log"'
+check "die neue cron-Datei ist gesperrt, nicht gelöscht; die alte bleibt" '[[ -f $T/cron.d/neu.lf-gesperrt && ! -e $T/cron.d/neu && -f $T/cron.d/alt ]]'
+check "linger für lf-claude ist aufgehoben" '[[ ! -e $T/linger/lf-claude ]] && grep -qx "disable-linger lf-claude" "$T/loginctl.log"'
+check "Reihenfolge: anhalten, Einheiten, Regel, root-Prozesse, weiterlaufen" 'a=$(line "Claude angehalten") u=$(line "beendet: Einheit run-u7.service") r=$(line "Regel entfernt") k=$(line "beendet: $Q1 ") w=$(line "Claude läuft weiter"); [[ -n $a && -n $u && -n $r && -n $k && -n $w ]] && ((a < u && u < r && r < k && k < w))'
+check "die cgroups von Claude laufen danach weiter" '[[ $(cat "$CG/cgroup.freeze") == 0 && $(cat "$CGU/cgroup.freeze") == 0 ]]'
+check "danach: status aus" '[[ $(bash "$F" status) == aus ]]'
+
+echo "status ohne Regel, mit Rückstand:"
+Q9=$(spawn)
+fake "$Q9" 0 0 1 "" "sleep 300"
+echo "$Q9" >>"$CG/cli.scope/cgroup.procs"
+check "root-Prozess bei Claude: an, Rückstand, Neustart empfohlen" '[[ $(bash "$F" status) == "an: Rückstand nach der Freigabe (root-Prozesse bei Claude: $Q9 ), Neustart empfohlen" && $(bash "$F" zeile </dev/null) == ACHTUNG* ]]'
+kill "$Q9" 2>/dev/null
+sed -i "/^$Q9\$/d" "$CG/cli.scope/cgroup.procs"
+echo "lf-claude ALL=(ALL) NOPASSWD: ALL" >"$T/sudoers.d/zz-neu"
+check "neue sudo-Datei: an, Rückstand" '[[ $(bash "$F" status) == "an: Rückstand nach der Freigabe (sudo-Datei neu oder geändert: $T/sudoers.d/zz-neu), Neustart empfohlen" ]]'
+mv "$T/sudoers.d/zz-neu" "$T/sudoers.d/zz.neu"
+check "Namen mit Punkt liest sudo nicht: kein Rückstand" '[[ $(bash "$F" status) == aus ]]'
+rm -f "$T/sudoers.d/zz.neu"
+echo "[{\"next\": $(((NOW + 600) * 1000000)), \"unit\": \"lf-claude-freigabe-ende.timer\"}]" >"$T/timers.json"
+check "Regel fehlt, Timer läuft: an, Rückstand" '[[ $(bash "$F" status) == "an: Rückstand nach der Freigabe (Regel fehlt, Timer bis $(date -d "@$((NOW + 600))" +%H:%M)), Neustart empfohlen" ]]'
+rm -f "$T/timers.json"
+unit run-u11.service yes /system.slice/run-u11.service
+check "neue Einheit: an, Rückstand" '[[ $(bash "$F" status) == "an: Rückstand nach der Freigabe (Einheiten: run-u11.service ), Neustart empfohlen" ]]'
+sed -i 's/^ActiveState=.*/ActiveState=inactive/' "$T/unit/run-u11.service"
+touch "$T/linger/lf-claude"
+check "linger für lf-claude: an, Rückstand" '[[ $(bash "$F" status) == "an: Rückstand nach der Freigabe (linger: lf-claude), Neustart empfohlen" ]]'
+rm -f "$T/linger/lf-claude"
+check "alles aufgeräumt: aus" '[[ $(bash "$F" status) == aus ]]'
+kill "$Q1" "$Q2" "$Q3" "$Q4" "$Q5" "$Q6" "$Q7" "$Q8" 2>/dev/null
+: >"$CG/cli.scope/cgroup.procs"
+: >"$CGU/cgroup.procs"
+rm -rf "$T/proc/"[0-9]*
 
 echo "Rückstände:"
 echo "lf-claude ALL=(ALL:ALL) NOPASSWD: ALL" >"$RULE"
@@ -147,6 +327,9 @@ check "ohne Rückstand: nach dem Ablauf wieder aus" '[[ $(bash "$F" status) == a
 
 echo "Hinweise für Techniker und Claude:"
 check "der Freigabe-Dialog sagt, dass das Ende auch laufende root-Jobs von Claude beendet" 'grep -q "Am Ende der Freigabe beendet Leuchtfeuer, was Claude damit als root gestartet hat, auch mitten im Schreiben." rescue/lib/claude.sh'
+check "Dialog und Anleitung: sicher endet root-Zugriff nur mit einem Neustart" '(($(grep -c "Sicher endet root-Zugriff nur mit einem Neustart" rescue/lib/claude.sh) >= 4)) && grep -q "Sicher endet root-Zugriff aber nur mit einem Neustart" docs/anleitung.md'
+check "Verlängern im Dialog: Rückfrage an der Konsole, eine Ablehnung wird gemeldet" 'grep -q "Rückfrage hier an der Konsole" rescue/lib/claude.sh && grep -q "Nicht verlängert. Details im Protokoll." rescue/lib/claude.sh'
+check "CLI und Desktop laufen in der Slice, die lf-freigabe am Ende prüft" '[[ $(sed -n "s/^CLAUDE_SLICE=//p" rescue/lib/claude.sh) == "$(sed -n "s/^SLICE=//p" rescue/bin/lf-freigabe)" ]] && grep -q "claude_scope sh -c" rescue/lib/claude.sh && grep -qF -- "--slice=\"\$CLAUDE_SLICE\"" rescue/lib/claude-desktop-start'
 check "CLAUDE.md: lange Kopien nur über lf-aufgabe, nie direkt mit sudo" 'tr "\n" " " <rescue/claude/CLAUDE.md | grep -q "Lange Kopien (dd, ddrescue, partclone) startest du auch dann nur über lf-aufgabe, nie direkt mit sudo"'
 
 rm -rf "$T"
