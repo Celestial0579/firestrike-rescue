@@ -10,6 +10,9 @@
 #     at-Aufträge und cron-Dateien und was lf-claude sonst mit der Freigabe gestartet hat. Jobs
 #     von lf-aufgabe und Prozesse des Technikers laufen weiter; gemeldet wird, was lf-claude
 #     danach noch darf.
+#   - ntfs-3g für eine Quelle, die lf-aufgabe nur lesend eingehängt hat, läuft als eigener Dienst
+#     (ntfs3g_ro in recover.sh). Er bleibt am Ende einer Freigabe und zählt nicht als Rückstand,
+#     nur wenn Name, Programm, Optionen, Quelle und Einhängepunkt zusammenpassen.
 #
 # Hier läuft nichts als root: Eine Kopie von lf-freigabe arbeitet mit eigenen Ordnern statt
 # /etc/sudoers.d, /run/lf, /proc und /sys/fs/cgroup. sudo, systemctl, systemd-run, loginctl, atq,
@@ -20,7 +23,7 @@ cd "$(dirname "$0")/.." || exit 1
 unset SUDO_USER SUDO_UID SUDO_COMMAND
 
 T=$(mktemp -d)
-mkdir -p "$T/bin" "$T/sudoers.d" "$T/run" "$T/proc" "$T/unit" "$T/unitfiles" "$T/cron.d" "$T/linger"
+mkdir -p "$T/bin" "$T/sudoers.d" "$T/run" "$T/proc" "$T/unit" "$T/unitfiles" "$T/cron.d" "$T/linger" "$T/sysblock/sdb1"
 # Die cgroups von Claude: lf-claude.slice mit der Sitzung der CLI und die Benutzer-Slice von lf-claude.
 CG="$T/cg/lf.slice/lf-claude.slice"
 CGU="$T/cg/user.slice/user-1001.slice"
@@ -37,7 +40,7 @@ sed -e "s|^PATH=.*|PATH=$T/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin
 	-e "s|/etc/sudoers.d/|$T/sudoers.d/|g" -e "s|^SUDOERS=.*|SUDOERS=$T/sudoers|" -e "s|/run/lf|$T/run|g" \
 	-e "s|/proc/|$T/proc/|g" -e "s|^SUDO_EXE=.*|SUDO_EXE=$T/bin/sudo|" -e "s|^CGROOT=.*|CGROOT=$T/cg|" \
 	-e "s|^LINGER=.*|LINGER=$T/linger|" -e "s|^CRON_PATHS=.*|CRON_PATHS=($T/cron.d)|" -e "s|^TTY=.*|TTY=$T/tty|" \
-	-e "s|((EUID == 0))|((EUID == $(id -u)))|g" rescue/bin/lf-freigabe >"$F"
+	-e "s|^SYS_BLOCK=.*|SYS_BLOCK=$T/sysblock|" -e "s|((EUID == 0))|((EUID == $(id -u)))|g" rescue/bin/lf-freigabe >"$F"
 
 cat >"$T/bin/id" <<MOCK
 #!/bin/bash
@@ -116,6 +119,9 @@ unit() {
 }
 # spawn   Startet sleep losgelöst (nicht als Kind dieses Tests) und gibt die PID aus.
 spawn() { (sleep 300 >/dev/null 2>&1 &
+	echo $!); }
+# spawn_noterm   Wie spawn, aber sleep übergeht TERM (wie ein Prozess in einer angehaltenen cgroup).
+spawn_noterm() { (bash -c 'trap "" TERM; exec sleep 300' >/dev/null 2>&1 &
 	echo $!); }
 # line TEXT   Zeile, in der TEXT zum ersten Mal im Protokoll steht.
 line() { grep -n -m1 -F -- "$1" "$LOG" | cut -d: -f1; }
@@ -248,6 +254,17 @@ unit lf-claude-rettung-sdb.service yes /system.slice/lf-claude-rettung-sdb.servi
 unit session-5.scope yes /user.slice/user-1000.slice/session-5.scope
 unit run-u9.scope yes /lf.slice/lf-claude.slice/run-u9.scope
 unit getty@tty2.service no /system.slice/system-getty.slice/getty@tty2.service "$T/unitfiles/getty@.service"
+# ntfs-3g für eine Quelle, die lf-aufgabe während der Freigabe eingehängt hat (ntfs3g_ro), und
+# Dienste, die nur so heißen: anderes Programm, andere Optionen, eine Datei als Quelle, ein
+# Gerät, das der Kernel nicht kennt, ein Name, der nicht zum Einhängepunkt passt.
+NT='lf-ntfs3g-mnt-lf\x2dimage-sdb1.service'
+ntfs() { unit "$1" yes "/system.slice/$1" "" "{ path=$2 ; argv[]=$2 -o $3 $4 $5 ; ignore_errors=no ; start_time=[n/a] ; stop_time=[n/a] ; pid=0 ; code=(null) ; status=0/0 }"; }
+ntfs "$NT" /usr/bin/ntfs-3g ro,nodev,nosuid,noexec,recover /dev/sdb1 /mnt/lf-image/sdb1
+ntfs 'lf-ntfs3g-mnt-lf\x2dimage-sdb2.service' /usr/bin/bash ro,nodev,nosuid,noexec,recover /dev/sdb1 /mnt/lf-image/sdb2
+ntfs 'lf-ntfs3g-mnt-lf\x2dimage-sdb3.service' /usr/bin/ntfs-3g ro,dev,suid,exec /dev/sdb1 /mnt/lf-image/sdb3
+ntfs 'lf-ntfs3g-mnt-lf\x2dimage-sdb4.service' /usr/bin/ntfs-3g ro,nodev,nosuid,noexec,recover /var/lib/lf-claude/x.img /mnt/lf-image/sdb4
+ntfs 'lf-ntfs3g-mnt-lf\x2dimage-sdb5.service' /usr/bin/ntfs-3g ro,nodev,nosuid,noexec,recover /dev/sdz9 /mnt/lf-image/sdb5
+ntfs lf-ntfs3g-x.service /usr/bin/ntfs-3g ro,nodev,nosuid,noexec,recover /dev/sdb1 /mnt/lf-image/sdb6
 printf '1\n2\n' >"$T/atq"
 echo "* * * * * root true" >"$T/cron.d/neu"
 touch "$T/linger/lf-claude"
@@ -269,19 +286,26 @@ fake "$Q6" 0 0 1 "" "/bin/bash /usr/local/bin/lf-aufgabe x" /usr/bin/bash
 fake "$Q7" 1001 0 1 "" "/opt/claude/chrome-sandbox --type=zygote" /opt/claude/chrome-sandbox
 # root in der Benutzer-Slice von lf-claude
 fake "$Q8" 0 0 1 "" "sleep 300"
-printf '%s\n' "$Q1" "$Q2" "$Q3" "$Q4" "$Q5" "$Q6" "$Q7" >"$CG/cli.scope/cgroup.procs"
+# mit der Freigabe als ein anderer Benutzer gestartet, in der angehaltenen cgroup: TERM käme
+# erst nach dem Auftauen an
+Q10=$(spawn_noterm)
+fake "$Q10" 1000 1000 1 "SUDO_USER=lf-claude|SUDO_COMMAND=/usr/bin/sleep 300" "sleep 300"
+printf '%s\n' "$Q1" "$Q2" "$Q3" "$Q4" "$Q5" "$Q6" "$Q7" "$Q10" >"$CG/cli.scope/cgroup.procs"
 echo "$Q8" >"$CGU/cgroup.procs"
 bash "$F" aus >"$T/out" 2>&1
 RC=$?
 check "Regel weg" '[[ $RC == 0 && ! -e $RULE ]]'
 check "jeder root-Prozess in den cgroups von Claude ist beendet, auch abgekoppelt und in der Benutzer-Slice" '! kill -0 "$Q1" 2>/dev/null && ! kill -0 "$Q6" 2>/dev/null && ! kill -0 "$Q8" 2>/dev/null && grep -q "beendet: $Q1 sleep 300" "$LOG"'
+check "mit der Freigabe gestartet, in der angehaltenen cgroup: gleich KILL, ohne auf TERM zu warten" '! kill -0 "$Q10" 2>/dev/null && grep -q "beendet: $Q10 sleep 300 (KILL, angehalten)" "$LOG"'
 check "Claude selbst, sudo, Jobs der Grundregel und chrome-sandbox laufen weiter" 'kill -0 "$Q2" 2>/dev/null && kill -0 "$Q3" 2>/dev/null && kill -0 "$Q4" 2>/dev/null && kill -0 "$Q5" 2>/dev/null && kill -0 "$Q7" 2>/dev/null'
 check "neue Einheiten und Timer sind gestoppt" 'grep -qx "kill -s KILL run-u7.service" "$T/systemctl.log" && grep -qx "stop run-u7.service" "$T/systemctl.log" && grep -qx "stop boese.timer" "$T/systemctl.log"'
 check "Rettungen, Anmeldungen des Technikers, Claudes Sitzung und ältere Einheiten bleiben" '! grep -qE "^(stop|kill -s KILL|freeze) (lf-claude-rettung-sdb.service|session-5.scope|run-u9.scope|getty@tty2.service|a.service)$" "$T/systemctl.log"'
+check "ntfs-3g einer nur lesend eingehängten Quelle bleibt, die Quelle verschwindet nicht (GHSA-799j-44qx-x7xj)" '! grep -qxF -e "stop $NT" -e "kill -s KILL $NT" -e "freeze $NT" "$T/systemctl.log" && ! grep -qF "beendet: Einheit $NT" "$LOG"'
+check "Dienste, die nur wie ntfs-3g heißen, sind gestoppt" 'n=0; for u in sdb2 sdb3 sdb4 sdb5; do grep -qxF "stop lf-ntfs3g-mnt-lf\x2dimage-$u.service" "$T/systemctl.log" && n=$((n + 1)); done; grep -qxF "stop lf-ntfs3g-x.service" "$T/systemctl.log" && ((n == 4))'
 check "der neue at-Auftrag ist entfernt, der alte bleibt" 'grep -qx 2 "$T/atrm.log" && ! grep -qx 1 "$T/atrm.log"'
 check "die neue cron-Datei ist gesperrt, nicht gelöscht; die alte bleibt" '[[ -f $T/cron.d/neu.lf-gesperrt && ! -e $T/cron.d/neu && -f $T/cron.d/alt ]]'
 check "linger für lf-claude ist aufgehoben" '[[ ! -e $T/linger/lf-claude ]] && grep -qx "disable-linger lf-claude" "$T/loginctl.log"'
-check "Reihenfolge: anhalten, Einheiten, Regel, root-Prozesse, weiterlaufen" 'a=$(line "Claude angehalten") u=$(line "beendet: Einheit run-u7.service") r=$(line "Regel entfernt") k=$(line "beendet: $Q1 ") w=$(line "Claude läuft weiter"); [[ -n $a && -n $u && -n $r && -n $k && -n $w ]] && ((a < u && u < r && r < k && k < w))'
+check "Reihenfolge: anhalten, Regel, Einheiten, root-Prozesse, weiterlaufen" 'a=$(line "Claude angehalten") u=$(line "beendet: Einheit run-u7.service") r=$(line "Regel entfernt") k=$(line "beendet: $Q1 ") w=$(line "Claude läuft weiter"); [[ -n $a && -n $u && -n $r && -n $k && -n $w ]] && ((a < r && r < u && u < k && k < w))'
 check "die cgroups von Claude laufen danach weiter" '[[ $(cat "$CG/cgroup.freeze") == 0 && $(cat "$CGU/cgroup.freeze") == 0 ]]'
 check "danach: status aus" '[[ $(bash "$F" status) == aus ]]'
 
@@ -308,6 +332,7 @@ check "linger für lf-claude: an, Rückstand" '[[ $(bash "$F" status) == "an: R�
 rm -f "$T/linger/lf-claude"
 check "alles aufgeräumt: aus" '[[ $(bash "$F" status) == aus ]]'
 kill "$Q1" "$Q2" "$Q3" "$Q4" "$Q5" "$Q6" "$Q7" "$Q8" 2>/dev/null
+kill -KILL "$Q10" 2>/dev/null
 : >"$CG/cli.scope/cgroup.procs"
 : >"$CGU/cgroup.procs"
 rm -rf "$T/proc/"[0-9]*
@@ -330,6 +355,7 @@ check "der Freigabe-Dialog sagt, dass das Ende auch laufende root-Jobs von Claud
 check "Dialog und Anleitung: sicher endet root-Zugriff nur mit einem Neustart" '(($(grep -c "Sicher endet root-Zugriff nur mit einem Neustart" rescue/lib/claude.sh) >= 4)) && grep -q "Sicher endet root-Zugriff aber nur mit einem Neustart" docs/anleitung.md'
 check "Verlängern im Dialog: Rückfrage an der Konsole, eine Ablehnung wird gemeldet" 'grep -q "Rückfrage hier an der Konsole" rescue/lib/claude.sh && grep -q "Nicht verlängert. Details im Protokoll." rescue/lib/claude.sh'
 check "CLI und Desktop laufen in der Slice, die lf-freigabe am Ende prüft" '[[ $(sed -n "s/^CLAUDE_SLICE=//p" rescue/lib/claude.sh) == "$(sed -n "s/^SLICE=//p" rescue/bin/lf-freigabe)" ]] && grep -q "claude_scope sh -c" rescue/lib/claude.sh && grep -qF -- "--slice=\"\$CLAUDE_SLICE\"" rescue/lib/claude-desktop-start'
+check "lf-freigabe lässt genau die ntfs-3g-Dienste gelten, die part_mount_ro startet (Name, Optionen, Einhängepunkt)" 'grep -qF "ntfs3g_ro ro,nodev,nosuid,noexec,recover \"\$part\" \"\$mp\"" rescue/lib/recover.sh && grep -qF "unit=\"lf-ntfs3g-\$(systemd-escape --path -- \"\$3\").service\"" rescue/lib/recover.sh && grep -qF -- "-o ro,nodev,nosuid,noexec,recover (/dev/[^ ]+) ($(sed -n "s/^LF_IMAGE_MNT=\"\(.*\)\"$/\1/p" rescue/lib/common.sh)/" rescue/bin/lf-freigabe && grep -qF "[[ \$1 == \"lf-ntfs3g-\$(systemd-escape --path -- \"\$mp\").service\" ]]" rescue/bin/lf-freigabe'
 check "CLAUDE.md: lange Kopien nur über lf-aufgabe, nie direkt mit sudo" 'tr "\n" " " <rescue/claude/CLAUDE.md | grep -q "Lange Kopien (dd, ddrescue, partclone) startest du auch dann nur über lf-aufgabe, nie direkt mit sudo"'
 
 rm -rf "$T"

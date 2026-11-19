@@ -7,6 +7,10 @@
 # Verknüpfung nach /etc oder in den persistenten Speicher zeigte auf Dateien des Rettungssystems,
 # die beim Durchsehen oder Kopieren wie Dateien des Kunden aussehen.
 #
+# ntfs-3g (FUSE) läuft weiter, solange die Quelle eingehängt ist. Es startet als eigener Dienst
+# (systemd-run), nicht als Kind des Aufrufers: Sonst läge es bei "lf-aufgabe einhaengen" in Claudes
+# cgroup, und das Ende einer Claude-Freigabe beendete es (GHSA-799j-44qx-x7xj).
+#
 # Hier wird nichts eingehängt. sudo, mount und findmnt sind Attrappen: Ein gedachter Kernel merkt
 # sich, was am Einhängepunkt gilt. Ob der echte Kernel die Optionen durchsetzt, prüft der
 # Selbsttest im gebooteten System (lf --selftest).
@@ -43,6 +47,12 @@ sudo() {
 	case $1 in
 	blkid) echo "$FS" ;;
 	mount | ntfs-3g) kernel_mount "$@" ;;
+	systemd-run)
+		# Der Dienst hängt ein: Der gedachte Kernel bekommt den Befehl hinter "--".
+		while (($#)) && [[ $1 != -- ]]; do shift; done
+		shift
+		kernel_mount "$@"
+		;;
 	umount)
 		((UMOUNT_OK)) || return 32
 		: >"$T/mounted"
@@ -126,6 +136,14 @@ REFUSE="-t ntfs3"
 mount_ro ntfs
 check "über ntfs-3g: ro, nodev, nosuid, noexec im Aufruf" '[[ $CALLS == *"ntfs-3g -o ro,nodev,nosuid,noexec,recover /dev/loop0p2 $MP"* ]]'
 check "über ntfs-3g: nosymfollow wird nachgesetzt, danach gilt alles" '[[ $RC == 0 ]] && safe && [[ $CALLS == *"mount -i -o remount,bind,$ALL $MP"* ]]'
+NTFS_UNIT='lf-ntfs3g-mnt-lf\x2dimage-loop0p2.service'
+NL=$'\n'
+check "über ntfs-3g: als eigener Dienst je Einhängepunkt, nicht als Kind des Aufrufers (GHSA-799j-44qx-x7xj)" '[[ $CALLS == *"systemd-run --quiet --collect --unit=$NTFS_UNIT -p Type=forking "*" -- ntfs-3g -o ro,nodev,nosuid,noexec,recover /dev/loop0p2 $MP"* && $NL$CALLS != *"${NL}ntfs-3g "* ]]'
+check "über ntfs-3g: ein alter Dienst an derselben Stelle wird vorher gestoppt" '[[ $CALLS == *"systemctl stop $NTFS_UNIT"*"systemd-run "* ]]'
+reset
+REFUSE="ntfs"
+mount_ro ntfs
+check "ntfs-3g scheitert auch: abgelehnt, das Journal des Dienstes steht im Protokoll" '[[ $RC != 0 && -z $OPTS && $CALLS == *"journalctl -q -o cat -n 20 -u $NTFS_UNIT"* ]]'
 
 echo "Anderes Dateisystem und keines:"
 reset
@@ -183,8 +201,8 @@ for fs in ext4 xfs btrfs ntfs exfat vfat hfsplus BitLocker; do
 		echo "$CALLS" >>"$T/alle"
 	done
 done
-check "kein Einhängen ohne ro, nodev, nosuid und noexec" '! grep -E "^(mount|ntfs-3g) " "$T/alle" | grep -v -q "ro,nodev,nosuid,noexec"'
-check "es gab Einhänge-Aufrufe" '[[ $(grep -c -E "^(mount|ntfs-3g) " "$T/alle") -ge 30 ]]'
+check "kein Einhängen ohne ro, nodev, nosuid und noexec" '! grep -E "^(mount|ntfs-3g|systemd-run) " "$T/alle" | grep -v -q "ro,nodev,nosuid,noexec"'
+check "es gab Einhänge-Aufrufe, auch über einen Dienst" '[[ $(grep -c -E "^(mount|ntfs-3g|systemd-run) " "$T/alle") -ge 30 ]] && grep -q "^systemd-run .* -- ntfs-3g -o ro,nodev,nosuid,noexec" "$T/alle"'
 
 rm -rf "$T"
 ((fails == 0)) && echo "Alle Tests bestanden." || { echo "$fails Test(s) fehlgeschlagen."; exit 1; }

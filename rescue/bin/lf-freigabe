@@ -18,8 +18,8 @@
 # Ob ein Aufruf von lf-claude kommt, zeigen SUDO_USER und SUDO_UID, alle Vorfahren des Aufrufs
 # und die cgroup: Claude läuft in einer eigenen (lf-claude.slice, claude_scope in claude.sh), und
 # ein Prozess behält sie, auch wenn er sich abkoppelt. Am Ende (aus, Ablauf) hält lf-freigabe
-# diese cgroup an und beendet Einheiten, Timer, at-Aufträge und cron-Dateien, die während der
-# Freigabe entstanden sind. Dann nimmt es die Regel zurück, beendet jeden root-Prozess in der
+# diese cgroup an und nimmt sofort die Regel zurück. Dann beendet es Einheiten, Timer,
+# at-Aufträge und cron-Dateien, die während der Freigabe entstanden sind, jeden root-Prozess in der
 # cgroup (außer sudo selbst und Jobs von lf-lesen und lf-aufgabe) und alles, was lf-claude sonst
 # nachweislich mit der Freigabe gestartet hat, und lässt Claude weiterlaufen. Danach prüft es,
 # ob lf-claude noch mehr darf als lf-lesen und lf-aufgabe; solange es etwas findet, sagt status
@@ -48,6 +48,8 @@ TTY=/dev/tty
 # Was lf-claude nach dem Ende einer Freigabe noch mehr darf als die Grundregel.
 RESIDUE=/run/lf/claude-freigabe-rueckstand
 BASE_RULE="(root) NOPASSWD: /usr/local/bin/lf-lesen, /usr/local/bin/lf-aufgabe"
+# Blockgeräte, die der Kernel kennt (Quellen, die ntfs3g_unit gelten lässt).
+SYS_BLOCK=/sys/class/block
 
 note() {
 	logger -t lf-freigabe -- "$*" 2>/dev/null || true
@@ -213,15 +215,23 @@ granted_pids() {
 	return 0
 }
 
-# stop_granted   Beendet die Prozesse aus granted_pids: TERM, nach 5 Sekunden KILL.
+# stop_granted   Beendet die Prozesse aus granted_pids: TERM, nach 5 Sekunden KILL. In den
+#   cgroups von Claude, die off angehalten hat, käme TERM erst nach dem Auftauen an: dort gleich KILL.
 stop_granted() {
 	local pid i
 	local -a pids
+	local -A held=()
 	mapfile -t pids < <(granted_pids)
 	((${#pids[@]})) || return 0
+	while IFS= read -r pid; do held[$pid]=1; done < <(cg_pids)
 	for pid in "${pids[@]}"; do
-		note "beendet: $pid $(tr '\0' ' ' <"/proc/$pid/cmdline" 2>/dev/null | cut -c1-120)"
-		kill -TERM "$pid" 2>/dev/null
+		if [[ -n ${held[$pid]:-} ]]; then
+			note "beendet: $pid $(tr '\0' ' ' <"/proc/$pid/cmdline" 2>/dev/null | cut -c1-120) (KILL, angehalten)"
+			kill -KILL "$pid" 2>/dev/null
+		else
+			note "beendet: $pid $(tr '\0' ' ' <"/proc/$pid/cmdline" 2>/dev/null | cut -c1-120)"
+			kill -TERM "$pid" 2>/dev/null
+		fi
 	done
 	for ((i = 0; i < 10; i++)); do
 		mapfile -t pids < <(granted_pids)
@@ -335,11 +345,27 @@ unit_info() {
 	return 0
 }
 
+# ntfs3g_unit EINHEIT   Hängt in EINHEIT ntfs-3g eine Quelle nur lesend ein, so wie ntfs3g_ro in
+#   recover.sh (lf-aufgabe einhaengen und der Assistent)? Name, Programm, Optionen, Quelle und
+#   Einhängepunkt müssen zusammenpassen (ui von unit_info), der Name allein reicht nicht. Ein
+#   solcher Dienst bleibt am Ende einer Freigabe, sonst verschwände die Quelle unter laufenden
+#   Jobs; als Rückstand zählt er nicht. Dasselbe bekommt Claude auch über die Grundregel.
+ntfs3g_unit() {
+	local re exe arg0 src mp
+	re='^[{] path=(/usr/bin/ntfs-3g|/bin/ntfs-3g) ; argv[[][]]=([^ ]+) -o ro,nodev,nosuid,noexec,recover (/dev/[^ ]+) (/mnt/lf-image/[a-z0-9][a-z0-9-]{0,63}) ; '
+	[[ $1 == lf-ntfs3g-*.service && ${ui[ExecStart]:-} =~ $re ]] || return 1
+	exe=${BASH_REMATCH[1]} arg0=${BASH_REMATCH[2]} src=${BASH_REMATCH[3]} mp=${BASH_REMATCH[4]}
+	[[ $arg0 == "$exe" ]] || return 1
+	src=$(readlink -f -- "$src") && [[ $src == /dev/?* && -e $SYS_BLOCK/${src##*/} ]] || return 1
+	[[ $1 == "lf-ntfs3g-$(systemd-escape --path -- "$mp").service" ]]
+}
+
 # new_units   Laufende Einheiten, die seit dem Freischalten entstanden sind: vorübergehende
 #   (systemd-run) und solche aus einer Unit-Datei, die neuer ist als das Freischalten. Nicht dazu
-#   zählen die eigenen Einheiten, die Rettungen von lf-aufgabe (Grundregel), die Sitzungen von
-#   Claude selbst (claude_scope) und Anmeldungen von Benutzern außer root (der Techniker an tty2
-#   oder über SSH). root-Prozesse in den cgroups von Claude beendet stop_root_in_claude.
+#   zählen die eigenen Einheiten, die Rettungen von lf-aufgabe (Grundregel), ntfs-3g für nur
+#   lesend eingehängte Quellen (ntfs3g_unit), die Sitzungen von Claude selbst (claude_scope) und
+#   Anmeldungen von Benutzern außer root (der Techniker an tty2 oder über SSH). root-Prozesse in
+#   den cgroups von Claude beendet stop_root_in_claude.
 new_units() {
 	local u
 	[[ -f $SNAP/units ]] || return 0
@@ -351,6 +377,7 @@ new_units() {
 			[[ -n ${ui[FragmentPath]:-} && ${ui[FragmentPath]} -nt $SNAP/units ]] || continue
 		fi
 		[[ $u == lf-claude-rettung-*.service && ${ui[ExecStart]:-} == *"path=/usr/local/bin/lf-rescue-run ;"* ]] && continue
+		ntfs3g_unit "$u" && continue
 		[[ $u == *.scope && ${ui[ControlGroup]:-} == /lf.slice/lf-claude.slice/* ]] && continue
 		[[ $u == session-*.scope && ${ui[ControlGroup]:-} =~ ^/user\.slice/user-([0-9]+)\.slice/ && ${BASH_REMATCH[1]} != 0 ]] && continue
 		echo "$u"
@@ -513,26 +540,27 @@ status() {
 # confirm MINUTEN STATUS   Rückfrage an der Konsole: Verlängern gilt nur, wenn dort "j" getippt
 #   wird. Ohne Terminal (systemd-run, Pipe) gibt es keine Antwort, also auch keine Verlängerung.
 confirm() {
-	local a=""
+	local answer=""
 	{
 		printf '\nClaude hat noch root (%s).\nFreigabe für %s Minuten ab jetzt? [j/N] ' "$2" "$1" >>"$TTY" &&
-			read -r -t 60 a <"$TTY"
+			read -r -t 60 answer <"$TTY"
 	} 2>/dev/null || return 1
-	[[ $a == [jJ] || $a == [jJ][aA] ]]
+	[[ $answer == [jJ] || $answer == [jJ][aA] ]]
 }
 
 off() {
 	local r
 	trap 'cg_freeze 0' EXIT
-	# Erst anhalten, dann aufräumen und die Regel nehmen: In der angehaltenen cgroup startet
-	# zwischen Suchen und Beenden nichts Neues.
+	# Erst anhalten, dann sofort die Regel nehmen, dann aufräumen: In der angehaltenen cgroup
+	# startet zwischen Suchen und Beenden nichts Neues. Hängt das Stoppen einer Einheit (etwa an
+	# einer hängenden Disk), gilt die Regel trotzdem nicht mehr.
 	cg_freeze 1
 	trace "Ende der Freigabe: Claude angehalten"
+	rm -f "$RULE" "$UNTIL"
+	trace "Ende der Freigabe: Regel entfernt"
 	stop_new_units
 	stop_new_at
 	disable_new_cron
-	rm -f "$RULE" "$UNTIL"
-	trace "Ende der Freigabe: Regel entfernt"
 	systemctl stop "$UNIT.timer" 2>/dev/null || true
 	stop_root_in_claude
 	stop_granted
