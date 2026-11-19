@@ -141,15 +141,17 @@ caller_from_claude() {
 	in_claude_cgroup
 }
 
-# caller_on_console   Sitzt der Aufrufer an einer Konsole des Geräts? Der erste Vorfahr, der nicht
-#   als root läuft (der Techniker vor sudo), hat ein virtuelles Terminal als steuerndes Terminal
-#   (tty1 bis tty63, Hauptnummer 4). Ein Pseudo-Terminal (SSH, tmux) zählt nicht, ein Aufruf über
+# caller_on_console   Sitzt der Aufrufer an einer Konsole des Geräts? Der erste Vorfahr ohne
+#   root-Rechte (effektive UID nicht 0: der Techniker vor sudo) hat ein virtuelles Terminal als
+#   steuerndes Terminal (tty1 bis tty63, Hauptnummer 4). Es zählt die effektive UID: sudo-rs
+#   behält in sudo und seinem Überwacher die reale UID des Technikers, und der Überwacher sitzt an
+#   einem eigenen Pseudo-Terminal. Ein Pseudo-Terminal (SSH, tmux) zählt nicht, ein Aufruf über
 #   systemd-run hat keinen solchen Vorfahren.
 caller_on_console() {
 	local pid=$PPID n=0 r e p s t min
 	while [[ $pid =~ ^[0-9]+$ ]] && ((pid > 1 && n++ < 64)); do
 		read -r r e p s <<<"$(st "$pid")"
-		if [[ $r =~ ^[0-9]+$ ]] && ((r != 0)); then
+		if [[ $e =~ ^[0-9]+$ ]] && ((e != 0)); then
 			t=$(ttynr "$pid") || return 1
 			[[ $t =~ ^[0-9]+$ ]] || return 1
 			min=$(((t & 0xff) | ((t >> 12) & 0xfff00)))
@@ -161,14 +163,14 @@ caller_on_console() {
 	return 1
 }
 
-# caller_name   Wer freischaltet: der erste Vorfahr, der nicht als root läuft (der Techniker vor
-#   sudo), sonst SUDO_USER, sonst root.
+# caller_name   Wer freischaltet: der erste Vorfahr ohne root-Rechte (effektive UID, wie bei
+#   caller_on_console: der Techniker vor sudo), sonst SUDO_USER, sonst root.
 caller_name() {
 	local pid=$PPID n=0 r e p s
 	while [[ $pid =~ ^[0-9]+$ ]] && ((pid > 1 && n++ < 64)); do
 		read -r r e p s <<<"$(st "$pid")"
-		if [[ $r =~ ^[0-9]+$ ]] && ((r != 0)); then
-			id -nu "$r" 2>/dev/null || echo "uid $r"
+		if [[ $e =~ ^[0-9]+$ ]] && ((e != 0)); then
+			id -nu "$e" 2>/dev/null || echo "uid $e"
 			return 0
 		fi
 		pid=$p
@@ -328,10 +330,17 @@ cg_freeze() {
 	return 0
 }
 
-# units_now   Dienste, Scopes, Timer, Sockets und Pfad-Einheiten, die systemd gerade kennt.
+# units_now   "EINHEIT INVOCATIONID" je Dienst, Scope, Timer, Socket und Pfad-Einheit, die nicht
+#   inaktiv ist. systemd vergibt bei jedem Start eine neue InvocationID: Wird eine Einheit während
+#   der Freigabe unter einem Namen von vorher neu angelegt oder neu gestartet, ist sie neu.
 units_now() {
-	systemctl list-units --all --plain --no-legend --full --type=service,scope,timer,socket,path 2>/dev/null |
-		awk '$1 ~ /\./ {print $1}' | sort -u
+	local -a us
+	mapfile -t us < <(systemctl list-units --plain --no-legend --full --type=service,scope,timer,socket,path 2>/dev/null |
+		awk '$1 ~ /\./ {print $1}' | sort -u)
+	((${#us[@]})) || return 0
+	systemctl show -p Id -p InvocationID -- "${us[@]}" 2>/dev/null |
+		awk '/^Id=/ {id = substr($0, 4)} /^InvocationID=/ {inv = substr($0, 14)}
+			/^$/ {if (id != "") print id, inv; id = inv = ""} END {if (id != "") print id, inv}' | sort -u
 }
 
 # unit_info EINHEIT   Füllt ui mit den Eigenschaften, die new_units braucht.
@@ -341,8 +350,21 @@ unit_info() {
 	ui=()
 	while IFS='=' read -r k v; do
 		[[ -n $k ]] && ui[$k]=$v
-	done < <(systemctl show -p Transient,ActiveState,ControlGroup,FragmentPath,ExecStart "$1" 2>/dev/null)
+	done < <(systemctl show -p Transient,ActiveState,ControlGroup,FragmentPath,DropInPaths,ExecStart "$1" 2>/dev/null)
 	return 0
+}
+
+# unit_changed   Ist die Unit-Datei (ui von unit_info) oder eine ihrer Ergänzungen (Drop-ins, auch
+#   von systemctl edit --runtime) neuer als das Freischalten? Eine Datei, die es nicht mehr gibt,
+#   und ein Pfad, den systemctl nicht ausgibt ("[unprintable]" bei Leerzeichen), zählen als neu.
+unit_changed() {
+	local f
+	local -a fs
+	read -ra fs <<<"${ui[FragmentPath]:-} ${ui[DropInPaths]:-}"
+	for f in "${fs[@]}"; do
+		[[ $f == /* && -e $f && ! $f -nt $SNAP/units ]] || return 0
+	done
+	return 1
 }
 
 # ntfs3g_unit EINHEIT   Hängt in EINHEIT ntfs-3g eine Quelle nur lesend ein, so wie ntfs3g_ro in
@@ -360,21 +382,23 @@ ntfs3g_unit() {
 	[[ $1 == "lf-ntfs3g-$(systemd-escape --path -- "$mp").service" ]]
 }
 
-# new_units   Laufende Einheiten, die seit dem Freischalten entstanden sind: vorübergehende
-#   (systemd-run) und solche aus einer Unit-Datei, die neuer ist als das Freischalten. Nicht dazu
-#   zählen die eigenen Einheiten, die Rettungen von lf-aufgabe (Grundregel), ntfs-3g für nur
-#   lesend eingehängte Quellen (ntfs3g_unit), die Sitzungen von Claude selbst (claude_scope) und
-#   Anmeldungen von Benutzern außer root (der Techniker an tty2 oder über SSH). root-Prozesse in
-#   den cgroups von Claude beendet stop_root_in_claude.
+# new_units   Laufende Einheiten, die seit dem Freischalten entstanden oder neu gestartet sind
+#   (eine InvocationID, die es beim Freischalten nicht gab, auch unter einem Namen von vorher):
+#   vorübergehende (systemd-run) und solche aus einer Unit-Datei, die selbst oder deren Ergänzung
+#   neuer ist als das Freischalten (unit_changed). Nicht dazu zählen die eigenen Einheiten, die
+#   Rettungen von lf-aufgabe (Grundregel), ntfs-3g für nur lesend eingehängte Quellen
+#   (ntfs3g_unit), die Sitzungen von Claude selbst (claude_scope) und Anmeldungen von Benutzern
+#   außer root (der Techniker an tty2 oder über SSH). root-Prozesse in den cgroups von Claude
+#   beendet stop_root_in_claude.
 new_units() {
 	local u
 	[[ -f $SNAP/units ]] || return 0
-	while IFS= read -r u; do
+	while read -r u _; do
 		case $u in "$UNIT.timer" | "$UNIT.service" | "$UNIT-aus.service") continue ;; esac
 		unit_info "$u"
 		case ${ui[ActiveState]:-} in inactive | failed | "") continue ;; esac
 		if [[ ${ui[Transient]:-} != yes ]]; then
-			[[ -n ${ui[FragmentPath]:-} && ${ui[FragmentPath]} -nt $SNAP/units ]] || continue
+			unit_changed || continue
 		fi
 		[[ $u == lf-claude-rettung-*.service && ${ui[ExecStart]:-} == *"path=/usr/local/bin/lf-rescue-run ;"* ]] && continue
 		ntfs3g_unit "$u" && continue

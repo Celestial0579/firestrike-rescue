@@ -4,12 +4,13 @@
 #     Ende kommt aus dem Timer. Ohne Regel sagt status erst "aus", wenn kein Timer mehr läuft und
 #     kein Rückstand zu sehen ist (root-Prozess bei Claude, neue sudo-Datei, neue Einheit, linger).
 #   - "an" erkennt lf-claude auch ohne SUDO_USER an den Vorfahren und an der cgroup. Solange
-#     Claude root hat, verlängert "an" nur von einer Konsole (tty1 bis tty63) mit "j" dort.
+#     Claude root hat, verlängert "an" nur von einer Konsole (tty1 bis tty63) mit "j" dort, auch
+#     unter sudo-rs (reale UID des Technikers in sudo und seinem Überwacher am eigenen pts).
 #   - "aus" und der Ablauf halten die cgroup von Claude an und beenden darin jeden root-Prozess
-#     (außer sudo, Jobs von lf-lesen und lf-aufgabe, chrome-sandbox), dazu neue Einheiten,
-#     at-Aufträge und cron-Dateien und was lf-claude sonst mit der Freigabe gestartet hat. Jobs
-#     von lf-aufgabe und Prozesse des Technikers laufen weiter; gemeldet wird, was lf-claude
-#     danach noch darf.
+#     (außer sudo, Jobs von lf-lesen und lf-aufgabe, chrome-sandbox), dazu neue Einheiten (auch
+#     unter einem Namen von vorher neu angelegt: neue InvocationID), at-Aufträge und cron-Dateien
+#     und was lf-claude sonst mit der Freigabe gestartet hat. Jobs von lf-aufgabe und Prozesse
+#     des Technikers laufen weiter; gemeldet wird, was lf-claude danach noch darf.
 #   - ntfs-3g für eine Quelle, die lf-aufgabe nur lesend eingehängt hat, läuft als eigener Dienst
 #     (ntfs3g_ro in recover.sh). Er bleibt am Ende einer Freigabe und zählt nicht als Rückstand,
 #     nur wenn Name, Programm, Optionen, Quelle und Einhängepunkt zusammenpassen.
@@ -64,10 +65,24 @@ echo "\$*" >>"$T/systemctl.log"
 u=\${!#}
 case \$1 in
 list-timers) cat "$T/timers.json" 2>/dev/null || echo "[]" ;;
-list-units) cat "$T/units" 2>/dev/null ;;
+list-units)
+	# Ohne --all nur Einheiten, die nicht inaktiv sind.
+	while read -r n _; do
+		[[ " \$* " == *" --all "* ]] || ! grep -qx ActiveState=inactive "$T/unit/\$n" 2>/dev/null || continue
+		echo "\$n loaded active running x"
+	done < <(cat "$T/units" 2>/dev/null)
+	;;
 show)
 	if [[ "\$*" == "show -p ControlGroup --value lf-claude.slice" ]]; then
 		echo /lf.slice/lf-claude.slice
+	elif [[ "\$*" == "show -p Id -p InvocationID -- "* ]]; then
+		# Wie systemctl: je Einheit ein Block, dazwischen eine Leerzeile.
+		shift 5
+		for n in "\$@"; do
+			[[ \$n == "\$1" ]] || echo
+			echo "Id=\$n"
+			grep '^InvocationID=' "$T/unit/\$n" 2>/dev/null || echo "InvocationID="
+		done
 	else
 		cat "$T/unit/\$u" 2>/dev/null
 	fi
@@ -112,9 +127,13 @@ fake() {
 # self CGROUP   Die cgroup dieses Aufrufs (/proc/self/cgroup).
 self() { mkdir -p "$T/proc/self" && echo "0::$1" >"$T/proc/self/cgroup"; }
 self /user.slice/user-1000.slice/session-1.scope
-# unit NAME TRANSIENT CGROUP [UNIT-DATEI] [EXECSTART]   Eine laufende Einheit für die Attrappe von systemctl.
+# unit NAME TRANSIENT CGROUP [UNIT-DATEI] [EXECSTART] [DROP-INS]   Eine laufende Einheit für die
+#   Attrappe von systemctl. Jeder Aufruf startet sie (neu): Sie bekommt eine neue InvocationID.
+INV=0
 unit() {
-	printf 'Transient=%s\nActiveState=active\nControlGroup=%s\nFragmentPath=%s\nExecStart=%s\n' "$2" "$3" "${4:-}" "${5:-}" >"$T/unit/$1"
+	INV=$((INV + 1))
+	printf 'Transient=%s\nActiveState=active\nControlGroup=%s\nFragmentPath=%s\nDropInPaths=%s\nExecStart=%s\nInvocationID=%032x\n' \
+		"$2" "$3" "${4:-}" "${6:-}" "${5:-}" "$INV" >"$T/unit/$1"
 	echo "$1 loaded active running x" >>"$T/units"
 }
 # spawn   Startet sleep losgelöst (nicht als Kind dieses Tests) und gibt die PID aus.
@@ -196,6 +215,23 @@ printf 'j\n' >"$T/tty"
 bash "$F" an 30 >"$T/out" 2>&1
 RC=$?
 check "über ein Pseudo-Terminal (SSH, tmux), auch mit j: abgelehnt" '[[ $RC == 2 && ! -s $T/systemd-run.log ]] && grep -q "Verlängern nicht von einer Konsole" "$LOG"'
+# Wie unter sudo-rs: sudo und sein Überwacher behalten die reale UID des Technikers (nur die
+# effektive ist 0), der Überwacher sitzt an einem eigenen Pseudo-Terminal.
+fake $$ 1000 0 4194399112 "" "sudo lf-freigabe an 30" "$T/bin/sudo" "$PTS"
+fake 4194399112 1000 0 4194399101 "" "sudo lf-freigabe an 30" "$T/bin/sudo" "$TTY1"
+fake 4194399101 1000 1000 1 "" "bash" "" "$TTY1"
+: >"$T/systemd-run.log"
+printf 'j\n' >"$T/tty"
+bash "$F" an 30 >"$T/out" 2>&1
+RC=$?
+check "unter sudo-rs an der Konsole mit j: verlängert (GHSA-799j-44qx-x7xj)" '[[ $RC == 0 ]] && grep -q -- "--on-active=30min" "$T/systemd-run.log" && tail -n 1 "$LOG" | grep -q "verlängert an der Konsole von rescue"'
+fake 4194399112 1000 0 4194399101 "" "sudo lf-freigabe an 30" "$T/bin/sudo" "$PTS"
+fake 4194399101 1000 1000 1 "" "bash" "" "$PTS"
+: >"$T/systemd-run.log"
+printf 'j\n' >"$T/tty"
+bash "$F" an 30 >"$T/out" 2>&1
+RC=$?
+check "unter sudo-rs über ein Pseudo-Terminal, auch mit j: abgelehnt" '[[ $RC == 2 && ! -s $T/systemd-run.log ]]'
 # Wie "sudo systemd-run lf-freigabe an": Elternprozess PID 1, keine Umgebung von sudo.
 fake $$ 0 0 1
 printf 'j\n' >"$T/tty"
@@ -237,15 +273,31 @@ rm -rf "$SNAP"
 : >"$T/units"
 : >"$LOG"
 : >"$T/systemctl.log"
-touch -d '-2 minutes' "$T/unitfiles/a.service" "$T/unitfiles/getty@.service"
+touch -d '-2 minutes' "$T/unitfiles/a.service" "$T/unitfiles/getty@.service" "$T/unitfiles/b.service" "$T/unitfiles/c.service"
 unit a.service no /system.slice/a.service "$T/unitfiles/a.service"
+# Laufen schon vor der Freigabe: vorübergehende Einheiten und Dienste aus Unit-Dateien.
+unit run-u5.service yes /system.slice/run-u5.service
+unit run-u6.service yes /system.slice/run-u6.service
+unit b.service no /system.slice/b.service "$T/unitfiles/b.service"
+unit c.service no /system.slice/c.service "$T/unitfiles/c.service"
 echo 1 >"$T/atq"
 echo "* * * * * root true" >"$T/cron.d/alt"
 fake $$ 0 0 4194399001
 fake 4194399001 1000 1000 1 "" "bash"
 bash "$F" an 30 >"$T/out" 2>&1
-check "Freischalten hält fest, was es schon gab" '[[ -e $RULE ]] && grep -qx a.service "$SNAP/units" && grep -qx 1 "$SNAP/at" && grep -q "/cron.d/alt " "$SNAP/cron"'
+check "Freischalten hält fest, was es schon gab (Einheiten mit InvocationID)" '[[ -e $RULE ]] && grep -qE "^a\.service [0-9a-f]{32}$" "$SNAP/units" && grep -qx 1 "$SNAP/at" && grep -q "/cron.d/alt " "$SNAP/cron"'
 touch -d '-1 minute' "$SNAP/units"
+# Unter einem Namen von vorher (neue InvocationID): run-u5 gestoppt und neu angelegt, b neu
+# gestartet mit einer neuen Ergänzung (systemctl edit --runtime), c nur neu gestartet. run-u6
+# läuft unverändert weiter. e hat eine Ergänzung, deren Pfad systemctl nicht ausgibt (Leerzeichen),
+# f eine Unit-Datei, die es nicht mehr gibt.
+unit run-u5.service yes /system.slice/run-u5.service
+mkdir -p "$T/unitfiles/b.service.d"
+touch "$T/unitfiles/b.service.d/override.conf"
+unit b.service no /system.slice/b.service "$T/unitfiles/b.service" "" "$T/unitfiles/b.service.d/override.conf"
+unit c.service no /system.slice/c.service "$T/unitfiles/c.service"
+unit e.service no /system.slice/e.service "$T/unitfiles/c.service" "" "[unprintable]"
+unit f.service no /system.slice/f.service "$T/unitfiles/weg.service"
 # Während der Freigabe entstanden: Einheiten, ein at-Auftrag, eine cron-Datei, linger.
 unit run-u7.service yes /system.slice/run-u7.service
 touch "$T/unitfiles/boese.timer"
@@ -299,7 +351,9 @@ check "jeder root-Prozess in den cgroups von Claude ist beendet, auch abgekoppel
 check "mit der Freigabe gestartet, in der angehaltenen cgroup: gleich KILL, ohne auf TERM zu warten" '! kill -0 "$Q10" 2>/dev/null && grep -q "beendet: $Q10 sleep 300 (KILL, angehalten)" "$LOG"'
 check "Claude selbst, sudo, Jobs der Grundregel und chrome-sandbox laufen weiter" 'kill -0 "$Q2" 2>/dev/null && kill -0 "$Q3" 2>/dev/null && kill -0 "$Q4" 2>/dev/null && kill -0 "$Q5" 2>/dev/null && kill -0 "$Q7" 2>/dev/null'
 check "neue Einheiten und Timer sind gestoppt" 'grep -qx "kill -s KILL run-u7.service" "$T/systemctl.log" && grep -qx "stop run-u7.service" "$T/systemctl.log" && grep -qx "stop boese.timer" "$T/systemctl.log"'
-check "Rettungen, Anmeldungen des Technikers, Claudes Sitzung und ältere Einheiten bleiben" '! grep -qE "^(stop|kill -s KILL|freeze) (lf-claude-rettung-sdb.service|session-5.scope|run-u9.scope|getty@tty2.service|a.service)$" "$T/systemctl.log"'
+check "Rettungen, Anmeldungen des Technikers, Claudes Sitzung und ältere Einheiten bleiben, auch nur neu gestartet" '! grep -qE "^(stop|kill -s KILL|freeze) (lf-claude-rettung-sdb.service|session-5.scope|run-u9.scope|getty@tty2.service|a.service|run-u6.service|c.service)$" "$T/systemctl.log"'
+check "unter einem Namen von vorher neu angelegt oder mit neuer Ergänzung neu gestartet: gestoppt" 'grep -qx "stop run-u5.service" "$T/systemctl.log" && grep -qF "beendet: Einheit run-u5.service" "$LOG" && grep -qx "stop b.service" "$T/systemctl.log"'
+check "Ergänzung, deren Pfad systemctl nicht ausgibt, oder gelöschte Unit-Datei: gestoppt" 'grep -qx "stop e.service" "$T/systemctl.log" && grep -qx "stop f.service" "$T/systemctl.log"'
 check "ntfs-3g einer nur lesend eingehängten Quelle bleibt, die Quelle verschwindet nicht (GHSA-799j-44qx-x7xj)" '! grep -qxF -e "stop $NT" -e "kill -s KILL $NT" -e "freeze $NT" "$T/systemctl.log" && ! grep -qF "beendet: Einheit $NT" "$LOG"'
 check "Dienste, die nur wie ntfs-3g heißen, sind gestoppt" 'n=0; for u in sdb2 sdb3 sdb4 sdb5; do grep -qxF "stop lf-ntfs3g-mnt-lf\x2dimage-$u.service" "$T/systemctl.log" && n=$((n + 1)); done; grep -qxF "stop lf-ntfs3g-x.service" "$T/systemctl.log" && ((n == 4))'
 check "der neue at-Auftrag ist entfernt, der alte bleibt" 'grep -qx 2 "$T/atrm.log" && ! grep -qx 1 "$T/atrm.log"'
@@ -354,6 +408,7 @@ echo "Hinweise für Techniker und Claude:"
 check "der Freigabe-Dialog sagt, dass das Ende auch laufende root-Jobs von Claude beendet" 'grep -q "Am Ende der Freigabe beendet Leuchtfeuer, was Claude damit als root gestartet hat, auch mitten im Schreiben." rescue/lib/claude.sh'
 check "Dialog und Anleitung: sicher endet root-Zugriff nur mit einem Neustart" '(($(grep -c "Sicher endet root-Zugriff nur mit einem Neustart" rescue/lib/claude.sh) >= 4)) && grep -q "Sicher endet root-Zugriff aber nur mit einem Neustart" docs/anleitung.md'
 check "Verlängern im Dialog: Rückfrage an der Konsole, eine Ablehnung wird gemeldet" 'grep -q "Rückfrage hier an der Konsole" rescue/lib/claude.sh && grep -q "Nicht verlängert. Details im Protokoll." rescue/lib/claude.sh'
+check "Freischalten und Verlängern im Dialog laufen direkt am Terminal, nicht über run (sudo-rs, GHSA-799j-44qx-x7xj)" '! grep -q "run sudo lf-freigabe an" rescue/lib/claude.sh &&grep -qxF "	sudo lf-freigabe an \"\$1\" || rc=\$?" rescue/lib/claude.sh && grep -qF "claude_freigabe_an \"\$min\" ||" rescue/lib/claude.sh && grep -qF "if claude_freigabe_an 30; then" rescue/lib/claude.sh'
 check "CLI und Desktop laufen in der Slice, die lf-freigabe am Ende prüft" '[[ $(sed -n "s/^CLAUDE_SLICE=//p" rescue/lib/claude.sh) == "$(sed -n "s/^SLICE=//p" rescue/bin/lf-freigabe)" ]] && grep -q "claude_scope sh -c" rescue/lib/claude.sh && grep -qF -- "--slice=\"\$CLAUDE_SLICE\"" rescue/lib/claude-desktop-start'
 check "lf-freigabe lässt genau die ntfs-3g-Dienste gelten, die part_mount_ro startet (Name, Optionen, Einhängepunkt)" 'grep -qF "ntfs3g_ro ro,nodev,nosuid,noexec,recover \"\$part\" \"\$mp\"" rescue/lib/recover.sh && grep -qF "unit=\"lf-ntfs3g-\$(systemd-escape --path -- \"\$3\").service\"" rescue/lib/recover.sh && grep -qF -- "-o ro,nodev,nosuid,noexec,recover (/dev/[^ ]+) ($(sed -n "s/^LF_IMAGE_MNT=\"\(.*\)\"$/\1/p" rescue/lib/common.sh)/" rescue/bin/lf-freigabe && grep -qF "[[ \$1 == \"lf-ntfs3g-\$(systemd-escape --path -- \"\$mp\").service\" ]]" rescue/bin/lf-freigabe'
 check "CLAUDE.md: lange Kopien nur über lf-aufgabe, nie direkt mit sudo" 'tr "\n" " " <rescue/claude/CLAUDE.md | grep -q "Lange Kopien (dd, ddrescue, partclone) startest du auch dann nur über lf-aufgabe, nie direkt mit sudo"'

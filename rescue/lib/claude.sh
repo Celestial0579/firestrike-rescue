@@ -42,6 +42,17 @@ claude_freigabe_hinweis() {
 	return 0
 }
 
+# claude_freigabe_an MINUTEN   sudo lf-freigabe an, direkt am Terminal und nicht über run: Solange
+#   Claude root hat, fragt lf-freigabe dort nach. Mit umgeleiteter Ausgabe startet sudo-rs den
+#   Befehl im Hintergrund seines Pseudo-Terminals, ein getipptes "j" käme dort nie an.
+claude_freigabe_an() {
+	local rc=0
+	log "\$ sudo lf-freigabe an $1"
+	sudo lf-freigabe an "$1" || rc=$?
+	log "  -> rc=$rc"
+	return "$rc"
+}
+
 # claude_freigabe_menu   Volles sudo für Claude freischalten, verlängern oder beenden. Nur hier
 #   und mit sudo lf-freigabe an der Konsole, nie durch Claude selbst.
 claude_freigabe_menu() {
@@ -50,7 +61,7 @@ claude_freigabe_menu() {
 	if [[ $s == aus ]]; then
 		ui_yesno "Claude-Freigabe" "Claude arbeitet mit den lf-Werkzeugen: Diagnose, Quelle nur lesend einhängen, Retten und Kopieren auf das bestätigte Ziel.\n\nMit der Freigabe bekommt Claude volles sudo, für diese Sitzung und eine begrenzte Zeit. Dann kann Claude alles, auch Quell-Disks beschreiben, formatieren und partitionieren. Die Sperre in Claude Code fragt weiter nach, ist aber keine Grenze mehr. Am Ende der Freigabe beendet Leuchtfeuer, was Claude damit als root gestartet hat, auch mitten im Schreiben. Was sich Claude als root selbst einrichtet, findet Leuchtfeuer aber nicht sicher: Sicher endet root-Zugriff nur mit einem Neustart.\n\nNur freischalten, wenn eine Aufgabe es wirklich braucht. Freischalten?" --defaultno || return 0
 		min=$(ui_input "Claude-Freigabe" "Für wie viele Minuten? (1 bis 240)" 30) || return 0
-		run sudo lf-freigabe an "$min" || { ui_msg "Claude-Freigabe" "Nicht freigeschaltet. Details im Protokoll."; return 0; }
+		claude_freigabe_an "$min" || { ui_msg "Claude-Freigabe" "Nicht freigeschaltet. Details im Protokoll."; return 0; }
 		log "Claude-Freigabe: an, $min Minuten"
 		ui_msg "Claude-Freigabe" "Claude hat volles sudo ($(lf-freigabe status)).\n\nDanach gilt wieder nur lf-lesen und lf-aufgabe. Sicher endet root-Zugriff nur mit einem Neustart, am besten vor dem nächsten Kunden."
 		return 0
@@ -68,7 +79,7 @@ claude_freigabe_menu() {
 		# lf-freigabe fragt selbst am Terminal nach: Verlängern gilt nur mit einem "j" hier.
 		clear
 		echo "Claude-Freigabe verlängern"
-		if run sudo lf-freigabe an 30; then
+		if claude_freigabe_an 30; then
 			log "Claude-Freigabe: verlängert"
 		else
 			ui_msg "Claude-Freigabe" "Nicht verlängert. Details im Protokoll."
