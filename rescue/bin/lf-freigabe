@@ -424,7 +424,8 @@ unit_info() {
 		[[ -n $k ]] && ui[$k]=${ui[$k]+${ui[$k]}$'\n'}$v
 	done < <(systemctl show -p Transient,ActiveState,ControlGroup,FragmentPath,DropInPaths,ExecStart,Type,MainPID \
 		-p ExecCondition,ExecStartPre,ExecStartPost,ExecReload,ExecStop,ExecStopPost,UnsetEnvironment \
-		-p Environment,EnvironmentFiles,RootDirectory,RootImage,User,OnFailure,OnSuccess,Upholds "$1" 2>/dev/null)
+		-p Environment,EnvironmentFiles,RootDirectory,RootImage,User,OnFailure,OnSuccess,Upholds \
+		-p StandardInput,StandardOutput,StandardError,Restart "$1" 2>/dev/null)
 	return 0
 }
 
@@ -445,6 +446,10 @@ unit_changed() {
 # systemd-run ihn ohne weitere Angaben an. UnsetEnvironment muss genau ENV_UNSAFE sein.
 KEPT_EMPTY=(DropInPaths ExecCondition ExecStartPre ExecStartPost ExecReload ExecStop ExecStopPost
 	Environment EnvironmentFiles RootDirectory RootImage User OnFailure OnSuccess Upholds)
+# Was genau so sein muss, wie systemd-run es ohne weitere Angaben setzt: Mit einer Datei als Ein-
+# oder Ausgabe läse oder schriebe ein Dienst, der bleibt, eine Datei, die root gewählt hat (etwa
+# lf-aufgabe), mit Restart= startete er nach dem Ende neu, samt seinen Abhängigkeiten.
+KEPT_SAME=(StandardInput=null StandardOutput=journal StandardError=inherit Restart=no)
 
 # unsafe_env PID   Hat PID eine Variable aus ENV_UNSAFE, sonst eine LD_-Variable oder eine Funktion
 #   für bash (BASH_FUNC_)? Ist die Umgebung nicht lesbar (ohne root), gilt sie als unsicher,
@@ -456,6 +461,25 @@ unsafe_env() {
 		return
 	fi
 	grep -qE "^(LD_[^=]*|BASH_FUNC_[^=]*|${ENV_UNSAFE// /|})=" <<<"$env"
+}
+
+# env_from_snapshot PID CGROUP   Hat PID nur Variablen, die beim Freischalten genau so in der
+#   Umgebung des Managers standen (SNAP/menv), dazu die, die systemd jedem Dienst selbst gibt, und
+#   USER=root? MEMORY_PRESSURE_WATCH darf nur die Datei der eigenen cgroup nennen: Programme mit
+#   sd-event schreiben MEMORY_PRESSURE_WRITE dorthin. Ein Dienst erbt die Umgebung des Managers,
+#   wie sie bei seinem Start war: Hat root während der Freigabe etwa einen eigenen Ordner vorn in
+#   PATH gesetzt (systemctl set-environment), setzt das Ende zwar den Manager zurück
+#   (menv_restore), der Dienst liefe aber mit den Programmen von root weiter. Ohne Schnappschuss
+#   oder lesbare Umgebung: nein.
+env_from_snapshot() {
+	local bad
+	[[ -s $SNAP/menv ]] || return 1
+	bad=$(jq -Rrs --slurpfile s "$SNAP/menv" --arg w "MEMORY_PRESSURE_WATCH=/sys/fs/cgroup$2/memory.pressure" '
+		def systemd: (split("=")[0]) as $n | if $n == "MEMORY_PRESSURE_WATCH" then . == $w
+			else ($n | IN("INVOCATION_ID", "JOURNAL_STREAM", "SYSTEMD_EXEC_PID", "MEMORY_PRESSURE_WRITE")) or . == "USER=root" end;
+		split("\u0000")[] | select(length > 0) | select(systemd or IN($s[]) | not) | split("=")[0]' \
+		2>/dev/null <"/proc/$1/environ") || return 1
+	[[ -z $bad ]]
 }
 
 # descends PID VORFAHR   Stammt PID von VORFAHR ab (oder ist es selbst)?
@@ -489,13 +513,15 @@ chain_ok() {
 #   prüft kept_unit für beide Arten dasselbe, nur die Erwartung je Art (Name, Programm, Typ,
 #   Argumente) ist eine andere:
 #   - die Einheit (ui von unit_info): vorübergehend wie von systemd-run, ohne Drop-ins, genau ein
-#     Befehl, alles aus KEPT_EMPTY leer, UnsetEnvironment genau ENV_UNSAFE;
+#     Befehl, alles aus KEPT_EMPTY leer, KEPT_SAME wie von systemd-run, UnsetEnvironment genau
+#     ENV_UNSAFE;
 #   - die Argumente: bei ntfs-3g Optionen, Quelle und Einhängepunkt wie in ntfs3g_ro und der Name
 #     zum Einhängepunkt; bei einer Rettung der Name zum Fallordner, und lf-aufgabe selbst prüft
 #     Fallordner und Quelle wie bei retten (nur mit unveränderter Kette, chain_ok);
 #   - der Hauptprozess: genau dieses Programm mit genau diesen Argumenten, mit derselben Wurzel und
-#     denselben Einhängungen wie systemd; kein Prozess im Dienst mit einer Variablen, die fremden
-#     Code lädt (unsafe_env).
+#     denselben Einhängungen wie systemd und nur mit der Umgebung des Managers vom Freischalten
+#     (env_from_snapshot); kein Prozess im Dienst mit einer Variablen, die fremden Code lädt
+#     (unsafe_env).
 #   Jeder Prozess im Dienst (auch in einer Unter-cgroup) muss vom Hauptprozess abstammen. Andere
 #   stehen danach in KEPT_FOREIGN,
 #   stop_new_units beendet sie. Prozesse prüfen kann nur root. Was root an einem laufenden Prozess
@@ -514,6 +540,9 @@ kept_unit() {
 	[[ ${ui[UnsetEnvironment]:-} == "$ENV_UNSAFE" ]] || return 1
 	for p in "${KEPT_EMPTY[@]}"; do
 		[[ -z ${ui[$p]:-} ]] || return 1
+	done
+	for p in "${KEPT_SAME[@]}"; do
+		[[ ${ui[${p%%=*}]:-} == "${p#*=}" ]] || return 1
 	done
 	re='^[{] path=([^ ]+) ; argv[[][]]=(.*) ; ignore_errors=no ; '
 	[[ ${ui[ExecStart]:-} =~ $re && ${ui[ExecStart]} != *$'\n'* ]] || return 1
@@ -553,6 +582,7 @@ kept_unit() {
 	mapfile -t procs <<<"$list"
 	[[ " ${procs[*]} " == *" $pid "* ]] || return 1
 	unsafe_env "$pid" && return 1
+	env_from_snapshot "$pid" "${ui[ControlGroup]}" || return 1
 	for p in "${procs[@]}"; do
 		# Ein Prozess, der inzwischen beendet ist, zählt nicht.
 		[[ $p =~ ^[0-9]+$ && $p != "$pid" ]] || continue
@@ -697,7 +727,9 @@ menv_names() {
 # menv_changed   Namen der Variablen, die seit dem Freischalten neu, geändert oder weg sind.
 menv_changed() {
 	local now
-	[[ -s $SNAP/menv ]] || return 0
+	[[ -e $SNAP/menv ]] || return 0
+	# Leer, wenn systemd beim Freischalten nicht antwortete (snapshot): Dann ist nichts zu vergleichen.
+	[[ -s $SNAP/menv ]] || { echo "(beim Freischalten nicht lesbar)"; return 0; }
 	now=$(menv) || { echo "(nicht lesbar)"; return 0; }
 	comm -3 "$SNAP/menv" <(echo "$now") | sed 's/^\t//' | menv_names
 }

@@ -18,11 +18,13 @@
 #     so aussieht, wie systemd-run ihn anlegt: keine weiteren Befehle, keine Umgebung, Wurzel oder
 #     Drop-ins, und der laufende Prozess ist genau dieses ntfs-3g (F12, je Eigenschaft ein Lockvogel).
 #   - Ebenso eine Rettung, die lf-aufgabe retten oder fortsetzen startet (start_rescue): nur genau
-#     so, wie systemd-run sie anlegt, und nur wenn lf-aufgabe pruefen-rettung die Argumente annimmt
+#     so, wie systemd-run sie anlegt (auch Ein- und Ausgabe, kein Neustart, nur mit der Umgebung des
+#     Managers vom Freischalten), und nur wenn lf-aufgabe pruefen-rettung die Argumente annimmt
 #     und die Kette der Grundregel unverändert ist. Ein fremder Prozess in einem Dienst, der bleibt,
 #     wird beendet (F16).
 #   - Die Umgebung des systemd-Managers ist am Ende wie beim Freischalten, ins Protokoll kommen nur
-#     die Namen; was sich nicht zurücksetzen lässt, ist ein Rückstand. Jeder Dienst, den
+#     die Namen; was sich nicht zurücksetzen lässt, ist ein Rückstand, ebenso eine Umgebung, die
+#     sich beim Freischalten nicht lesen ließ. Jeder Dienst, den
 #     lf-freigabe, recover.sh und lf-aufgabe starten, erbt LD_PRELOAD und Co. nicht (F13).
 #   - Wege zu root ohne laufenden Prozess sind ein Rückstand: geänderte Konten, PAM, polkit, SSH,
 #     modprobe, setuid-Dateien, capabilities, Dateien unter /usr, Kernel-Einstellungen und
@@ -145,7 +147,10 @@ show)
 			grep '^InvocationID=' "$T/unit/\$n" 2>/dev/null || echo "InvocationID="
 		done
 	else
-		cat "$T/unit/\$u" 2>/dev/null
+		# Nur die Eigenschaften, nach denen -p fragt (wie systemctl).
+		want=" "
+		while ((\$#)); do [[ \$1 == -p ]] && { want+="\${2//,/ } "; shift; }; shift; done
+		while IFS= read -r l; do [[ \$want == *" \${l%%=*} "* ]] && printf '%s\n' "\$l"; done <"$T/unit/\$u" 2>/dev/null
 	fi
 	;;
 stop) [[ -f "$T/unit/\$u" ]] && sed -i 's/^ActiveState=.*/ActiveState=inactive/' "$T/unit/\$u" ;;
@@ -163,8 +168,10 @@ set-environment | unset-environment)
 esac
 exit 0
 MOCK
+# Mit der Datei menv-kaputt antwortet busctl nicht.
 cat >"$T/bin/busctl" <<MOCK
 #!/bin/bash
+[[ -e "$T/menv-kaputt" ]] && exit 1
 [[ "\$*" == "--json=short get-property org.freedesktop.systemd1 /org/freedesktop/systemd1 org.freedesktop.systemd1.Manager Environment" ]] || exit 1
 jq -c '{type: "as", data: .}' "$T/menv.json"
 MOCK
@@ -217,7 +224,8 @@ PTS=$(((136 << 8) | 3))
 fake() {
 	mkdir -p "$T/proc/$1"
 	printf 'Name:\tx\nState:\tS (sleeping)\nPPid:\t%s\nUid:\t%s\t%s\t%s\t%s\n' "$4" "$2" "$3" "$3" "$3" >"$T/proc/$1/status"
-	printf '%s' "${5:-}" | tr '|' '\0' >"$T/proc/$1/environ"
+	# Wie der Kernel: jede Variable mit \0 am Ende.
+	if [[ -n ${5:-} ]]; then printf '%s|' "$5" | tr '|' '\0'; fi >"$T/proc/$1/environ"
 	printf '%s' "${6:-x}" | tr ' ' '\0' >"$T/proc/$1/cmdline"
 	local cmd=${6:-x}
 	cmd=${cmd%% *}
@@ -422,6 +430,14 @@ unit lf-claude-rettung-sdb.service yes /system.slice/lf-claude-rettung-sdb.servi
 unit session-5.scope yes /user.slice/user-1000.slice/session-5.scope
 unit run-u9.scope yes /lf.slice/lf-claude.slice/run-u9.scope
 unit getty@tty2.service no /system.slice/system-getty.slice/getty@tty2.service "$T/unitfiles/getty@.service"
+# Ein- und Ausgabe und Neustart, wie systemd-run sie für ntfs3g_ro und start_rescue setzt.
+SAME=$'StandardInput=null\nStandardOutput=journal\nStandardError=inherit\nRestart=no'
+# genv PID EINHEIT   Die Umgebung, mit der systemd einen Dienst startet, der während der Freigabe
+#   entsteht: die des Managers beim Freischalten (SNAP/menv) und was systemd je Dienst setzt.
+genv() {
+	printf '%s|USER=root|INVOCATION_ID=%032x|JOURNAL_STREAM=8:4711|SYSTEMD_EXEC_PID=%s|MEMORY_PRESSURE_WATCH=/sys/fs/cgroup/system.slice/%s/memory.pressure|MEMORY_PRESSURE_WRITE=c29tZSAyMDAwMDAgMjAwMDAwMAA=' \
+		"$(jq -rs 'join("|")' "$SNAP/menv")" "$1" "$1" "$2"
+}
 # ntfs-3g für eine Quelle, die lf-aufgabe während der Freigabe eingehängt hat (ntfs3g_ro), und
 # Dienste, die nur so heißen: anderes Programm, andere Optionen, eine Datei als Quelle, ein
 # Gerät, das der Kernel nicht kennt, ein Name, der nicht zum Einhängepunkt passt.
@@ -434,11 +450,11 @@ NP=4194399300
 ntfs() {
 	NP=$((NP + 1))
 	unit "$1" yes "/system.slice/$1" "/run/systemd/transient/$1" "{ path=$2 ; argv[]=$2 -o $3 $4 $5 ; ignore_errors=no ; start_time=[n/a] ; stop_time=[n/a] ; pid=0 ; code=(null) ; status=0/0 }"
-	printf 'Type=forking\nMainPID=%s\nUnsetEnvironment=%s\nEnvironment=\nRootDirectory=\nRootImage=\nUser=\nOnFailure=\nOnSuccess=\nUpholds=\n' "$NP" "$ENV_UNSAFE" >>"$T/unit/$1"
+	printf 'Type=forking\nMainPID=%s\nUnsetEnvironment=%s\nEnvironment=\nRootDirectory=\nRootImage=\nUser=\nOnFailure=\nOnSuccess=\nUpholds=\n%s\n' "$NP" "$ENV_UNSAFE" "$SAME" >>"$T/unit/$1"
 	mkdir -p "$T/cg/system.slice/$1" "$T/proc/1/ns"
 	echo "$NP" >"$T/cg/system.slice/$1/cgroup.procs"
 	: >>"$T/proc/1/ns/mnt"
-	fake "$NP" 0 0 1 "PATH=/usr/sbin:/usr/bin|INVOCATION_ID=0123abcd|LANG=C.UTF-8" "$2 -o $3 $4 $5" "$T/bin/ntfs-3g"
+	fake "$NP" 0 0 1 "$(genv "$NP" "$1")" "$2 -o $3 $4 $5" "$T/bin/ntfs-3g"
 	ln -s / "$T/proc/$NP/root"
 	mkdir -p "$T/proc/$NP/ns" && ln -s "$T/proc/1/ns/mnt" "$T/proc/$NP/ns/mnt"
 }
@@ -481,8 +497,14 @@ spoof locpath && printf 'LOCPATH=/var/lib/lf-claude/locale\0PATH=/usr/bin\0' >"$
 spoof argv && printf '%s\0' /usr/bin/ntfs-3g -o ro,nodev,nosuid,noexec,recover /dev/sdb1 /mnt/lf-image/f12-argv -o dev,suid >"$T/proc/$NP/cmdline"
 spoof unsetenv && prop "$SP" UnsetEnvironment ""
 spoof bashfunc && printf 'PATH=/usr/bin\0BASH_FUNC_x%%%%=() { :; }\0' >"$T/proc/$NP/environ"
+# Eine Umgebung, die nicht vom Freischalten stammt (ein Ordner von root vorn in PATH), Ausgabe in
+# eine Datei (F16).
+spoof path && sed -z -i 's|^PATH=|PATH=/var/lib/lf-claude/bin:|' "$T/proc/$NP/environ"
+spoof stdout && prop "$SP" StandardOutput "append:/usr/local/bin/lf-aufgabe"
 # Ein laufender Prozess mit LD_PRELOAD neben ntfs-3g in der cgroup
 spoof member && { NM=$(spawn); fake "$NM" 0 0 "$NP" "LD_PRELOAD=/var/lib/lf-claude/x.so" "sleep 300"; echo "$NM" >>"$T/cg/system.slice/$SP/cgroup.procs"; }
+# Ein Kind von ntfs-3g mit einer Funktion für bash: Die Umgebung eines Kindes prüft nur unsafe_env.
+spoof memberfunc && { NB=$(spawn); fake "$NB" 0 0 "$NP" "PATH=/usr/bin|BASH_FUNC_x%%=() { :; }" "sleep 300"; echo "$NB" >>"$T/cg/system.slice/$SP/cgroup.procs"; }
 # Ein fremder Prozess in der cgroup des echten Dienstes: beendet, der Dienst bleibt (F16).
 NF=$(spawn)
 fake "$NF" 0 0 1 "PATH=/usr/bin" "sleep 300"
@@ -499,10 +521,10 @@ RP=4194399500
 rescue() {
 	RP=$((RP + 1))
 	unit "$1" yes "/system.slice/$1" "/run/systemd/transient/$1" "{ path=/usr/local/bin/lf-rescue-run ; argv[]=/usr/local/bin/lf-rescue-run $2 $3 --no-pause ; ignore_errors=no ; start_time=[n/a] ; stop_time=[n/a] ; pid=0 ; code=(null) ; status=0/0 }"
-	printf 'Type=simple\nMainPID=%s\nUnsetEnvironment=%s\nEnvironment=\nRootDirectory=\nRootImage=\nUser=\nOnFailure=\nOnSuccess=\nUpholds=\n' "$RP" "$ENV_UNSAFE" >>"$T/unit/$1"
+	printf 'Type=simple\nMainPID=%s\nUnsetEnvironment=%s\nEnvironment=\nRootDirectory=\nRootImage=\nUser=\nOnFailure=\nOnSuccess=\nUpholds=\n%s\n' "$RP" "$ENV_UNSAFE" "$SAME" >>"$T/unit/$1"
 	mkdir -p "$T/cg/system.slice/$1" "$T/proc/1/ns"
 	echo "$RP" >"$T/cg/system.slice/$1/cgroup.procs"
-	fake "$RP" 0 0 1 "PATH=/usr/sbin:/usr/bin|INVOCATION_ID=0123abcd" "bash /usr/local/bin/lf-rescue-run $2 $3 --no-pause" /usr/bin/bash
+	fake "$RP" 0 0 1 "$(genv "$RP" "$1")" "bash /usr/local/bin/lf-rescue-run $2 $3 --no-pause" /usr/bin/bash
 	ln -s / "$T/proc/$RP/root"
 	mkdir -p "$T/proc/$RP/ns" && ln -s "$T/proc/1/ns/mnt" "$T/proc/$RP/ns/mnt"
 }
@@ -543,6 +565,18 @@ rspoof exe && ln -sfn "$T/bin/anderes" "$T/proc/$RP/exe"
 rspoof cmdline && printf '%s\0' bash -c /var/lib/lf-claude/x /mnt/lf-target/LF/ok-cmdline /dev/sdb >"$T/proc/$RP/cmdline"
 rspoof ldpreload && printf 'PATH=/usr/bin\0LD_PRELOAD=/var/lib/lf-claude/x.so\0' >"$T/proc/$RP/environ"
 rspoof bashenv && printf 'BASH_ENV=/var/lib/lf-claude/x\0' >"$T/proc/$RP/environ"
+# Umgebung nicht vom Freischalten: ein Ordner von root vorn in PATH (systemctl set-environment
+# während der Freigabe), eine Variable mehr. Ein- oder Ausgabe in eine Datei, Neustart.
+rspoof path && sed -z -i 's|^PATH=|PATH=/var/lib/lf-claude/bin:|' "$T/proc/$RP/environ"
+rspoof extra && printf 'HANG_SYS=/var/lib/lf-claude/sys\0' >>"$T/proc/$RP/environ"
+rspoof stdin && prop "$RS" StandardInput "file:/var/lib/lf-claude/x"
+rspoof stdout && prop "$RS" StandardOutput "append:/usr/local/bin/lf-aufgabe"
+rspoof stderr && prop "$RS" StandardError "append:/etc/sudoers.d/lf-claude"
+rspoof restart && prop "$RS" Restart always
+# MEMORY_PRESSURE_WATCH nennt eine andere Datei als die der eigenen cgroup (sd-event schriebe
+# MEMORY_PRESSURE_WRITE dorthin), USER nicht root.
+rspoof watch && sed -z -i 's|^MEMORY_PRESSURE_WATCH=.*|MEMORY_PRESSURE_WATCH=/etc/sudoers.d/lf-claude|' "$T/proc/$RP/environ"
+rspoof userenv && sed -z -i 's|^USER=root$|USER=lf-claude|' "$T/proc/$RP/environ"
 # Der Hauptprozess liegt nicht in der cgroup des Dienstes.
 rspoof maincg && : >"$T/cg/system.slice/$RS/cgroup.procs"
 # Unter dem Namen eines anderen Falls
@@ -596,20 +630,20 @@ check "eine Rettung, wie start_rescue sie anlegt, bleibt; lf-aufgabe prüft ihre
 check "ein fremder Prozess in einer Rettung oder in ntfs-3g: beendet und protokolliert, der Dienst bleibt (F16)" '! kill -0 "$RF" 2>/dev/null && ! kill -0 "$RX" 2>/dev/null && grep -qF "beendet: $RX sleep 300 (fremd in $RU)" "$LOG" && ! kill -0 "$NF" 2>/dev/null && grep -qF "beendet: $RF sleep 300 (fremd in $RU)" "$LOG" && grep -qF "beendet: $NF sleep 300 (fremd in $NT)" "$LOG" && ! grep -qF "beendet: $RK" "$LOG"'
 check "nur der Name des eigenen Endes: gestoppt" 'grep -qxF "stop lf-claude-freigabe-ende-aus.service" "$T/systemctl.log"'
 check "nur der Name einer Rettung: gestoppt" 'grep -qxF "stop lf-claude-rettung-sdb.service" "$T/systemctl.log"'
-check "Rettungen mit einer Eigenschaft mehr, anderen Argumenten, einem anderen Namen oder Prozess: gestoppt (F16)" 'n=0; for u in "${RSPOOFS[@]}"; do grep -qxF "stop $u" "$T/systemctl.log" || { echo "    bleibt: $u"; n=$((n + 1)); }; done; ((n == 0 && ${#RSPOOFS[@]} == 18))'
-check "pruefen-rettung läuft nur für Rettungen, die sonst genau passen" 'grep -qxF "pruefen-rettung /mnt/lf-target/LF/boese /dev/sdb" "$T/aufgabe.log" && ! grep -q "ok-env\|ok-dropin\|ok-programm\|ok-cmdline" "$T/aufgabe.log"'
+check "Rettungen mit einer Eigenschaft mehr, anderer Umgebung, Ein- oder Ausgabe, anderen Argumenten, einem anderen Namen oder Prozess: gestoppt (F16)" 'n=0; for u in "${RSPOOFS[@]}"; do grep -qxF "stop $u" "$T/systemctl.log" || { echo "    bleibt: $u"; n=$((n + 1)); }; done; ((n == 0 && ${#RSPOOFS[@]} == 26))'
+check "pruefen-rettung läuft nur für Rettungen, die sonst genau passen" 'grep -qxF "pruefen-rettung /mnt/lf-target/LF/boese /dev/sdb" "$T/aufgabe.log" && ! grep -q "ok-env\|ok-dropin\|ok-programm\|ok-cmdline\|ok-path\|ok-stdout\|ok-restart" "$T/aufgabe.log"'
 check "unter einem Namen von vorher neu angelegt oder mit neuer Ergänzung neu gestartet: gestoppt" 'grep -qx "stop run-u5.service" "$T/systemctl.log" && grep -qF "beendet: Einheit run-u5.service" "$LOG" && grep -qx "stop b.service" "$T/systemctl.log"'
 check "Ergänzung, deren Pfad systemctl nicht ausgibt, oder gelöschte Unit-Datei: gestoppt" 'grep -qx "stop e.service" "$T/systemctl.log" && grep -qx "stop f.service" "$T/systemctl.log"'
 check "ntfs-3g einer nur lesend eingehängten Quelle bleibt, die Quelle verschwindet nicht (GHSA-799j-44qx-x7xj)" '! grep -qxF -e "stop $NT" -e "kill -s KILL $NT" -e "freeze $NT" "$T/systemctl.log" && ! grep -qF "beendet: Einheit $NT" "$LOG"'
 check "Dienste, die nur wie ntfs-3g heißen, sind gestoppt" 'n=0; for u in sdb2 sdb3 sdb4 sdb5; do grep -qxF "stop lf-ntfs3g-mnt-lf\x2dimage-$u.service" "$T/systemctl.log" && n=$((n + 1)); done; grep -qxF "stop lf-ntfs3g-x.service" "$T/systemctl.log" && ((n == 4))'
-check "ntfs-3g-Dienste mit einer Eigenschaft mehr oder einem Prozess, der nicht passt, sind gestoppt (F12, F13)" 'n=0; for u in "${SPOOFS[@]}"; do grep -qxF "stop $u" "$T/systemctl.log" || { echo "    bleibt: $u"; n=$((n + 1)); }; done; ((n == 0 && ${#SPOOFS[@]} == 30))'
+check "ntfs-3g-Dienste mit einer Eigenschaft mehr, anderer Umgebung oder Ausgabe oder einem Prozess, der nicht passt, sind gestoppt (F12, F13, F16)" 'n=0; for u in "${SPOOFS[@]}"; do grep -qxF "stop $u" "$T/systemctl.log" || { echo "    bleibt: $u"; n=$((n + 1)); }; done; ((n == 0 && ${#SPOOFS[@]} == 33))'
 check "der neue at-Auftrag ist entfernt, der alte bleibt" 'grep -qx 2 "$T/atrm.log" && ! grep -qx 1 "$T/atrm.log"'
 check "die neue cron-Datei ist gesperrt, nicht gelöscht; die alte bleibt" '[[ -f $T/cron.d/neu.lf-gesperrt && ! -e $T/cron.d/neu && -f $T/cron.d/alt ]]'
 check "linger für lf-claude ist aufgehoben" '[[ ! -e $T/linger/lf-claude ]] && grep -qx "disable-linger lf-claude" "$T/loginctl.log"'
 check "Reihenfolge: anhalten, Regel, Einheiten, root-Prozesse, weiterlaufen" 'a=$(line "Claude angehalten") u=$(line "beendet: Einheit run-u7.service") r=$(line "Regel entfernt") k=$(line "beendet: $Q1 ") w=$(line "Claude läuft weiter"); [[ -n $a && -n $u && -n $r && -n $k && -n $w ]] && ((a < r && r < u && u < k && k < w))'
 check "die cgroups von Claude laufen danach weiter" '[[ $(cat "$CG/cgroup.freeze") == 0 && $(cat "$CGU/cgroup.freeze") == 0 ]]'
 check "danach: status aus, Neustart empfohlen" 'aus_n'
-kill "$RK" "$RM" "$NM" 2>/dev/null
+kill "$RK" "$RM" "$NM" "$NB" 2>/dev/null
 
 echo "status ohne Regel, mit Rückstand:"
 Q9=$(spawn)
@@ -774,6 +808,31 @@ check "hängen getcap und die Prüfung einer Rettung, endet das Ende nach der H�
 check "eine Rettung, deren Prüfung hängt, ist gestoppt; die Grundregel bleibt" 'grep -qxF "stop $RU3" "$T/systemctl.log" && [[ -f $T/sudoers.d/lf-claude && ! -e $T/sudoers.d/lf-claude.lf-gesperrt ]]'
 check "eine abgebrochene Suche nach capabilities steht im Rückstand" 'grep -qE "^Suche nach capabilities abgebrochen \(rc (124|137)\)$" "$R"'
 hung_kill
+rm -f "$W/var/tmp/haengt-cap"
+: >"$T/haengt.pids"
+
+echo "Manager-Umgebung beim Freischalten nicht lesbar (F13, F16):"
+reboot_sim
+touch "$T/menv-kaputt"
+bash "$F" an 30 >"$T/out" 2>&1
+rm -f "$T/menv-kaputt"
+RU4=$(runit /mnt/lf-target/LF/ok-ohne-menv)
+rescue "$RU4" /mnt/lf-target/LF/ok-ohne-menv /dev/sdb
+bash "$F" aus >"$T/out" 2>&1
+check "nichts zu vergleichen: das Ende meldet es als Rückstand" 'grep -qxF "Manager-Umgebung: (beim Freischalten nicht lesbar)" "$R"'
+check "eine Rettung, die während dieser Freigabe gestartet ist, bleibt nicht" 'grep -qxF "stop $RU4" "$T/systemctl.log"'
+reboot_sim
+
+echo "Unsichere Variable schon beim Freischalten (F13, F16):"
+cp "$T/menv.json" "$T/menv-sauber.json"
+jq -c '. + ["LD_PRELOAD=/var/lib/lf-claude/x.so"]' "$T/menv-sauber.json" >"$T/menv.json"
+bash "$F" an 30 >"$T/out" 2>&1
+RU5=$(runit /mnt/lf-target/LF/ok-preload-vorher)
+rescue "$RU5" /mnt/lf-target/LF/ok-preload-vorher /dev/sdb
+bash "$F" aus >"$T/out" 2>&1
+check "eine Rettung mit LD_PRELOAD aus der Umgebung vom Freischalten bleibt nicht" 'grep -qxF "stop $RU5" "$T/systemctl.log"'
+cp "$T/menv-sauber.json" "$T/menv.json"
+reboot_sim
 
 echo "Hinweise für Techniker und Claude:"
 check "der Freigabe-Dialog sagt, dass das Ende auch laufende root-Jobs von Claude beendet" 'grep -q "Am Ende der Freigabe beendet Leuchtfeuer, was Claude damit als root gestartet hat, auch mitten im Schreiben." rescue/lib/claude.sh'
