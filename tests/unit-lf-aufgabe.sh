@@ -84,6 +84,12 @@ retten $dev --haengt=1
 fortsetzen fall $dev --haengt
 fortsetzen fall $dev --mehr
 fortsetzen ../x $dev --haengt
+pruefen-rettung
+pruefen-rettung /mnt/lf-target/LF/fall
+pruefen-rettung /mnt/lf-target/LF/fall $dev x
+pruefen-rettung /mnt/lf-target/LF/fall /etc/shadow
+pruefen-rettung /mnt/lf-target/LF/../x $dev
+pruefen-rettung /etc $dev
 EOF
 run einhaengen "$dev -o rw"
 check "lf-aufgabe einhaengen '$dev -o rw' (ein Argument)" '[[ $rc == 2 ]] && ! wrote'
@@ -91,6 +97,9 @@ run
 check "ohne Aktion" '[[ $rc == 2 ]] && ! wrote'
 check "ohne bestätigtes Ziel sagt lf-aufgabe, wer es bestätigt" 'run kopieren /etc/hostname; grep -q "bestätigt der Techniker im Assistenten" "$T/fehler"'
 check "jeder Aufruf steht im Protokoll, Argumente maskiert" 'run notiz "a\$(id)b" c; grep -q "Claude: notiz a\\\\\$\\\\(id\\\\)b c" "$T/run/aufgaben.log"'
+check "pruefen-rettung mit einem Argument zu viel: abgelehnt, bevor etwas anderes geprüft wird" 'run pruefen-rettung /mnt/lf-target/LF/fall "$dev" x; [[ $rc == 2 ]] && grep -q "pruefen-rettung erwartet FALLORDNER GERÄT" "$T/fehler"'
+check "pruefen-rettung ohne Argumente: ebenso" 'run pruefen-rettung; [[ $rc == 2 ]] && grep -q "pruefen-rettung erwartet FALLORDNER GERÄT" "$T/fehler"'
+check "pruefen-rettung (ruft lf-freigabe am Ende jeder Freigabe) steht nicht als Aufruf von Claude im Protokoll" 'run pruefen-rettung /mnt/lf-target/LF/fall "$dev"; [[ $rc == 2 ]] && ! grep -q "Claude: pruefen-rettung" "$T/run/aufgaben.log"'
 
 echo "lf-freigabe ohne root:"
 F=rescue/bin/lf-freigabe

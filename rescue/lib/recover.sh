@@ -263,7 +263,8 @@ IMAGE_MOUNT_OPTS=(ro nodev nosuid noexec nosymfollow)
 #   (lf-ntfs3g-<Einhängepunkt>.service), nicht als Kind des Aufrufers: Hängt Claude eine Quelle mit
 #   lf-aufgabe ein, läge ntfs-3g sonst in Claudes cgroup, und das Ende einer Claude-Freigabe hielte
 #   es an und beendete es mit allen root-Prozessen dort (lf-freigabe, GHSA-799j-44qx-x7xj).
-#   Type=forking: systemd-run kehrt zurück, wenn ntfs-3g eingehängt und sich gelöst hat. Nach dem
+#   Type=forking: systemd-run kehrt zurück, wenn ntfs-3g eingehängt und sich gelöst hat.
+#   UnsetEnvironment: ntfs-3g erbt keine Variable aus LF_ENV_UNSAFE vom Manager. Nach dem
 #   Aushängen endet ntfs-3g und mit ihm der Dienst. Was ntfs-3g meldet, steht im Journal des
 #   Dienstes, bei einem Fehler auch im Protokoll.
 ntfs3g_ro() {
@@ -271,7 +272,7 @@ ntfs3g_ro() {
 	unit="lf-ntfs3g-$(systemd-escape --path -- "$3").service"
 	# Ein Dienst vom letzten Einhängen an derselben Stelle wäre schon ausgehängt (part_mount_ro).
 	sudo systemctl stop "$unit" >/dev/null 2>&1
-	if ! run sudo systemd-run --quiet --collect --unit="$unit" -p Type=forking \
+	if ! run sudo systemd-run --quiet --collect --unit="$unit" -p Type=forking -p UnsetEnvironment="$LF_ENV_UNSAFE" \
 		--description="Leuchtfeuer: ntfs-3g, nur lesend unter $3" -- ntfs-3g -o "$1" "$2" "$3"; then
 		sudo journalctl -q -o cat -n 20 -u "$unit" >>"${LF_LOG:-/dev/null}" 2>&1
 		return 1

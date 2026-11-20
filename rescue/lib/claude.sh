@@ -34,11 +34,16 @@ claude_wayland_share() {
 	chmod 0660 "$1"
 }
 
-# claude_freigabe_hinweis   Leer, oder eine Zeile, solange Claude volles sudo hat (lf-freigabe).
+# claude_freigabe_hinweis   Leer, oder eine Zeile, solange Claude volles sudo hat (lf-freigabe), und
+#   nach einer Freigabe bis zum Neustart ("aus, Neustart empfohlen …").
 claude_freigabe_hinweis() {
 	local s
 	s=$(lf-freigabe status 2>/dev/null)
-	[[ $s == an* ]] && echo "ACHTUNG: Claude hat volles sudo ($s). Beenden: Werkzeuge > Claude-Freigabe"
+	if [[ $s == an* ]]; then
+		echo "ACHTUNG: Claude hat volles sudo ($s). Beenden: Werkzeuge > Claude-Freigabe"
+	elif [[ $s == "aus, "* ]]; then
+		echo "Hinweis: Claude hatte volles sudo, ${s#aus, }"
+	fi
 	return 0
 }
 
@@ -58,7 +63,8 @@ claude_freigabe_an() {
 claude_freigabe_menu() {
 	local s c min
 	s=$(lf-freigabe status)
-	if [[ $s == aus ]]; then
+	if [[ $s == aus || $s == "aus, "* ]]; then
+		[[ $s == aus ]] || ui_msg "Claude-Freigabe" "Nach der letzten Freigabe: ${s#aus, }. Was sich Claude damit als root eingerichtet haben kann, entfernt nur ein Neustart."
 		ui_yesno "Claude-Freigabe" "Claude arbeitet mit den lf-Werkzeugen: Diagnose, Quelle nur lesend einhängen, Retten und Kopieren auf das bestätigte Ziel.\n\nMit der Freigabe bekommt Claude volles sudo, für diese Sitzung und eine begrenzte Zeit. Dann kann Claude alles, auch Quell-Disks beschreiben, formatieren und partitionieren. Die Sperre in Claude Code fragt weiter nach, ist aber keine Grenze mehr. Am Ende der Freigabe beendet Leuchtfeuer, was Claude damit als root gestartet hat, auch mitten im Schreiben. Was sich Claude als root selbst einrichtet, findet Leuchtfeuer aber nicht sicher: Sicher endet root-Zugriff nur mit einem Neustart.\n\nNur freischalten, wenn eine Aufgabe es wirklich braucht. Freischalten?" --defaultno || return 0
 		min=$(ui_input "Claude-Freigabe" "Für wie viele Minuten? (1 bis 240)" 30) || return 0
 		claude_freigabe_an "$min" || { ui_msg "Claude-Freigabe" "Nicht freigeschaltet. Details im Protokoll."; return 0; }
@@ -73,7 +79,11 @@ claude_freigabe_menu() {
 	aus)
 		run sudo lf-freigabe aus && log "Claude-Freigabe: aus"
 		s=$(lf-freigabe status)
-		[[ $s == aus ]] || ui_msg "Claude-Freigabe" "Die Regel ist zurückgenommen, aber: $s.\n\nSicher endet root-Zugriff nur mit einem Neustart."
+		case $s in
+		aus) ;;
+		"aus, "*) ui_msg "Claude-Freigabe" "Die Freigabe ist beendet, kein Rückstand gefunden. ${s#aus, }: Sicher endet root-Zugriff nur mit einem Neustart, am besten vor dem nächsten Kunden." ;;
+		*) ui_msg "Claude-Freigabe" "Die Regel ist zurückgenommen, aber: $s.\n\nSicher endet root-Zugriff nur mit einem Neustart." ;;
+		esac
 		;;
 	mehr)
 		# lf-freigabe fragt selbst am Terminal nach: Verlängern gilt nur mit einem "j" hier.
