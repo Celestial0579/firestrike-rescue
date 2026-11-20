@@ -1250,7 +1250,9 @@ main_menu() {
 	local overview default choice hint extra=()
 	while true; do
 		ui_info "Leuchtfeuer" "Prüfe angeschlossene Disks (SMART) …"
-		overview=$(disks_overview)
+		# Direkt aufrufen, nicht in $( … ): Aus einer Subshell käme DISKS_ANY_BAD nicht zurück.
+		disks_overview_scan
+		overview=$DISKS_OVERVIEW
 		default=clone
 		((DISKS_ANY_BAD)) && default=rescue
 		extra=()

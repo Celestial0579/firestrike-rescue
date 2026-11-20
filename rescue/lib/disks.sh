@@ -157,22 +157,35 @@ disk_smart() {
 	echo "$out"
 }
 
-# Tabelle aller Disks für den Startbildschirm. Setzt DISKS_ANY_BAD=1, wenn eine Disk auffällig ist.
-disks_overview() {
+# Tabelle aller Disks für den Startbildschirm. Legt sie in DISKS_OVERVIEW ab und setzt
+# DISKS_ANY_BAD=1, wenn eine Disk auffällig ist. Direkt aufrufen, nicht in $( … ): Aus einer
+# Subshell kommen beide Werte nicht zum Aufrufer zurück. Daran brach das Hauptmenü ab, denn dort
+# war DISKS_ANY_BAD nie gesetzt (set -u). Die Vorgabewerte unten halten lf am Leben, falls das
+# wieder passiert; dass die Empfehlung stimmt, prüft tests/unit-main-menu.sh.
+DISKS_ANY_BAD=0
+DISKS_OVERVIEW=""
+disks_overview_scan() {
 	DISKS_ANY_BAD=0
 	local j dev st reason
-	printf '%-9s %-8s %-28s %-10s %-20s %s\n' "GERÄT" "ZUSTAND" "MODELL" "GRÖSSE" "SERIENNUMMER" "BUS"
+	DISKS_OVERVIEW=$(printf '%-9s %-8s %-28s %-10s %-20s %s' "GERÄT" "ZUSTAND" "MODELL" "GRÖSSE" "SERIENNUMMER" "BUS")
 	while IFS= read -r j; do
 		[[ -z $j ]] && continue
 		dev=$(jq -r .path <<<"$j")
 		IFS='|' read -r st reason <<<"$(disk_smart "$dev")"
 		[[ $st == WARN || $st == DEFEKT ]] && DISKS_ANY_BAD=1
-		printf '%-9s %-8s %-28.28s %-10s %-20.20s %s\n' "$(basename "$dev")" "[$st]" \
+		DISKS_OVERVIEW+=$'\n'"$(printf '%-9s %-8s %-28.28s %-10s %-20.20s %s' "$(basename "$dev")" "[$st]" \
 			"$(jq -r 'if (.model // "") == "" then "?" else .model end' <<<"$j")" "$(human "$(jq -r .size <<<"$j")")" \
 			"$(jq -r 'if (.serial // "") != "" then .serial elif .dup then "nicht eindeutig" else "–" end' <<<"$j")" \
-			"$(jq -r '.tran // "?"' <<<"$j")"
-		[[ -n $reason ]] && printf '          %s\n' "${reason//;/, }"
+			"$(jq -r '.tran // "?"' <<<"$j")")"
+		[[ -n $reason ]] && DISKS_OVERVIEW+=$'\n'"          ${reason//;/, }"
 	done < <(disks_json)
+	return 0
+}
+
+# Dieselbe Tabelle als Ausgabe, für Aufrufer, die nur den Text brauchen (Claude-Kontext, Tests).
+disks_overview() {
+	disks_overview_scan
+	printf '%s\n' "$DISKS_OVERVIEW"
 }
 
 # disk_pick TITEL TEXT [AUSSCHLUSS-ID ...]  -> gibt die Disk-Kennung aus

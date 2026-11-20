@@ -78,6 +78,7 @@ jobs:
           bash tests/unit-image-attach.sh
           bash tests/unit-target-search.sh
           bash tests/unit-dialog-text.sh
+          bash tests/unit-main-menu.sh
           bash tests/dialog-disk-text.sh
           bash tests/unit-claude-guard.sh
           bash tests/unit-claude-wrapper.sh
