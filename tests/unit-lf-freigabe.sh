@@ -18,8 +18,9 @@
 #     so aussieht, wie systemd-run ihn anlegt: keine weiteren Befehle, keine Umgebung, Wurzel oder
 #     Drop-ins, und der laufende Prozess ist genau dieses ntfs-3g (F12, je Eigenschaft ein Lockvogel).
 #   - Ebenso eine Rettung, die lf-aufgabe retten oder fortsetzen startet (start_rescue): nur genau
-#     so, wie systemd-run sie anlegt (auch Ein- und Ausgabe, kein Neustart, nur mit der Umgebung des
-#     Managers vom Freischalten), und nur wenn lf-aufgabe pruefen-rettung die Argumente annimmt
+#     so, wie systemd-run sie anlegt (auch Ein- und Ausgabe, Neustart, Abhängigkeiten, Arbeitsordner,
+#     Gruppen, Slice, nur mit der Umgebung des Managers vom Freischalten; die Werte wie auf dem
+#     ISO), und nur wenn lf-aufgabe pruefen-rettung die Argumente annimmt
 #     und die Kette der Grundregel unverändert ist. Ein fremder Prozess in einem Dienst, der bleibt,
 #     wird beendet (F16).
 #   - Die Umgebung des systemd-Managers ist am Ende wie beim Freischalten, ins Protokoll kommen nur
@@ -28,8 +29,10 @@
 #     lf-freigabe, recover.sh und lf-aufgabe starten, erbt LD_PRELOAD und Co. nicht (F13).
 #   - Wege zu root ohne laufenden Prozess sind ein Rückstand: geänderte Konten, PAM, polkit, SSH,
 #     modprobe, setuid-Dateien, capabilities, Dateien unter /usr, Kernel-Einstellungen und
-#     Einhängungen (auch über lf-lesen). Eine neue ld.so.preload wird gesperrt, eine geänderte
-#     Kette der Grundregel (lf-aufgabe) sperrt die Grundregel bis zum Neustart (F14).
+#     Einhängungen (auch über lf-lesen), der Inhalt der Credentials von Diensten (getty und login
+#     lesen daraus login.noauth und agetty.autologin) und ihre Ablagen. Eine neue ld.so.preload wird
+#     gesperrt, eine geänderte Kette der Grundregel (lf-aufgabe) sperrt die Grundregel bis zum
+#     Neustart (F14).
 #   - Nach jeder Freigabe sagt status bis zum Neustart "aus, Neustart empfohlen (…)" (F15).
 #
 # Hier läuft nichts als root: Eine Kopie von lf-freigabe arbeitet mit eigenen Ordnern statt
@@ -81,13 +84,23 @@ echo /sbin/modprobe >"$T/proc/sys/kernel/modprobe"
 : >"$W/sys/kernel/uevent_helper"
 echo enabled >"$T/proc/sys/fs/binfmt_misc/status"
 : >"$T/proc/sys/fs/binfmt_misc/register"
+# Credentials von Diensten wie auf dem ISO: tmpfs, die Einhängung rw, ihr Superblock ro. Dazu eine
+# in einem anderen Dateisystem, die das Ende nicht lesen darf (sie könnte hängen).
+CRED=$W/run/credentials
+CRED_LINES=("47 30 0:41 / $CRED/getty@tty1.service rw,nosuid,nodev,noexec,relatime,nosymfollow shared:7 - tmpfs none ro,size=1024k,nr_inodes=1024,mode=700"
+	"48 30 0:42 / $CRED/getty@tty2.service rw,nosuid,nodev,noexec,relatime,nosymfollow shared:8 - tmpfs none ro,size=1024k,nr_inodes=1024,mode=700"
+	"49 30 0:43 / $CRED/systemd-journald.service rw,nosuid,nodev,noexec,relatime,nosymfollow shared:10 - tmpfs none ro,size=1024k,nr_inodes=1024,mode=700"
+	"50 30 0:44 / $CRED/fremd.service rw,nosuid,nodev,noexec,relatime shared:11 - fuse.x x rw")
+mkdir -p "$CRED/getty@tty1.service" "$CRED/getty@tty2.service" "$CRED/systemd-journald.service" "$CRED/fremd.service"
+echo rescue >"$CRED/getty@tty1.service/agetty.autologin"
 # pid1   PID 1 in der Attrappe von /proc: Mount-Namensraum und Einhängungen (WROOT beschreibbar und
-#   ohne nosuid, darunter ein tmpfs mit nosuid). Nach dem Aufräumen von /proc neu angelegt.
+#   ohne nosuid, darunter ein tmpfs mit nosuid, die Credentials). Nach dem Aufräumen von /proc neu
+#   angelegt.
 pid1() {
 	mkdir -p "$T/proc/1/ns"
 	: >>"$T/proc/1/ns/mnt"
 	printf '%s\n' "22 1 0:30 / $W rw,relatime shared:1 - overlay overlay rw" \
-		"30 22 0:40 / $W/run rw,nosuid,nodev shared:5 - tmpfs tmpfs rw" >"$T/proc/1/mountinfo"
+		"30 22 0:40 / $W/run rw,nosuid,nodev shared:5 - tmpfs tmpfs rw" "${CRED_LINES[@]}" >"$T/proc/1/mountinfo"
 }
 cleanproc() {
 	rm -rf "$T/proc/"[0-9]*
@@ -306,6 +319,7 @@ RC=$?
 check "vom Techniker: frei, mit Ablauf, im Protokoll mit seinem Namen" '[[ $RC == 0 && -e $RULE ]] && grep -q -- "--on-active=30min" "$T/systemd-run.log" && grep -q "freigegeben von rescue" "$LOG"'
 check "der Dienst des Ablaufs erbt LD_PRELOAD und Co. nicht vom Manager (F13)" 'grep -qF -- "-p Type=oneshot -p UnsetEnvironment=$ENV_UNSAFE /usr/local/bin/lf-freigabe ablauf" "$T/systemd-run.log" && [[ $ENV_UNSAFE == "LD_PRELOAD "*" PS4" ]]'
 check "Freischalten hält Manager-Umgebung, Dateien, Kette, Einhängungen und Kernel-Einstellungen fest" 'grep -qxF "\"LANG=C.UTF-8\"" "$SNAP/menv" && grep -q " $W/etc/shadow$" "$SNAP/files" && grep -qE "^[0-9a-f]{64}  $W/usr/local/bin/lf-aufgabe$" "$SNAP/chain" && grep -qE "^gross:17825792:[0-9.]+  $W/usr/local/lib/lf/claude-cli$" "$SNAP/chain" && grep -qxF "art:l:lf-aufgabe  $W/usr/local/bin/frs-aufgabe" "$SNAP/chain" && grep -qE "^[0-9a-f]{64}  $CS$" "$SNAP/chain" && grep -qE "^[0-9a-f]{64}  $CE$" "$SNAP/chain" && grep -qxF "art:l:$W/etc/alternatives/sudo  $W/usr/bin/sudo" "$SNAP/chain" && grep -q " $W rw" "$SNAP/mounts" && grep -qxF "$T/proc/sys/kernel/core_pattern=|/usr/lib/systemd/systemd-coredump %P " "$SNAP/knobs" && [[ -e $SNAP/zeit ]]'
+check "Freischalten hält den Inhalt der Credentials fest, nur für root lesbar; ein anderes Dateisystem dort liest es nicht" 'grep -qE "^$CRED/getty@tty1.service [0-9a-f]{64}$" "$SNAP/creds" && grep -qxF "$CRED/fremd.service art:fuse.x" "$SNAP/creds" && [[ $(stat -c %a "$SNAP/creds") == 600 ]]'
 check "die Schnappschüsse, die comm vergleicht, sind ganzzeilig sortiert (wie lf-freigabe: C.UTF-8)" '(for f in units at cron sudoers menv chain knobs mounts; do LC_ALL=C.UTF-8 sort -c "$SNAP/$f" 2>/dev/null || exit 1; done)'
 
 echo "Verlängern, solange Claude root hat:"
@@ -430,8 +444,9 @@ unit lf-claude-rettung-sdb.service yes /system.slice/lf-claude-rettung-sdb.servi
 unit session-5.scope yes /user.slice/user-1000.slice/session-5.scope
 unit run-u9.scope yes /lf.slice/lf-claude.slice/run-u9.scope
 unit getty@tty2.service no /system.slice/system-getty.slice/getty@tty2.service "$T/unitfiles/getty@.service"
-# Ein- und Ausgabe und Neustart, wie systemd-run sie für ntfs3g_ro und start_rescue setzt.
-SAME=$'StandardInput=null\nStandardOutput=journal\nStandardError=inherit\nRestart=no'
+# Was systemd-run für ntfs3g_ro und start_rescue sonst setzt, wie auf dem ISO gemessen. Requires gibt
+# systemctl in keiner festen Reihenfolge aus.
+SAME=$'StandardInput=null\nStandardOutput=journal\nStandardError=inherit\nRestart=no\nRestartMode=normal\nUMask=0022\nSlice=system.slice\nSuccessAction=none\nFailureAction=none\nRequires=system.slice sysinit.target'
 # genv PID EINHEIT   Die Umgebung, mit der systemd einen Dienst startet, der während der Freigabe
 #   entsteht: die des Managers beim Freischalten (SNAP/menv) und was systemd je Dienst setzt.
 genv() {
@@ -461,6 +476,8 @@ ntfs() {
 # prop EINHEIT SCHLÜSSEL WERT   Setzt eine Eigenschaft in der Attrappe von systemctl.
 prop() { { grep -v "^$2=" "$T/unit/$1"; printf '%s=%s\n' "$2" "$3"; } >"$T/unit/$1.neu" && mv "$T/unit/$1.neu" "$T/unit/$1"; }
 ntfs "$NT" /usr/bin/ntfs-3g ro,nodev,nosuid,noexec,recover /dev/sdb1 /mnt/lf-image/sdb1
+# Der echte Dienst mit Requires in der anderen Reihenfolge: bleibt trotzdem.
+prop "$NT" Requires "sysinit.target system.slice"
 # Lockvögel (F12): Name, Befehl und Prozess wie beim echten Dienst, aber eine Eigenschaft mehr oder
 # ein Prozess, der nicht passt. Mit root angelegt, liefen sie nach dem Ende weiter als root.
 SPOOFS=()
@@ -573,6 +590,27 @@ rspoof stdin && prop "$RS" StandardInput "file:/var/lib/lf-claude/x"
 rspoof stdout && prop "$RS" StandardOutput "append:/usr/local/bin/lf-aufgabe"
 rspoof stderr && prop "$RS" StandardError "append:/etc/sudoers.d/lf-claude"
 rspoof restart && prop "$RS" Restart always
+# Was systemd-run sonst nicht setzt: Einheiten, die er beim Start, Stoppen oder Enden mitnimmt,
+# Neustart nach einem Exit-Code, was systemd tut, wenn er endet, Rechte neuer Dateien, Umgebung
+# vom Manager, Arbeitsordner, Gruppen, Terminal, Slice.
+rspoof requires && prop "$RS" Requires "system.slice sysinit.target lf799j.service"
+rspoof wants && prop "$RS" Wants lf799j.service
+rspoof bindsto && prop "$RS" BindsTo lf799j.service
+rspoof partof && prop "$RS" PartOf lf799j.service
+rspoof requisite && prop "$RS" Requisite lf799j.service
+rspoof onfailure && prop "$RS" OnFailure lf799j.service
+rspoof forceexit && prop "$RS" RestartForceExitStatus 0
+rspoof preventexit && prop "$RS" RestartPreventExitStatus 1
+rspoof restartmode && prop "$RS" RestartMode direct
+rspoof success && prop "$RS" SuccessAction reboot
+rspoof failure && prop "$RS" FailureAction reboot
+rspoof umask && prop "$RS" UMask 0000
+rspoof passenv && prop "$RS" PassEnvironment PATH
+rspoof workdir && prop "$RS" WorkingDirectory /var/lib/lf-claude
+rspoof group && prop "$RS" Group lf-claude
+rspoof supgroups && prop "$RS" SupplementaryGroups lf-claude
+rspoof ttypath && prop "$RS" TTYPath /dev/tty9
+rspoof slice && prop "$RS" Slice lf.slice
 # MEMORY_PRESSURE_WATCH nennt eine andere Datei als die der eigenen cgroup (sd-event schriebe
 # MEMORY_PRESSURE_WRITE dorthin), USER nicht root.
 rspoof watch && sed -z -i 's|^MEMORY_PRESSURE_WATCH=.*|MEMORY_PRESSURE_WATCH=/etc/sudoers.d/lf-claude|' "$T/proc/$RP/environ"
@@ -630,8 +668,8 @@ check "eine Rettung, wie start_rescue sie anlegt, bleibt; lf-aufgabe prüft ihre
 check "ein fremder Prozess in einer Rettung oder in ntfs-3g: beendet und protokolliert, der Dienst bleibt (F16)" '! kill -0 "$RF" 2>/dev/null && ! kill -0 "$RX" 2>/dev/null && grep -qF "beendet: $RX sleep 300 (fremd in $RU)" "$LOG" && ! kill -0 "$NF" 2>/dev/null && grep -qF "beendet: $RF sleep 300 (fremd in $RU)" "$LOG" && grep -qF "beendet: $NF sleep 300 (fremd in $NT)" "$LOG" && ! grep -qF "beendet: $RK" "$LOG"'
 check "nur der Name des eigenen Endes: gestoppt" 'grep -qxF "stop lf-claude-freigabe-ende-aus.service" "$T/systemctl.log"'
 check "nur der Name einer Rettung: gestoppt" 'grep -qxF "stop lf-claude-rettung-sdb.service" "$T/systemctl.log"'
-check "Rettungen mit einer Eigenschaft mehr, anderer Umgebung, Ein- oder Ausgabe, anderen Argumenten, einem anderen Namen oder Prozess: gestoppt (F16)" 'n=0; for u in "${RSPOOFS[@]}"; do grep -qxF "stop $u" "$T/systemctl.log" || { echo "    bleibt: $u"; n=$((n + 1)); }; done; ((n == 0 && ${#RSPOOFS[@]} == 26))'
-check "pruefen-rettung läuft nur für Rettungen, die sonst genau passen" 'grep -qxF "pruefen-rettung /mnt/lf-target/LF/boese /dev/sdb" "$T/aufgabe.log" && ! grep -q "ok-env\|ok-dropin\|ok-programm\|ok-cmdline\|ok-path\|ok-stdout\|ok-restart" "$T/aufgabe.log"'
+check "Rettungen mit einer Eigenschaft mehr oder anders als von systemd-run (Ein- und Ausgabe, Abhängigkeiten, Neustart, Gruppen), anderer Umgebung, anderen Argumenten, einem anderen Namen oder Prozess: gestoppt (F16)" 'n=0; for u in "${RSPOOFS[@]}"; do grep -qxF "stop $u" "$T/systemctl.log" || { echo "    bleibt: $u"; n=$((n + 1)); }; done; ((n == 0 && ${#RSPOOFS[@]} == 44))'
+check "pruefen-rettung läuft nur für Rettungen, die sonst genau passen" 'grep -qxF "pruefen-rettung /mnt/lf-target/LF/boese /dev/sdb" "$T/aufgabe.log" && ! grep -q "ok-env\|ok-dropin\|ok-programm\|ok-cmdline\|ok-path\|ok-stdout\|ok-restart\|ok-requires\|ok-umask\|ok-forceexit\|ok-slice" "$T/aufgabe.log"'
 check "unter einem Namen von vorher neu angelegt oder mit neuer Ergänzung neu gestartet: gestoppt" 'grep -qx "stop run-u5.service" "$T/systemctl.log" && grep -qF "beendet: Einheit run-u5.service" "$LOG" && grep -qx "stop b.service" "$T/systemctl.log"'
 check "Ergänzung, deren Pfad systemctl nicht ausgibt, oder gelöschte Unit-Datei: gestoppt" 'grep -qx "stop e.service" "$T/systemctl.log" && grep -qx "stop f.service" "$T/systemctl.log"'
 check "ntfs-3g einer nur lesend eingehängten Quelle bleibt, die Quelle verschwindet nicht (GHSA-799j-44qx-x7xj)" '! grep -qxF -e "stop $NT" -e "kill -s KILL $NT" -e "freeze $NT" "$T/systemctl.log" && ! grep -qF "beendet: Einheit $NT" "$LOG"'
@@ -664,7 +702,7 @@ rm -f "$T/timers.json"
 # nicht aus der Freigabe.
 unit run-u11.service yes /system.slice/run-u11.service
 check "nach einem sauberen Ende ist der Schnappschuss der Einheiten weg, eine spätere Einheit ist kein Rückstand" '[[ ! -e $SNAP/units && -e $SNAP/sudoers ]] && aus_n'
-check "nach einem sauberen Ende zählen spätere Änderungen an Dateien, Kette und Einhängungen nicht" '[[ ! -e $SNAP/files && ! -e $SNAP/chain && ! -e $SNAP/mounts && ! -e $SNAP/knobs && ! -e $SNAP/menv && ! -e $SNAP/zeit ]]'
+check "nach einem sauberen Ende zählen spätere Änderungen an Dateien, Kette, Einhängungen und Credentials nicht" '[[ ! -e $SNAP/files && ! -e $SNAP/chain && ! -e $SNAP/mounts && ! -e $SNAP/creds && ! -e $SNAP/knobs && ! -e $SNAP/menv && ! -e $SNAP/zeit ]]'
 sed -i 's/^ActiveState=.*/ActiveState=inactive/' "$T/unit/run-u11.service"
 touch "$T/linger/lf-claude"
 check "linger für lf-claude: an, Rückstand" '[[ $(bash "$F" status) == "an: Rückstand nach der Freigabe (linger: lf-claude), Neustart empfohlen" ]]'
@@ -738,6 +776,15 @@ ln -s /dev/zero "$W/usr/local/bin/null"
 mkfifo "$W/usr/local/lib/lf/fifo"
 echo "|/var/lib/lf-claude/x" >"$T/proc/sys/kernel/core_pattern"
 echo "enabled interpreter /var/lib/lf-claude/x flags: C" >"$T/proc/sys/fs/binfmt_misc/x"
+# Credentials: in getty@tty1 überschrieben, gleich groß (die Zeile in mountinfo bleibt, wie sie war),
+# in getty@tty2 eine Verknüpfung dazu, die von journald ausgehängt (der Ordner bleibt), eine Datei
+# in einer Ablage, aus der Dienste beim Start Credentials laden. Im anderen Dateisystem liest das
+# Ende nicht.
+echo root00 >"$CRED/getty@tty1.service/agetty.autologin"
+ln -s /run/lf799j-ja "$CRED/getty@tty2.service/login.noauth"
+sed -i "\|$CRED/systemd-journald.service |d" "$T/proc/1/mountinfo"
+mkdir -p "$W/run/credstore" && echo yes >"$W/run/credstore/login.noauth"
+echo x >"$CRED/fremd.service/y"
 # Einhängungen: über lf-lesen (mit nosuid), eine Quelle wie von lf-aufgabe und welche, die nur so
 # aussehen: ohne noexec, ein Ordner statt der Wurzel eines Geräts, kein Gerät als Quelle, ein Name,
 # den lf-aufgabe nicht vergibt.
@@ -763,7 +810,12 @@ check "Kernel-Einstellungen: core_pattern und ein neuer binfmt_misc-Eintrag" 'gr
 check "Einhängung über lf-lesen: Rückstand, auch mit nosuid; eine Quelle wie von lf-aufgabe nicht" 'grep -qxF "Einhängung neu oder geändert: $W/usr/local/bin/lf-lesen (overlay overlay)" "$R" && grep -qxF "Einhängung neu oder geändert: /mnt/lf-image/sdc2 (ntfs3 /dev/sdc2)" "$R" && ! grep -q "/mnt/lf-image/sdc1" "$R"'
 check "Einhängungen, die nur wie eine Quelle von lf-aufgabe aussehen: Rückstand" 'grep -qxF "Einhängung neu oder geändert: /mnt/lf-image/sdc3 (ext4 /dev/sdc3)" "$R" && grep -qxF "Einhängung neu oder geändert: /mnt/lf-image/sdc4 (tmpfs tmpfs)" "$R" && grep -qxF "Einhängung neu oder geändert: /mnt/lf-image/dm-0 (ext4 /dev/dm-0)" "$R"'
 check "eine Rettung mit geänderter Kette ist gestoppt, lf-aufgabe läuft dafür nicht" 'grep -qxF "stop $RU2" "$T/systemctl.log" && ! grep -q "ok-kette" "$T/aufgabe.log"'
+check "Credentials: Inhalt geändert, ohne Einhängung, neu in einer Ablage: Rückstand; im anderen Dateisystem liest das Ende nicht" 'grep -qxF "Credentials geändert: $CRED/getty@tty1.service" "$R" && grep -qxF "Credentials geändert: $CRED/getty@tty2.service" "$R" && grep -qxF "Credentials ohne Einhängung: $CRED/systemd-journald.service" "$R" && grep -qxF "Datei neu: $W/run/credstore/login.noauth" "$R" && ! grep -q "fremd.service" "$R"'
 check "status: an, Rückstand; die Statuszeile warnt" '[[ $(bash "$F" status) == "an: Rückstand nach der Freigabe (Grundregel gesperrt bis zum Neustart: $T/sudoers.d/lf-claude.lf-gesperrt), Neustart empfohlen" && $(bash "$F" zeile </dev/null) == ACHTUNG* ]]'
+echo rescue >"$CRED/getty@tty1.service/agetty.autologin"
+rm -f "$CRED/getty@tty2.service/login.noauth" "$CRED/fremd.service/y"
+rm -r "$W/run/credstore"
+printf '%s\n' "${CRED_LINES[2]}" >>"$T/proc/1/mountinfo"
 
 echo "Kette über Verknüpfungen, hängende Prüfungen (F14):"
 # reboot_sim   Neustart nachgestellt: Grundregel zurück, Schnappschuss und Rückstand weg.
@@ -834,7 +886,18 @@ check "eine Rettung mit LD_PRELOAD aus der Umgebung vom Freischalten bleibt nich
 cp "$T/menv-sauber.json" "$T/menv.json"
 reboot_sim
 
+echo "Ein Dienst mit Credentials endet während der Freigabe:"
+bash "$F" an 30 >"$T/out" 2>&1
+sed -i "\|$CRED/systemd-journald.service |d" "$T/proc/1/mountinfo"
+mv "$CRED/systemd-journald.service" "$T/journald-creds"
+bash "$F" aus >"$T/out" 2>&1
+check "seine Einhängung verschwindet mit ihrem Ordner: kein Rückstand" '! grep -qs "Credentials" "$R"'
+mv "$T/journald-creds" "$CRED/systemd-journald.service"
+printf '%s\n' "${CRED_LINES[2]}" >>"$T/proc/1/mountinfo"
+reboot_sim
+
 echo "Hinweise für Techniker und Claude:"
+check "Anleitung: Eine Konsole, die während der Freigabe aufgeht, zeigt danach Rückstand; dann neu starten" 'grep -qF "Öffnest du während einer Freigabe eine weitere Konsole (Alt+F2 … F6), zeigt das Ende danach „Rückstand“" docs/anleitung.md && grep -qF "Starte dann neu. Bis dahin schaltest du eine neue Freigabe nur an einer Konsole des Geräts frei, mit Rückfrage dort." docs/anleitung.md'
 check "der Freigabe-Dialog sagt, dass das Ende auch laufende root-Jobs von Claude beendet" 'grep -q "Am Ende der Freigabe beendet Leuchtfeuer, was Claude damit als root gestartet hat, auch mitten im Schreiben." rescue/lib/claude.sh'
 check "Dialog und Anleitung: sicher endet root-Zugriff nur mit einem Neustart" '(($(grep -c "Sicher endet root-Zugriff nur mit einem Neustart" rescue/lib/claude.sh) >= 4)) && grep -q "Sicher endet root-Zugriff aber nur mit einem Neustart" docs/anleitung.md'
 check "Verlängern im Dialog: Rückfrage an der Konsole, eine Ablehnung wird gemeldet" 'grep -q "Rückfrage hier an der Konsole" rescue/lib/claude.sh && grep -q "Nicht verlängert. Details im Protokoll." rescue/lib/claude.sh'

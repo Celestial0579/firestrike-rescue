@@ -77,7 +77,9 @@ WROOT=
 # dazu modprobe (install-Zeilen laufen als root, ein fehlendes Modul fordert auch lf-claude an),
 # udev-Regeln, was die Shells des Technikers lesen (er hat sudo), D-Bus, NSS und Unit-Dateien
 # und Drop-ins von systemd (ein ExecStopPost an einer Einheit, die schon vor der Freigabe lief,
-# liefe erst beim Stoppen, als root). Neu, geändert oder entfernt ist ein Rückstand. Die
+# liefe erst beim Stoppen, als root), dazu die Ablagen, aus denen Dienste beim Start Credentials
+# laden (so lesen getty und login agetty.autologin und login.noauth: Anmelden ohne Kennwort). Neu,
+# geändert oder entfernt ist ein Rückstand. Die
 # lf-Werkzeuge prüft check_chain, /usr im Ganzen fs_new. Nicht dabei: /run/systemd/transient,
 # dort legt systemd-run jeden Dienst an, auch den Timer dieser Freigabe.
 WATCH=(
@@ -91,7 +93,10 @@ WATCH=(
 	"$WROOT"/etc/profile "$WROOT"/etc/profile.d "$WROOT"/etc/bash.bashrc "$WROOT"/etc/environment
 	"$WROOT"/etc/nsswitch.conf "$WROOT"/etc/dbus-1
 	"$WROOT"/{etc,run}/systemd/{system,system.control,user}
+	"$WROOT"/{etc,run}/credstore "$WROOT"/{etc,run}/credstore.encrypted "$WROOT"/run/credentials/{@system,@encrypted}
 )
+# Credentials je Dienst: systemd hängt sie beim Start unter CRED_DIR/DIENST ein (tmpfs oder ramfs).
+CRED_DIR=$WROOT/run/credentials
 # Lädt der Lader in jedes Programm, auch in sudo. Neu oder geändert: gesperrt wie cron-Dateien.
 PRELOAD=$WROOT/etc/ld.so.preload
 # Was die Grundregel als root ausführt: die lf-Werkzeuge, alles, was sie aus /usr/local laden oder
@@ -424,8 +429,10 @@ unit_info() {
 		[[ -n $k ]] && ui[$k]=${ui[$k]+${ui[$k]}$'\n'}$v
 	done < <(systemctl show -p Transient,ActiveState,ControlGroup,FragmentPath,DropInPaths,ExecStart,Type,MainPID \
 		-p ExecCondition,ExecStartPre,ExecStartPost,ExecReload,ExecStop,ExecStopPost,UnsetEnvironment \
-		-p Environment,EnvironmentFiles,RootDirectory,RootImage,User,OnFailure,OnSuccess,Upholds \
-		-p StandardInput,StandardOutput,StandardError,Restart "$1" 2>/dev/null)
+		-p Environment,EnvironmentFiles,PassEnvironment,RootDirectory,RootImage,WorkingDirectory,User,Group \
+		-p SupplementaryGroups,OnFailure,OnSuccess,SuccessAction,FailureAction,Requires,Requisite,Wants \
+		-p BindsTo,PartOf,Upholds,Slice,StandardInput,StandardOutput,StandardError,TTYPath,UMask \
+		-p Restart,RestartMode,RestartPreventExitStatus,RestartForceExitStatus "$1" 2>/dev/null)
 	return 0
 }
 
@@ -442,14 +449,25 @@ unit_changed() {
 	return 1
 }
 
-# Was an einem Dienst, den das Ende einer Freigabe stehen lässt (kept_unit), leer sein muss: so legt
-# systemd-run ihn ohne weitere Angaben an. UnsetEnvironment muss genau ENV_UNSAFE sein.
+# Ein Dienst, den das Ende einer Freigabe stehen lässt (kept_unit), muss in allem, was bestimmt, was
+# er ausführt, wie, mit welchen Dateien und was er nach sich zieht, so sein, wie systemd-run ihn für
+# ntfs3g_ro und start_rescue anlegt (auf dem ISO gemessen, systemd 259). Leer sein muss: weitere
+# Befehle, Umgebung, Wurzel, Arbeitsordner, Benutzer und Gruppen, das Terminal, Einheiten, die er
+# beim Start, Stoppen oder Enden mitnimmt (Upholds startet eine immer wieder), und Exit-Codes, nach
+# denen er neu startet oder nicht. UnsetEnvironment muss genau ENV_UNSAFE sein.
 KEPT_EMPTY=(DropInPaths ExecCondition ExecStartPre ExecStartPost ExecReload ExecStop ExecStopPost
-	Environment EnvironmentFiles RootDirectory RootImage User OnFailure OnSuccess Upholds)
-# Was genau so sein muss, wie systemd-run es ohne weitere Angaben setzt: Mit einer Datei als Ein-
-# oder Ausgabe läse oder schriebe ein Dienst, der bleibt, eine Datei, die root gewählt hat (etwa
-# lf-aufgabe), mit Restart= startete er nach dem Ende neu, samt seinen Abhängigkeiten.
-KEPT_SAME=(StandardInput=null StandardOutput=journal StandardError=inherit Restart=no)
+	Environment EnvironmentFiles PassEnvironment RootDirectory RootImage WorkingDirectory User Group
+	SupplementaryGroups TTYPath OnFailure OnSuccess Requisite Wants BindsTo PartOf Upholds
+	RestartPreventExitStatus RestartForceExitStatus)
+# Genau so wie von systemd-run: Mit einer Datei als Ein- oder Ausgabe läse oder schriebe ein Dienst,
+# der bleibt, eine Datei, die root gewählt hat (etwa lf-aufgabe), mit Restart= startete er nach dem
+# Ende neu, samt seinen Abhängigkeiten. SuccessAction und FailureAction: was systemd tut, wenn er
+# endet. UMask: die Rechte der Dateien, die er anlegt.
+KEPT_SAME=(StandardInput=null StandardOutput=journal StandardError=inherit Restart=no RestartMode=normal
+	UMask=0022 Slice=system.slice SuccessAction=none FailureAction=none)
+# Requires wie bei jedem Dienst von systemd-run (DefaultDependencies), sortiert: systemctl gibt die
+# Einheiten in keiner festen Reihenfolge aus.
+KEPT_REQUIRES="sysinit.target system.slice"
 
 # unsafe_env PID   Hat PID eine Variable aus ENV_UNSAFE, sonst eine LD_-Variable oder eine Funktion
 #   für bash (BASH_FUNC_)? Ist die Umgebung nicht lesbar (ohne root), gilt sie als unsicher,
@@ -513,8 +531,8 @@ chain_ok() {
 #   prüft kept_unit für beide Arten dasselbe, nur die Erwartung je Art (Name, Programm, Typ,
 #   Argumente) ist eine andere:
 #   - die Einheit (ui von unit_info): vorübergehend wie von systemd-run, ohne Drop-ins, genau ein
-#     Befehl, alles aus KEPT_EMPTY leer, KEPT_SAME wie von systemd-run, UnsetEnvironment genau
-#     ENV_UNSAFE;
+#     Befehl, alles aus KEPT_EMPTY leer, KEPT_SAME und KEPT_REQUIRES wie von systemd-run,
+#     UnsetEnvironment genau ENV_UNSAFE;
 #   - die Argumente: bei ntfs-3g Optionen, Quelle und Einhängepunkt wie in ntfs3g_ro und der Name
 #     zum Einhängepunkt; bei einer Rettung der Name zum Fallordner, und lf-aufgabe selbst prüft
 #     Fallordner und Quelle wie bei retten (nur mit unveränderter Kette, chain_ok);
@@ -529,7 +547,7 @@ chain_ok() {
 KEPT_FOREIGN=()
 kept_unit() {
 	local u=$1 kind re path exe pid p n src list
-	local -a argv want cmd procs
+	local -a argv want cmd procs req
 	KEPT_FOREIGN=()
 	case $u in
 	lf-ntfs3g-*.service) kind=ntfs3g ;;
@@ -544,6 +562,8 @@ kept_unit() {
 	for p in "${KEPT_SAME[@]}"; do
 		[[ ${ui[${p%%=*}]:-} == "${p#*=}" ]] || return 1
 	done
+	read -ra req <<<"${ui[Requires]:-}"
+	[[ $(printf '%s\n' "${req[@]}" | sort | tr '\n' ' ') == "$KEPT_REQUIRES " ]] || return 1
 	re='^[{] path=([^ ]+) ; argv[[][]]=(.*) ; ignore_errors=no ; '
 	[[ ${ui[ExecStart]:-} =~ $re && ${ui[ExecStart]} != *$'\n'* ]] || return 1
 	path=${BASH_REMATCH[1]}
@@ -915,6 +935,51 @@ mounts_changed() {
 	}'
 }
 
+# creds_now   "PFAD SUMME" je Einhängung unter CRED_DIR, sortiert. Darin liegen die Credentials
+#   eines Dienstes; login und agetty lesen ihre daraus (login.noauth: Anmelden ohne Kennwort,
+#   agetty.autologin). Die Einhängung selbst vergleicht mounts_changed, mit ID und Optionen. Root
+#   kann aber hineinschreiben und danach dieselbe Zeile in mountinfo herstellen (remount rw,
+#   schreiben, remount ro, remount bind,rw). Darum zählt hier der Inhalt: Art, Rechte, Besitzer und
+#   Größe jedes Eintrags und sha256 jeder Datei. Gelesen werden nur tmpfs und ramfs, so legt
+#   systemd sie an (beide hängen nicht), sonst steht "art:TYP" da.
+creds_now() {
+	local m t sum
+	local -a files
+	while IFS=' ' read -r m t; do
+		m=$(printf '%b' "$m")
+		if [[ $t == tmpfs || $t == ramfs ]]; then
+			mapfile -d '' -t files < <(scan find "$m" -xdev -type f -print0 2>/dev/null)
+			sum=$({
+				scan find "$m" -xdev -printf '%y %m %U %G %s %P\n' 2>&1
+				((${#files[@]} == 0)) || scan sha256sum -- "${files[@]}" 2>&1
+			} | sort | sha256sum)
+			sum=${sum%% *}
+		else
+			sum=art:$t
+		fi
+		printf '%s %s\n' "${m//[[:space:]]/?}" "$sum"
+	done < <(awk -v d="$CRED_DIR/" '{for (i = 7; i <= NF && $i != "-"; i++) ; if (index($5, d) == 1) print $5, $(i + 1)}' /proc/1/mountinfo 2>/dev/null) | sort
+}
+
+# creds_changed   Je Zeile eine Einhängung unter CRED_DIR, deren Inhalt seit dem Freischalten anders
+#   ist, und eine, die es nicht mehr gibt, deren Ordner aber noch da ist: Der zeigt dann, was
+#   darunter liegt, und das hätte root dort ablegen können; der Dienst liest weiter aus dem Pfad.
+#   Eine neue Einhängung meldet mounts_changed. Endet ein Dienst, verschwindet auch sein Ordner.
+creds_changed() {
+	local k p
+	[[ -f $SNAP/creds ]] || return 0
+	while read -r k p; do
+		if [[ $k == a ]]; then
+			echo "Credentials geändert: $p"
+		elif [[ -e $p ]]; then
+			echo "Credentials ohne Einhängung: $p"
+		fi
+	done < <(creds_now | awk -v snap="$SNAP/creds" '
+		BEGIN { while ((getline l < snap) > 0) if (split(l, f, " ") == 2) old[f[1]] = f[2] }
+		{ now[$1] = $2 }
+		END { for (p in old) if (!(p in now)) print "w", p; else if (now[p] != old[p]) print "a", p }' | sort)
+}
+
 # snapshot   Hält fest, was es beim Freischalten schon gab. Neu ist, was danach dazukommt.
 snapshot() {
 	install -d -m 0755 "$SNAP"
@@ -930,7 +995,10 @@ snapshot() {
 	# Vor den Einhängungen: binfmt_misc ist oft eine Automount-Stelle, die erst das Lesen einhängt.
 	knobs_now >"$SNAP/knobs"
 	mounts_now >"$SNAP/mounts"
+	creds_now >"$SNAP/creds"
 	chmod 0644 "$SNAP"/*
+	# Nur für root: Eine Summe über einen kurzen geheimen Wert ließe sich durchprobieren.
+	chmod 0600 "$SNAP/creds"
 }
 
 # quick_residue   Je Zeile ein Weg zu root, den lf-claude ohne die Regel noch hat, soweit ihn jeder
@@ -961,7 +1029,7 @@ quick_residue() {
 #   Wer mit der Freigabe root war, kann sich weitere Wege eingerichtet haben. residue prüft die
 #   naheliegenden, nicht alle: Sicher ist nur ein Neustart. Dazu gehören Wege ohne laufenden
 #   Prozess: geänderte Werkzeuge der Grundregel, Dateien aus WATCH, setuid-Dateien und /usr,
-#   Kernel-Einstellungen, Einhängungen und die Umgebung des Managers.
+#   Kernel-Einstellungen, Einhängungen, Credentials von Diensten und die Umgebung des Managers.
 residue() {
 	local rules procs c
 	rules=$(sudo -l -U "$CLAUDE" 2>&1 | sed -nE 's/^[[:space:]]+(\(.*)$/\1/p')
@@ -981,6 +1049,7 @@ residue() {
 	fs_new
 	knobs_changed | sed 's/^/Kernel-Einstellung neu oder geändert: /'
 	mounts_changed
+	creds_changed
 	menv_changed | sed 's/^/Manager-Umgebung: /'
 	return 0
 }
@@ -1094,10 +1163,10 @@ off() {
 		# Sauber zu Ende: Einheiten, die von jetzt an entstehen (etwa systemd-run für ein neues
 		# "an"), kommen nicht aus der Freigabe und zählen ohne den Schnappschuss nicht als
 		# Rückstand; status fragt systemd dann auch nicht mehr nach jeder Einheit. Ebenso
-		# spätere Änderungen an Dateien, Werkzeugen, Einhängungen und der Manager-Umgebung (ein
-		# weiteres "aus" sperrte sonst die Grundregel). Bei einem Rückstand bleibt er, das nächste
-		# Ende prüft weiter dagegen.
-		rm -f "$SNAP/units" "$SNAP/files" "$SNAP/chain" "$SNAP/knobs" "$SNAP/mounts" "$SNAP/menv" "$SNAP/zeit"
+		# spätere Änderungen an Dateien, Werkzeugen, Einhängungen, Credentials und der
+		# Manager-Umgebung (ein weiteres "aus" sperrte sonst die Grundregel). Bei einem Rückstand
+		# bleibt er, das nächste Ende prüft weiter dagegen.
+		rm -f "$SNAP/units" "$SNAP/files" "$SNAP/chain" "$SNAP/knobs" "$SNAP/mounts" "$SNAP/creds" "$SNAP/menv" "$SNAP/zeit"
 	fi
 	if ((had)); then
 		install -d /run/lf
