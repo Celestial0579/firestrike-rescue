@@ -3,6 +3,7 @@
 #   - status sagt "an", solange die Regel besteht, auch wenn sich die Uhr umgestellt hat; das
 #     Ende kommt aus dem Timer. Ohne Regel sagt status erst "aus", wenn kein Timer mehr läuft und
 #     kein Rückstand zu sehen ist (root-Prozess bei Claude, neue sudo-Datei, neue Einheit, linger).
+#     Nach einem sauberen Ende zählen spätere Einheiten nicht mehr, bei einem Rückstand weiter.
 #   - "an" erkennt lf-claude auch ohne SUDO_USER an den Vorfahren und an der cgroup. Solange
 #     Claude root hat, verlängert "an" nur von einer Konsole (tty1 bis tty63) mit "j" dort, auch
 #     unter sudo-rs (reale UID des Technikers in sudo und seinem Überwacher am eigenen pts).
@@ -378,8 +379,10 @@ rm -f "$T/sudoers.d/zz.neu"
 echo "[{\"next\": $(((NOW + 600) * 1000000)), \"unit\": \"lf-claude-freigabe-ende.timer\"}]" >"$T/timers.json"
 check "Regel fehlt, Timer läuft: an, Rückstand" '[[ $(bash "$F" status) == "an: Rückstand nach der Freigabe (Regel fehlt, Timer bis $(date -d "@$((NOW + 600))" +%H:%M)), Neustart empfohlen" ]]'
 rm -f "$T/timers.json"
+# Nach dem sauberen Ende oben kommt eine spätere Einheit (etwa systemd-run für ein neues "an")
+# nicht aus der Freigabe.
 unit run-u11.service yes /system.slice/run-u11.service
-check "neue Einheit: an, Rückstand" '[[ $(bash "$F" status) == "an: Rückstand nach der Freigabe (Einheiten: run-u11.service ), Neustart empfohlen" ]]'
+check "nach einem sauberen Ende ist der Schnappschuss der Einheiten weg, eine spätere Einheit ist kein Rückstand" '[[ ! -e $SNAP/units && -e $SNAP/sudoers && $(bash "$F" status) == aus ]]'
 sed -i 's/^ActiveState=.*/ActiveState=inactive/' "$T/unit/run-u11.service"
 touch "$T/linger/lf-claude"
 check "linger für lf-claude: an, Rückstand" '[[ $(bash "$F" status) == "an: Rückstand nach der Freigabe (linger: lf-claude), Neustart empfohlen" ]]'
@@ -392,17 +395,21 @@ kill -KILL "$Q10" 2>/dev/null
 rm -rf "$T/proc/"[0-9]*
 
 echo "Rückstände:"
-echo "lf-claude ALL=(ALL:ALL) NOPASSWD: ALL" >"$RULE"
+bash "$F" an 30 >"$T/out" 2>&1
 # Während der Freigabe eingerichtet: eine zweite sudo-Regel und die Gruppe sudo
 sudo_l "    (ALL : ALL) NOPASSWD: ALL"
 echo "lf-claude render sudo" >"$T/groups"
 bash "$F" aus >"$T/out" 2>&1
 check "status bleibt an, mit Rückstand und Neustart-Empfehlung" '[[ $(bash "$F" status) == "an: Rückstand"*"Neustart empfohlen" && $(bash "$F" zeile </dev/null) == ACHTUNG* ]]'
 check "das Protokoll warnt und nennt Regel und Gruppe" 'grep "WARNUNG: lf-claude darf nach der Freigabe" "$LOG" | grep -q "NOPASSWD: ALL.*Gruppen: lf-claude render sudo"'
+check "bei einem Rückstand bleibt der Schnappschuss der Einheiten" '[[ -f $SNAP/units ]]'
+# Nach dem Ende mit Rückstand entstanden (etwa durch das, was root dort eingerichtet hat)
+unit run-u12.service yes /system.slice/run-u12.service
 sudo_l
 echo "lf-claude render" >"$T/groups"
 bash "$F" ablauf >"$T/out" 2>&1
 check "ohne Rückstand: nach dem Ablauf wieder aus" '[[ $(bash "$F" status) == aus && ! -e $T/run/claude-freigabe-rueckstand ]] && grep -q "abgelaufen" "$LOG"'
+check "das nächste Ende prüft weiter gegen den Schnappschuss, erst ein sauberes Ende löscht ihn" 'grep -qx "stop run-u12.service" "$T/systemctl.log" && [[ ! -e $SNAP/units ]]'
 
 echo "Hinweise für Techniker und Claude:"
 check "der Freigabe-Dialog sagt, dass das Ende auch laufende root-Jobs von Claude beendet" 'grep -q "Am Ende der Freigabe beendet Leuchtfeuer, was Claude damit als root gestartet hat, auch mitten im Schreiben." rescue/lib/claude.sh'

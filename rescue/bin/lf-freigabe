@@ -600,6 +600,11 @@ off() {
 		note "WARNUNG: lf-claude darf nach der Freigabe noch mehr als lf-lesen und lf-aufgabe: ${r//$'\n'/; }. Neustart empfohlen"
 	else
 		rm -f "$RESIDUE"
+		# Sauber zu Ende: Einheiten, die von jetzt an entstehen (etwa systemd-run für ein neues
+		# "an"), kommen nicht aus der Freigabe und zählen ohne den Schnappschuss nicht als
+		# Rückstand; status fragt systemd dann auch nicht mehr nach jeder Einheit. Bei einem
+		# Rückstand bleibt er, das nächste Ende prüft weiter dagegen.
+		rm -f "$SNAP/units"
 	fi
 }
 
