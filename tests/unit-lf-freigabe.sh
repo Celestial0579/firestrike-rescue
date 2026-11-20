@@ -14,7 +14,9 @@
 #     des Technikers laufen weiter; gemeldet wird, was lf-claude danach noch darf.
 #   - ntfs-3g für eine Quelle, die lf-aufgabe nur lesend eingehängt hat, läuft als eigener Dienst
 #     (ntfs3g_ro in recover.sh). Er bleibt am Ende einer Freigabe und zählt nicht als Rückstand,
-#     nur wenn Name, Programm, Optionen, Quelle und Einhängepunkt zusammenpassen.
+#     nur wenn Name, Programm, Optionen, Quelle und Einhängepunkt zusammenpassen und er sonst genau
+#     so aussieht, wie systemd-run ihn anlegt: keine weiteren Befehle, keine Umgebung, Wurzel oder
+#     Drop-ins, und der laufende Prozess ist genau dieses ntfs-3g (F12, je Eigenschaft ein Lockvogel).
 #
 # Hier läuft nichts als root: Eine Kopie von lf-freigabe arbeitet mit eigenen Ordnern statt
 # /etc/sudoers.d, /run/lf, /proc und /sys/fs/cgroup. sudo, systemctl, systemd-run, loginctl, atq,
@@ -42,7 +44,8 @@ sed -e "s|^PATH=.*|PATH=$T/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin
 	-e "s|/etc/sudoers.d/|$T/sudoers.d/|g" -e "s|^SUDOERS=.*|SUDOERS=$T/sudoers|" -e "s|/run/lf|$T/run|g" \
 	-e "s|/proc/|$T/proc/|g" -e "s|^SUDO_EXE=.*|SUDO_EXE=$T/bin/sudo|" -e "s|^CGROOT=.*|CGROOT=$T/cg|" \
 	-e "s|^LINGER=.*|LINGER=$T/linger|" -e "s|^CRON_PATHS=.*|CRON_PATHS=($T/cron.d)|" -e "s|^TTY=.*|TTY=$T/tty|" \
-	-e "s|^SYS_BLOCK=.*|SYS_BLOCK=$T/sysblock|" -e "s|((EUID == 0))|((EUID == $(id -u)))|g" rescue/bin/lf-freigabe >"$F"
+	-e "s|^SYS_BLOCK=.*|SYS_BLOCK=$T/sysblock|" -e "s|^NTFS3G=.*|NTFS3G=$T/bin/ntfs-3g|" \
+	-e "s|((EUID == 0))|((EUID == $(id -u)))|g" rescue/bin/lf-freigabe >"$F"
 
 cat >"$T/bin/id" <<MOCK
 #!/bin/bash
@@ -98,6 +101,9 @@ printf '#!/bin/bash\ncat "%s/atq" 2>/dev/null\n' "$T" >"$T/bin/atq"
 printf '#!/bin/bash\necho "$*" >>"%s/atrm.log"\n' "$T" >"$T/bin/atrm"
 printf '#!/bin/bash\nexit 0\n' >"$T/bin/visudo"
 printf '#!/bin/bash\nexit 0\n' >"$T/bin/logger"
+# Das Programm ntfs-3g (Ziel von /proc/PID/exe des echten Dienstes) und ein anderes.
+printf '#!/bin/bash\nexit 0\n' >"$T/bin/ntfs-3g"
+printf '#!/bin/bash\nexit 0\n' >"$T/bin/anderes"
 chmod +x "$T/bin/"*
 
 BASE="    (root) NOPASSWD: /usr/local/bin/lf-lesen, /usr/local/bin/lf-aufgabe"
@@ -311,8 +317,59 @@ unit getty@tty2.service no /system.slice/system-getty.slice/getty@tty2.service "
 # Dienste, die nur so heißen: anderes Programm, andere Optionen, eine Datei als Quelle, ein
 # Gerät, das der Kernel nicht kennt, ein Name, der nicht zum Einhängepunkt passt.
 NT='lf-ntfs3g-mnt-lf\x2dimage-sdb1.service'
-ntfs() { unit "$1" yes "/system.slice/$1" "" "{ path=$2 ; argv[]=$2 -o $3 $4 $5 ; ignore_errors=no ; start_time=[n/a] ; stop_time=[n/a] ; pid=0 ; code=(null) ; status=0/0 }"; }
+# ntfs NAME PROGRAMM OPTIONEN QUELLE EINHÄNGEPUNKT   Ein Dienst, wie systemd-run ihn für ntfs3g_ro
+#   anlegt, mit laufendem ntfs-3g in der Attrappe von /proc: allein in seiner cgroup, Wurzel /,
+#   dieselben Einhängungen wie PID 1, ohne LD_-Variablen. NP ist die PID des Prozesses.
+NP=4194399300
+ntfs() {
+	NP=$((NP + 1))
+	unit "$1" yes "/system.slice/$1" "/run/systemd/transient/$1" "{ path=$2 ; argv[]=$2 -o $3 $4 $5 ; ignore_errors=no ; start_time=[n/a] ; stop_time=[n/a] ; pid=0 ; code=(null) ; status=0/0 }"
+	printf 'Type=forking\nMainPID=%s\nEnvironment=\nRootDirectory=\nRootImage=\nUser=\nOnFailure=\nOnSuccess=\nUpholds=\n' "$NP" >>"$T/unit/$1"
+	mkdir -p "$T/cg/system.slice/$1" "$T/proc/1/ns"
+	echo "$NP" >"$T/cg/system.slice/$1/cgroup.procs"
+	: >>"$T/proc/1/ns/mnt"
+	fake "$NP" 0 0 1 "PATH=/usr/sbin:/usr/bin|INVOCATION_ID=0123abcd|LANG=C.UTF-8" "$2 -o $3 $4 $5" "$T/bin/ntfs-3g"
+	ln -s / "$T/proc/$NP/root"
+	mkdir -p "$T/proc/$NP/ns" && ln -s "$T/proc/1/ns/mnt" "$T/proc/$NP/ns/mnt"
+}
+# prop EINHEIT SCHLÜSSEL WERT   Setzt eine Eigenschaft in der Attrappe von systemctl.
+prop() { { grep -v "^$2=" "$T/unit/$1"; printf '%s=%s\n' "$2" "$3"; } >"$T/unit/$1.neu" && mv "$T/unit/$1.neu" "$T/unit/$1"; }
 ntfs "$NT" /usr/bin/ntfs-3g ro,nodev,nosuid,noexec,recover /dev/sdb1 /mnt/lf-image/sdb1
+# Lockvögel (F12): Name, Befehl und Prozess wie beim echten Dienst, aber eine Eigenschaft mehr oder
+# ein Prozess, der nicht passt. Mit root angelegt, liefen sie nach dem Ende weiter als root.
+SPOOFS=()
+spoof() {
+	local m=/mnt/lf-image/f12-$1
+	SP="lf-ntfs3g-$(systemd-escape --path -- "$m").service"
+	ntfs "$SP" /usr/bin/ntfs-3g ro,nodev,nosuid,noexec,recover /dev/sdb1 "$m"
+	SPOOFS+=("$SP")
+}
+X="{ path=/bin/sh ; argv[]=/bin/sh -c /var/lib/lf-claude/x ; ignore_errors=no ; start_time=[n/a] ; stop_time=[n/a] ; pid=0 ; code=(null) ; status=0/0 }"
+spoof transient && prop "$SP" Transient no
+spoof fragment && prop "$SP" FragmentPath "/etc/systemd/system/$SP"
+spoof type && prop "$SP" Type simple
+spoof dropin && prop "$SP" DropInPaths "/run/systemd/system/$SP.d/x.conf"
+for k in ExecCondition ExecStartPre ExecStartPost ExecReload ExecStop ExecStopPost; do
+	spoof "${k,,}" && prop "$SP" "$k" "$X"
+done
+spoof environment && prop "$SP" Environment "LD_PRELOAD=/var/lib/lf-claude/x.so"
+spoof envfiles && prop "$SP" EnvironmentFiles "/var/lib/lf-claude/env (ignore_errors=no)"
+spoof rootdir && prop "$SP" RootDirectory /var/lib/lf-claude/root
+spoof rootimage && prop "$SP" RootImage /var/lib/lf-claude/root.img
+spoof user && prop "$SP" User root
+spoof onfailure && prop "$SP" OnFailure x.service
+spoof onsuccess && prop "$SP" OnSuccess x.service
+spoof upholds && prop "$SP" Upholds x.service
+spoof execstart2 && prop "$SP" ExecStart "$(sed -n 's/^ExecStart=//p' "$T/unit/$SP")"$'\n'"ExecStart=$X"
+spoof nopid && prop "$SP" MainPID 0
+spoof exe && ln -sfn "$T/bin/anderes" "$T/proc/$NP/exe"
+spoof root && ln -sfn "$T" "$T/proc/$NP/root"
+spoof mntns && rm "$T/proc/$NP/ns/mnt" && : >"$T/proc/$NP/ns/mnt"
+spoof ldpreload && printf 'PATH=/usr/bin\0LD_PRELOAD=/var/lib/lf-claude/x.so\0' >"$T/proc/$NP/environ"
+spoof gconv && printf 'PATH=/usr/bin\0GCONV_PATH=/var/lib/lf-claude/gconv\0' >"$T/proc/$NP/environ"
+spoof locpath && printf 'LOCPATH=/var/lib/lf-claude/locale\0PATH=/usr/bin\0' >"$T/proc/$NP/environ"
+spoof argv && printf '%s\0' /usr/bin/ntfs-3g -o ro,nodev,nosuid,noexec,recover /dev/sdb1 /mnt/lf-image/f12-argv -o dev,suid >"$T/proc/$NP/cmdline"
+spoof cgroup && echo 4194399999 >>"$T/cg/system.slice/$SP/cgroup.procs"
 ntfs 'lf-ntfs3g-mnt-lf\x2dimage-sdb2.service' /usr/bin/bash ro,nodev,nosuid,noexec,recover /dev/sdb1 /mnt/lf-image/sdb2
 ntfs 'lf-ntfs3g-mnt-lf\x2dimage-sdb3.service' /usr/bin/ntfs-3g ro,dev,suid,exec /dev/sdb1 /mnt/lf-image/sdb3
 ntfs 'lf-ntfs3g-mnt-lf\x2dimage-sdb4.service' /usr/bin/ntfs-3g ro,nodev,nosuid,noexec,recover /var/lib/lf-claude/x.img /mnt/lf-image/sdb4
@@ -357,6 +414,7 @@ check "unter einem Namen von vorher neu angelegt oder mit neuer Ergänzung neu g
 check "Ergänzung, deren Pfad systemctl nicht ausgibt, oder gelöschte Unit-Datei: gestoppt" 'grep -qx "stop e.service" "$T/systemctl.log" && grep -qx "stop f.service" "$T/systemctl.log"'
 check "ntfs-3g einer nur lesend eingehängten Quelle bleibt, die Quelle verschwindet nicht (GHSA-799j-44qx-x7xj)" '! grep -qxF -e "stop $NT" -e "kill -s KILL $NT" -e "freeze $NT" "$T/systemctl.log" && ! grep -qF "beendet: Einheit $NT" "$LOG"'
 check "Dienste, die nur wie ntfs-3g heißen, sind gestoppt" 'n=0; for u in sdb2 sdb3 sdb4 sdb5; do grep -qxF "stop lf-ntfs3g-mnt-lf\x2dimage-$u.service" "$T/systemctl.log" && n=$((n + 1)); done; grep -qxF "stop lf-ntfs3g-x.service" "$T/systemctl.log" && ((n == 4))'
+check "ntfs-3g-Dienste mit einer Eigenschaft mehr oder einem Prozess, der nicht passt, sind gestoppt (F12)" 'n=0; for u in "${SPOOFS[@]}"; do grep -qxF "stop $u" "$T/systemctl.log" || { echo "    bleibt: $u"; n=$((n + 1)); }; done; ((n == 0 && ${#SPOOFS[@]} == 28))'
 check "der neue at-Auftrag ist entfernt, der alte bleibt" 'grep -qx 2 "$T/atrm.log" && ! grep -qx 1 "$T/atrm.log"'
 check "die neue cron-Datei ist gesperrt, nicht gelöscht; die alte bleibt" '[[ -f $T/cron.d/neu.lf-gesperrt && ! -e $T/cron.d/neu && -f $T/cron.d/alt ]]'
 check "linger für lf-claude ist aufgehoben" '[[ ! -e $T/linger/lf-claude ]] && grep -qx "disable-linger lf-claude" "$T/loginctl.log"'
@@ -417,7 +475,8 @@ check "Dialog und Anleitung: sicher endet root-Zugriff nur mit einem Neustart" '
 check "Verlängern im Dialog: Rückfrage an der Konsole, eine Ablehnung wird gemeldet" 'grep -q "Rückfrage hier an der Konsole" rescue/lib/claude.sh && grep -q "Nicht verlängert. Details im Protokoll." rescue/lib/claude.sh'
 check "Freischalten und Verlängern im Dialog laufen direkt am Terminal, nicht über run (sudo-rs, GHSA-799j-44qx-x7xj)" '! grep -q "run sudo lf-freigabe an" rescue/lib/claude.sh &&grep -qxF "	sudo lf-freigabe an \"\$1\" || rc=\$?" rescue/lib/claude.sh && grep -qF "claude_freigabe_an \"\$min\" ||" rescue/lib/claude.sh && grep -qF "if claude_freigabe_an 30; then" rescue/lib/claude.sh'
 check "CLI und Desktop laufen in der Slice, die lf-freigabe am Ende prüft" '[[ $(sed -n "s/^CLAUDE_SLICE=//p" rescue/lib/claude.sh) == "$(sed -n "s/^SLICE=//p" rescue/bin/lf-freigabe)" ]] && grep -q "claude_scope sh -c" rescue/lib/claude.sh && grep -qF -- "--slice=\"\$CLAUDE_SLICE\"" rescue/lib/claude-desktop-start'
-check "lf-freigabe lässt genau die ntfs-3g-Dienste gelten, die part_mount_ro startet (Name, Optionen, Einhängepunkt)" 'grep -qF "ntfs3g_ro ro,nodev,nosuid,noexec,recover \"\$part\" \"\$mp\"" rescue/lib/recover.sh && grep -qF "unit=\"lf-ntfs3g-\$(systemd-escape --path -- \"\$3\").service\"" rescue/lib/recover.sh && grep -qF -- "-o ro,nodev,nosuid,noexec,recover (/dev/[^ ]+) ($(sed -n "s/^LF_IMAGE_MNT=\"\(.*\)\"$/\1/p" rescue/lib/common.sh)/" rescue/bin/lf-freigabe && grep -qF "[[ \$1 == \"lf-ntfs3g-\$(systemd-escape --path -- \"\$mp\").service\" ]]" rescue/bin/lf-freigabe'
+check "lf-freigabe lässt genau die ntfs-3g-Dienste gelten, die part_mount_ro startet (Name, Optionen, Einhängepunkt)" 'grep -qF "ntfs3g_ro ro,nodev,nosuid,noexec,recover \"\$part\" \"\$mp\"" rescue/lib/recover.sh && grep -qF "unit=\"lf-ntfs3g-\$(systemd-escape --path -- \"\$3\").service\"" rescue/lib/recover.sh && grep -qF -- "-o ro,nodev,nosuid,noexec,recover (/dev/[^ ]+) ($(sed -n "s/^LF_IMAGE_MNT=\"\(.*\)\"$/\1/p" rescue/lib/common.sh)/" rescue/bin/lf-freigabe && grep -qF "\$1 == \"lf-ntfs3g-\$(systemd-escape --path -- \"\$mp\").service\"" rescue/bin/lf-freigabe'
+check "recover.sh startet ntfs-3g so, wie lf-freigabe es verlangt: nur Type=forking, keine weiteren Eigenschaften (F12)" 'grep -qxF "	if ! run sudo systemd-run --quiet --collect --unit=\"\$unit\" -p Type=forking \\" rescue/lib/recover.sh && grep -qxF "		--description=\"Leuchtfeuer: ntfs-3g, nur lesend unter \$3\" -- ntfs-3g -o \"\$1\" \"\$2\" \"\$3\"; then" rescue/lib/recover.sh && grep -qx "NTFS3G=/usr/bin/ntfs-3g" rescue/bin/lf-freigabe'
 check "CLAUDE.md: lange Kopien nur über lf-aufgabe, nie direkt mit sudo" 'tr "\n" " " <rescue/claude/CLAUDE.md | grep -q "Lange Kopien (dd, ddrescue, partclone) startest du auch dann nur über lf-aufgabe, nie direkt mit sudo"'
 
 rm -rf "$T"

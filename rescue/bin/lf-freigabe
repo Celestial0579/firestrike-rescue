@@ -50,6 +50,8 @@ RESIDUE=/run/lf/claude-freigabe-rueckstand
 BASE_RULE="(root) NOPASSWD: /usr/local/bin/lf-lesen, /usr/local/bin/lf-aufgabe"
 # Blockgeräte, die der Kernel kennt (Quellen, die ntfs3g_unit gelten lässt).
 SYS_BLOCK=/sys/class/block
+# Das Programm, das ntfs3g_ro in recover.sh startet.
+NTFS3G=/usr/bin/ntfs-3g
 
 note() {
 	logger -t lf-freigabe -- "$*" 2>/dev/null || true
@@ -343,14 +345,17 @@ units_now() {
 			/^$/ {if (id != "") print id, inv; id = inv = ""} END {if (id != "") print id, inv}' | sort -u
 }
 
-# unit_info EINHEIT   Füllt ui mit den Eigenschaften, die new_units braucht.
+# unit_info EINHEIT   Füllt ui mit den Eigenschaften, die new_units und ntfs3g_unit brauchen. Gibt
+#   systemctl eine Eigenschaft mehrfach aus (ein Befehl je Zeile), stehen alle Zeilen darin.
 declare -A ui
 unit_info() {
 	local k v
 	ui=()
 	while IFS='=' read -r k v; do
-		[[ -n $k ]] && ui[$k]=$v
-	done < <(systemctl show -p Transient,ActiveState,ControlGroup,FragmentPath,DropInPaths,ExecStart "$1" 2>/dev/null)
+		[[ -n $k ]] && ui[$k]=${ui[$k]+${ui[$k]}$'\n'}$v
+	done < <(systemctl show -p Transient,ActiveState,ControlGroup,FragmentPath,DropInPaths,ExecStart,Type,MainPID \
+		-p ExecCondition,ExecStartPre,ExecStartPost,ExecReload,ExecStop,ExecStopPost \
+		-p Environment,EnvironmentFiles,RootDirectory,RootImage,User,OnFailure,OnSuccess,Upholds "$1" 2>/dev/null)
 	return 0
 }
 
@@ -367,19 +372,38 @@ unit_changed() {
 	return 1
 }
 
-# ntfs3g_unit EINHEIT   Hängt in EINHEIT ntfs-3g eine Quelle nur lesend ein, so wie ntfs3g_ro in
-#   recover.sh (lf-aufgabe einhaengen und der Assistent)? Name, Programm, Optionen, Quelle und
-#   Einhängepunkt müssen zusammenpassen (ui von unit_info), der Name allein reicht nicht. Ein
-#   solcher Dienst bleibt am Ende einer Freigabe, sonst verschwände die Quelle unter laufenden
-#   Jobs; als Rückstand zählt er nicht. Dasselbe bekommt Claude auch über die Grundregel.
+# ntfs3g_unit EINHEIT   Ist EINHEIT genau der Dienst, den ntfs3g_ro in recover.sh startet (lf-aufgabe
+#   einhaengen und der Assistent): ntfs-3g hängt eine Quelle nur lesend ein? Ein solcher Dienst
+#   bleibt am Ende einer Freigabe, sonst verschwände die Quelle unter laufenden Jobs; als Rückstand
+#   zählt er nicht. Dasselbe bekommt Claude auch über die Grundregel. Mit root ließe sich aber ein
+#   Dienst mit demselben Namen und Befehl anlegen, der nach dem Ende weiter Code als root ausführt
+#   (GHSA-799j-44qx-x7xj). Darum muss alles passen (ui von unit_info): Name, Programm, Optionen,
+#   Quelle und Einhängepunkt; so angelegt wie von systemd-run (vorübergehend, Type=forking), ohne
+#   Drop-ins, ohne weitere Befehle, ohne Umgebung, Wurzel und Benutzer, ohne Einheiten, die er
+#   auslöst. Der laufende Prozess ist genau dieses ntfs-3g mit genau diesen Argumenten, allein im
+#   Dienst, mit derselben Wurzel und denselben Einhängungen wie systemd und ohne Variablen, die
+#   fremden Code laden (LD_…, GCONV_PATH, LOCPATH). Den Prozess prüfen kann nur root.
 ntfs3g_unit() {
-	local re exe arg0 src mp
+	local re exe arg0 src mp dev pid p env
+	local -a argv
 	re='^[{] path=(/usr/bin/ntfs-3g|/bin/ntfs-3g) ; argv[[][]]=([^ ]+) -o ro,nodev,nosuid,noexec,recover (/dev/[^ ]+) (/mnt/lf-image/[a-z0-9][a-z0-9-]{0,63}) ; '
-	[[ $1 == lf-ntfs3g-*.service && ${ui[ExecStart]:-} =~ $re ]] || return 1
+	[[ $1 == lf-ntfs3g-*.service && ${ui[ExecStart]:-} =~ $re && ${ui[ExecStart]} != *$'\n'* ]] || return 1
 	exe=${BASH_REMATCH[1]} arg0=${BASH_REMATCH[2]} src=${BASH_REMATCH[3]} mp=${BASH_REMATCH[4]}
-	[[ $arg0 == "$exe" ]] || return 1
-	src=$(readlink -f -- "$src") && [[ $src == /dev/?* && -e $SYS_BLOCK/${src##*/} ]] || return 1
-	[[ $1 == "lf-ntfs3g-$(systemd-escape --path -- "$mp").service" ]]
+	[[ $arg0 == "$exe" && $1 == "lf-ntfs3g-$(systemd-escape --path -- "$mp").service" ]] || return 1
+	dev=$(readlink -f -- "$src") && [[ $dev == /dev/?* && -e $SYS_BLOCK/${dev##*/} ]] || return 1
+	[[ ${ui[Transient]:-} == yes && ${ui[FragmentPath]:-} == "/run/systemd/transient/$1" && ${ui[Type]:-} == forking ]] || return 1
+	for p in DropInPaths ExecCondition ExecStartPre ExecStartPost ExecReload ExecStop ExecStopPost \
+		Environment EnvironmentFiles RootDirectory RootImage User OnFailure OnSuccess Upholds; do
+		[[ -z ${ui[$p]:-} ]] || return 1
+	done
+	pid=${ui[MainPID]:-0}
+	[[ $pid =~ ^[1-9][0-9]*$ && $(cat "$CGROOT${ui[ControlGroup]:-/-}/cgroup.procs" 2>/dev/null) == "$pid" ]] || return 1
+	[[ /proc/$pid/exe -ef $NTFS3G && /proc/$pid/root/ -ef / && /proc/$pid/ns/mnt -ef /proc/1/ns/mnt ]] || return 1
+	{ mapfile -d '' -t argv <"/proc/$pid/cmdline"; } 2>/dev/null || return 1
+	[[ ${#argv[@]} == 5 && ${argv[0]} == "$exe" && ${argv[1]} == -o && ${argv[2]} == ro,nodev,nosuid,noexec,recover &&
+		${argv[3]} == "$src" && ${argv[4]} == "$mp" ]] || return 1
+	env=$({ tr '\0' '\n' <"/proc/$pid/environ"; } 2>/dev/null) || return 1
+	! grep -qE '^(LD_[^=]*|GCONV_PATH|LOCPATH)=' <<<"$env"
 }
 
 # new_units   Laufende Einheiten, die seit dem Freischalten entstanden oder neu gestartet sind
