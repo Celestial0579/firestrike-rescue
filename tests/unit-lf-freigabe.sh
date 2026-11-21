@@ -333,7 +333,10 @@ thaw) rm -f "$T/frozen-\$u" ;;
 # Die Sperre des Netzschalters: start und restart legen den Hauptprozess systemd-inhibit mit dem Kind
 # sleep neu an (neue PIDs und InvocationID, die Umgebung des Managers ohne UnsetEnvironment), start
 # nur, wenn sie nicht läuft. Mit der Datei netz-startet-nicht startet sie nicht, mit
-# netz-anderes-programm führt ihr Hauptprozess ein anderes Programm aus.
+# netz-anderes-programm führt ihr Hauptprozess ein anderes Programm aus. Mit der Datei
+# netz-ohne-haupt fehlen beim nächsten Start der Hauptprozess und sein Kind in ihrer cgroup, dafür
+# stehen die PIDs aus der Datei darin (nur echte: Die PIDs der Attrappe sind zu groß für kill, sie
+# gelten nie als beendet).
 start | restart)
 	[[ \$u == $NU && -f "$T/unit/\$u" && ! -e "$T/netz-startet-nicht" ]] || exit 0
 	[[ \$1 == start ]] && grep -qx ActiveState=active "$T/unit/\$u" && exit 0
@@ -355,7 +358,12 @@ start | restart)
 		mkdir -p "$T/proc/\$p/ns" && ln -sfn "$T/proc/1/ns/mnt" "$T/proc/\$p/ns/mnt"
 	done
 	mkdir -p "$T/cg/system.slice/\$u"
-	printf '%s\n' "\$pid" "\$((pid + 1))" >"$T/cg/system.slice/\$u/cgroup.procs"
+	if [[ -e "$T/netz-ohne-haupt" ]]; then
+		cat "$T/netz-ohne-haupt" >"$T/cg/system.slice/\$u/cgroup.procs"
+		rm -f "$T/netz-ohne-haupt"
+	else
+		printf '%s\n' "\$pid" "\$((pid + 1))" >"$T/cg/system.slice/\$u/cgroup.procs"
+	fi
 	{
 		grep -v -e '^ActiveState=' -e '^MainPID=' -e '^InvocationID=' "$T/unit/\$u"
 		printf 'ActiveState=active\nMainPID=%s\nInvocationID=%032x\n' "\$pid" "\$((n + 65536))"
@@ -1886,6 +1894,91 @@ bash "$F" aus >"$T/out" 2>&1
 P1=$(netz_pid)
 check "von root gestartet: bleibt (nicht gestoppt), ein fremder Prozess darin endet, protokolliert" '! kill -0 "$NG" 2>/dev/null && grep -qF "beendet: $NG sleep 300 (fremd in $NU)" "$LOG" && ! grep -qxF "stop $NU" "$T/systemctl.log" && ! grep -qxF "Einheit beendet: $NU" "$R"'
 check "…: das Ende startet ihn nach dem Zurücksetzen der Umgebung einmal neu, der neue Prozess hat die Variable nicht, logind führt seine Sperre" '[[ $(grep -c "^restart --no-block $NU$" "$T/systemctl.log") == 1 && -n $P1 && $P1 != "$P0" && ! -e $T/proc/$P0 && ! -e $NF_ ]] && ! grep -qzx Q10=x "$T/proc/$P1/environ" && grep -qx ActiveState=active "$T/unit/$NU" && [[ $(head -n 1 "$R") == "${NETZ}Manager-Umgebung)" ]]'
+# F1: Fehlt der Hauptprozess in der cgroup der Sperre (root hat ihn und sein Kind hinausgeschoben
+# und einen eigenen Prozess hineingelegt), ist jeder Prozess darin fremd: Er endet wie jeder fremde.
+# Auch danach stimmt die Sperre nicht (netz_ok), und das Ende startet sie einmal neu.
+reboot_sim
+: >"$T/systemctl.log" && : >"$LOG"
+bash "$F" an 30 >"$T/out" 2>&1
+NG=$(spawn)
+fake "$NG" 0 0 1 "PATH=/usr/bin" "sleep 300"
+echo "$NG" >"$T/netz-ohne-haupt"
+bash "$F" aus >"$T/out" 2>&1
+rm -f "$T/netz-ohne-haupt"
+check "F1: fehlt der Hauptprozess in der cgroup der Sperre, ist jeder Prozess darin fremd: endet, protokolliert, die Sperre bleibt ausgenommen" '! kill -0 "$NG" 2>/dev/null && grep -qF "beendet: $NG sleep 300 (fremd in $NU)" "$LOG" && ! grep -qF "beendet: Einheit $NU" "$LOG"'
+check "…: die Sperre stimmt so nicht, das Ende startet sie einmal neu, danach führt logind sie, ohne Rückstand frei" '[[ ! -e $R && ! -e $NF_ && $(grep -c "^restart --no-block $NU$" "$T/systemctl.log") == 1 ]] && grep -qxF "stop $NU" "$T/systemctl.log" && base_free'
+# Ebenso ein Prozess, der vom fehlenden Hauptprozess abstammt.
+reboot_sim
+: >"$T/systemctl.log" && : >"$LOG"
+bash "$F" an 30 >"$T/out" 2>&1
+"$T/bin/systemctl" start "$NU"
+P0=$(netz_pid)
+NC=$(spawn)
+fake "$NC" 0 0 "$P0" "PATH=/usr/bin" "sleep 300"
+NG=$(spawn)
+fake "$NG" 0 0 1 "PATH=/usr/bin" "sleep 300"
+printf '%s\n' "$NC" "$NG" >"$T/cg/system.slice/$NU/cgroup.procs"
+bash "$F" aus >"$T/out" 2>&1
+check "…: auch einer, der vom fehlenden Hauptprozess abstammt, ist fremd und endet" '! kill -0 "$NC" 2>/dev/null && ! kill -0 "$NG" 2>/dev/null && grep -qF "beendet: $NC sleep 300 (fremd in $NU)" "$LOG" && grep -qF "beendet: $NG sleep 300 (fremd in $NU)" "$LOG" && ! grep -qF "beendet: Einheit $NU" "$LOG"'
+# Ohne Hauptprozess, aber mit einem Prozess in der cgroup: Der ist fremd.
+reboot_sim
+: >"$T/systemctl.log" && : >"$LOG"
+bash "$F" an 30 >"$T/out" 2>&1
+"$T/bin/systemctl" start "$NU"
+P0=$(netz_pid)
+rm -rf "$T/proc/$P0" "$T/proc/$((P0 + 1))"
+NG=$(spawn)
+fake "$NG" 0 0 1 "PATH=/usr/bin" "sleep 300"
+echo "$NG" >"$T/cg/system.slice/$NU/cgroup.procs"
+prop "$NU" MainPID 0
+bash "$F" aus >"$T/out" 2>&1
+check "F1: ohne Hauptprozess, aber mit einem Prozess in der cgroup: der ist fremd, endet, protokolliert; die Sperre startet neu" '! kill -0 "$NG" 2>/dev/null && grep -qF "beendet: $NG sleep 300 (fremd in $NU)" "$LOG" && ! grep -qF "beendet: Einheit $NU" "$LOG" && [[ $(grep -c "^restart --no-block $NU$" "$T/systemctl.log") == 1 && ! -e $NF_ ]]'
+# Läuft die Sperre und lässt sich ihre cgroup nicht lesen: nicht ausgenommen, das Ende stoppt sie
+# wie jede Einheit aus der Freigabe und startet sie gleich wieder (netz_shows: wie oft es ihren
+# Zustand nach dem Stoppen abfragte, bevor es sie neu startete; mit netz_wait wären es 30).
+netz_shows() { awk -v u="$NU" '$0 == "stop " u {s = 1; n = 0; next} s && $0 == "restart --no-block " u {print n; exit} s && $1 == "show" && $NF == u {n++}' "$T/systemctl.log"; }
+reboot_sim
+: >"$T/systemctl.log" && : >"$LOG"
+bash "$F" an 30 >"$T/out" 2>&1
+"$T/bin/systemctl" start "$NU"
+rm -f "$T/cg/system.slice/$NU/cgroup.procs"
+bash "$F" aus >"$T/out" 2>&1
+check "F1: läuft die Sperre und lässt sich ihre cgroup nicht lesen, bleibt sie nicht: beendet wie eine Einheit aus der Freigabe, Rückstand" 'grep -qF "beendet: Einheit $NU" "$LOG" && grep -qxF "Einheit beendet: $NU" "$R" && ! grep -qF "(fremd in $NU)" "$LOG"'
+check "…: das Ende startet sie gleich wieder, logind führt die Sperre" '[[ $(grep -c "^restart --no-block $NU$" "$T/systemctl.log") == 1 && ! -e $NF_ && -n $(netz_shows) && $(netz_shows) -lt 10 ]] && grep -qF ListInhibitors "$T/busctl.log"'
+# Ebenso, wenn die cgroup fehlt, obwohl der Dienst einen Hauptprozess hat.
+reboot_sim
+: >"$T/systemctl.log" && : >"$LOG"
+bash "$F" an 30 >"$T/out" 2>&1
+"$T/bin/systemctl" start "$NU"
+rm -rf "$T/cg/system.slice/$NU"
+bash "$F" aus >"$T/out" 2>&1
+check "…: ebenso, wenn die cgroup fehlt, obwohl die Sperre einen Hauptprozess hat" 'grep -qF "beendet: Einheit $NU" "$LOG" && grep -qxF "Einheit beendet: $NU" "$R" && [[ $(grep -c "^restart --no-block $NU$" "$T/systemctl.log") == 1 && ! -e $NF_ ]]'
+# Dasselbe, wenn find die cgroup nicht ganz lesen kann (eine Unter-cgroup ohne Leserecht; als root
+# nicht nachzustellen): Auch nach dem Neustart lässt sie sich nicht prüfen, die Sperre fehlt.
+if (($(id -u) != 0)); then
+	reboot_sim
+	: >"$T/systemctl.log" && : >"$LOG"
+	bash "$F" an 30 >"$T/out" 2>&1
+	"$T/bin/systemctl" start "$NU"
+	mkdir "$T/cg/system.slice/$NU/x" && chmod 000 "$T/cg/system.slice/$NU/x"
+	bash "$F" aus >"$T/out" 2>&1
+	chmod 755 "$T/cg/system.slice/$NU/x"
+	check "…: auch wenn find die cgroup nicht lesen kann: beendet wie eine Einheit aus der Freigabe, danach fehlt die Sperre, der Hinweis sagt, dass ein kurzer Druck geordnet herunterfährt" 'grep -qF "beendet: Einheit $NU" "$LOG" && grep -qxF "Einheit beendet: $NU" "$R" && grep -qF "Netzschalter nicht gesperrt: logind führt keine Sperre von $NU" "$LOG" && grep -qxF "Netzschalter nicht gesperrt: $NU" "$R" && [[ $(head -n 1 "$R") == "$NETZK"* ]]'
+fi
+# Startet die Sperre noch und hat keinen Prozess (keine cgroup, kein Hauptprozess): Sie bleibt
+# ausgenommen wie bisher.
+reboot_sim
+: >"$T/systemctl.log" && : >"$LOG"
+bash "$F" an 30 >"$T/out" 2>&1
+"$T/bin/systemctl" start "$NU"
+P0=$(netz_pid)
+rm -rf "$T/proc/$P0" "$T/proc/$((P0 + 1))" "$T/cg/system.slice/$NU"
+prop "$NU" ActiveState activating
+prop "$NU" MainPID 0
+touch "$T/netz-startet-nicht"
+bash "$F" aus >"$T/out" 2>&1
+rm -f "$T/netz-startet-nicht"
+check "F1: startet die Sperre noch und hat keinen Prozess, bleibt sie ausgenommen: nicht beendet, nichts fremd" '! grep -qF "beendet: Einheit $NU" "$LOG" && ! grep -qF "(fremd in $NU)" "$LOG" && ! grep -qsxF "Einheit beendet: $NU" "$R"'
 reboot_sim
 # Die Umgebung des Managers während der Freigabe geändert, die Sperre startet erst das Ende (und erbt
 # die Variable): Nach dem Zurücksetzen startet es sie neu.

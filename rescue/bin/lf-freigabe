@@ -985,25 +985,36 @@ netz_static() {
 	[[ ${p%% *} == "$NETZ_SHA" ]]
 }
 
-# netz_procs   Die Prozesse des Dienstes (ui von unit_info): Fremd (KEPT_FOREIGN) ist jeder, der
-#   nicht vom Hauptprozess abstammt, auch in einer Unter-cgroup. Rückgabe 1 ohne Hauptprozess oder
-#   ohne lesbare cgroup.
+# netz_procs   Die Prozesse des Dienstes (ui von unit_info), auch in Unter-cgroups: Fremd
+#   (KEPT_FOREIGN) ist jeder, der nicht vom Hauptprozess abstammt oder eine Variable hat, die fremden
+#   Code lädt. Ist der Hauptprozess nicht in der cgroup (oder hat der Dienst keinen), ist jeder darin
+#   fremd. Rückgabe 0 mit dem Hauptprozess in der cgroup; 1, solange der Dienst gar keinen Prozess
+#   hat (er startet noch); 2, wenn der Hauptprozess darin fehlt; 3, wenn sich die cgroup nicht lesen
+#   lässt. Dann lässt new_units den Dienst nicht stehen, und netz_ok stimmt nicht.
 netz_procs() {
-	local pid=${ui[MainPID]:-0} list p
+	local pid=${ui[MainPID]:-0} cg=${ui[ControlGroup]:-} list p main=0
 	local -a procs
 	KEPT_FOREIGN=()
-	[[ $pid =~ ^[1-9][0-9]*$ ]] || return 1
-	[[ ${ui[ControlGroup]:-} == /?* && -f $CGROOT${ui[ControlGroup]}/cgroup.procs ]] || return 1
-	list=$(scan find "$CGROOT${ui[ControlGroup]}" -xdev -name cgroup.procs -type f -exec cat {} + 2>/dev/null) || return 1
+	[[ $pid =~ ^[1-9][0-9]*$ ]] || pid=0
+	if [[ $cg != /?* || ! -e $CGROOT$cg ]]; then
+		# Ohne cgroup hat der Dienst keinen Prozess. Mit Hauptprozess passt das nicht zusammen.
+		((pid == 0)) && return 1
+		return 3
+	fi
+	[[ -f $CGROOT$cg/cgroup.procs ]] || return 3
+	list=$(scan find "$CGROOT$cg" -xdev -name cgroup.procs -type f -exec cat {} + 2>/dev/null) || return 3
 	mapfile -t procs <<<"$list"
-	[[ " ${procs[*]} " == *" $pid "* ]] || return 1
+	((pid)) && [[ " ${procs[*]} " == *" $pid "* ]] && main=1
 	for p in "${procs[@]}"; do
 		[[ $p =~ ^[0-9]+$ && $p != "$pid" ]] || continue
 		gone "$p" && continue
-		unsafe_env "$p" && KEPT_FOREIGN+=("$p") && continue
-		descends "$p" "$pid" || KEPT_FOREIGN+=("$p")
+		if ((!main)) || unsafe_env "$p" || ! descends "$p" "$pid"; then
+			KEPT_FOREIGN+=("$p")
+		fi
 	done
-	return 0
+	((main)) && return 0
+	((pid == 0 && ${#KEPT_FOREIGN[@]} == 0)) && return 1
+	return 2
 }
 
 # netz_ok   0, wenn der Dienst läuft wie im Image (netz_static), sein Hauptprozess genau NETZ_ARGV
@@ -1020,7 +1031,12 @@ netz_ok() {
 	netz_static || return 2
 	[[ ${ui[ActiveState]:-} == active ]] || return 1
 	[[ ${ui[MainPID]:-0} != "$NETZ_OLD" ]] || return 1
-	netz_procs || return 1
+	netz_procs
+	case $? in
+	0) ;;
+	1) return 1 ;;
+	*) return 2 ;;
+	esac
 	((${#KEPT_FOREIGN[@]} == 0)) || return 2
 	pid=${ui[MainPID]}
 	[[ /proc/$pid/exe -ef $INHIBIT_EXE && /proc/$pid/root/ -ef / && /proc/$pid/ns/mnt -ef /proc/1/ns/mnt ]] || return 2
@@ -1088,11 +1104,14 @@ netz_restart() {
 #   und noch einmal prüfen. Gleich neu starten, wenn der Prozess Code aus der Freigabe haben kann:
 #   Er lief schon vor diesem Ende (NETZ_PRE, root konnte ihn ändern), disable_preload hat eine
 #   ld.so.preload gesperrt (er startete davor und lud ihre Bibliothek) oder menv_restore hat Variablen
-#   zurückgesetzt (er kann sie geerbt haben). Fehlt die Sperre danach, steht das in NETZ_FEHLT, und
-#   residue sagt es, sobald der Hinweis aufs Ausschalten am Netzschalter steht.
+#   zurückgesetzt (er kann sie geerbt haben). Gleich starten auch, wenn er nicht läuft (etwa weil
+#   stop_new_units ihn beendet hat: seine cgroup ließ sich nicht lesen). Fehlt die Sperre danach,
+#   steht das in NETZ_FEHLT, und residue sagt es, sobald der Hinweis aufs Ausschalten am
+#   Netzschalter steht.
 netz_check() {
 	unit_info "$NETZ_UNIT"
-	if [[ -s $MENV_RESET || -n $PRELOAD_OFF || ($NETZ_PRE != 0 && ${ui[MainPID]:-0} == "$NETZ_PRE") ]]; then
+	if [[ -s $MENV_RESET || -n $PRELOAD_OFF || ($NETZ_PRE != 0 && ${ui[MainPID]:-0} == "$NETZ_PRE") ||
+		${ui[ActiveState]:-} == inactive || ${ui[ActiveState]:-} == failed ]]; then
 		netz_restart
 	fi
 	netz_wait && return 0
@@ -1123,7 +1142,8 @@ netz_release() {
 #   (systemd-run) oder ihre Unit-Datei oder eine Ergänzung neuer ist als das Freischalten
 #   (unit_changed). Ausgabe "EINHEIT" je Einheit zum Beenden und "EINHEIT PID" je fremdem Prozess in
 #   einem Dienst, der bleibt. Nicht dazu zählen die eigenen Einheiten, die Sperre des Netzschalters
-#   (NETZ_UNIT, nur mit genau ihrem Namen und ihrer Unit-Datei: netz_static), die Dienste der
+#   (NETZ_UNIT, nur mit genau ihrem Namen, ihrer Unit-Datei (netz_static) und lesbarer cgroup:
+#   netz_procs), die Dienste der
 #   Grundregel (kept_unit: ntfs-3g für nur lesend eingehängte Quellen, Rettungen von lf-aufgabe), die Sitzungen
 #   von Claude selbst (claude_scope), Konsolen (getty, serial-getty: ihre Credentials prüft
 #   creds_changed, ihre Einhängung mounts_changed) und Anmeldungen, Benutzer-Manager und
@@ -1155,9 +1175,14 @@ new_units() {
 			unit_changed || continue
 		fi
 		if [[ $u == "$NETZ_UNIT" ]] && netz_static; then
-			if netz_procs; then
-				for p in "${KEPT_FOREIGN[@]}"; do echo "$u $p"; done
+			# Lässt sich seine cgroup nicht lesen, bleibt er nicht: Das Ende stoppt ihn wie jede Einheit
+			# aus der Freigabe, netz_check startet ihn wieder. Sonst endet jeder fremde Prozess darin.
+			netz_procs
+			if (($? == 3)); then
+				echo "$u"
+				continue
 			fi
+			for p in "${KEPT_FOREIGN[@]}"; do echo "$u $p"; done
 			continue
 		fi
 		if kept_unit "$u"; then
