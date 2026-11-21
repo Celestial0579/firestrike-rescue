@@ -19,16 +19,17 @@
 # Ob ein Aufruf von lf-claude kommt, zeigen SUDO_USER und SUDO_UID, alle Vorfahren des Aufrufs
 # und die cgroup: Claude läuft in einer eigenen (lf-claude.slice, claude_scope in claude.sh), und
 # ein Prozess behält sie, auch wenn er sich abkoppelt. Am Ende (aus, Ablauf) hält lf-freigabe
-# diese cgroup an und nimmt sofort die Regel zurück. Eine neue /etc/ld.so.preload sperrt es, und
-# hat sich an lf-aufgabe, lf-lesen oder den Programmen darunter etwas geändert, bis zum Neustart
-# auch die Grundregel. Dann beendet es Einheiten, Timer, at-Aufträge und cron-Dateien, die
-# während der Freigabe entstanden sind (außer Diensten, die Claude über lf-aufgabe auch ohne
-# Freigabe bekommt: kept_unit), jeden root-Prozess in der cgroup (außer sudo selbst und Jobs von
-# lf-lesen und lf-aufgabe) und alles, was lf-claude sonst nachweislich mit der Freigabe gestartet
-# hat, setzt die Umgebung des systemd-Managers zurück und lässt Claude weiterlaufen. Danach prüft
-# es, ob lf-claude noch mehr darf als lf-lesen und lf-aufgabe, auch über Wege ohne laufenden
-# Prozess (Dateien wie /etc/shadow oder PAM, setuid-Dateien, /usr, Kernel-Einstellungen,
-# Einhängungen); solange es etwas findet, sagt status "an: Rückstand …". Ob die Freigabe gilt,
+# diese cgroup an und nimmt sofort die Regel zurück. Eine neue /etc/ld.so.preload und ein
+# /run/nextroot (soft-reboot) sperrt es, und hat sich an lf-aufgabe, lf-lesen oder den Programmen
+# darunter etwas geändert, bis zum Neustart auch die Grundregel. Dann beendet es Einheiten, Timer,
+# at-Aufträge und cron-Dateien, die während der Freigabe entstanden sind (außer Diensten, die
+# Claude über lf-aufgabe auch ohne Freigabe bekommt: kept_unit), jeden root-Prozess in der cgroup
+# (außer sudo selbst und Jobs von lf-lesen und lf-aufgabe) und alles, was lf-claude sonst
+# nachweislich mit der Freigabe gestartet hat, setzt die Umgebung des systemd-Managers zurück und
+# lässt Claude weiterlaufen. Danach prüft es, ob lf-claude noch mehr darf als lf-lesen und
+# lf-aufgabe, auch über Wege ohne laufenden Prozess (Dateien wie /etc/shadow oder PAM,
+# setuid-Dateien, /usr, Kernel-Einstellungen, Einhängungen, eine geänderte Umgebung des Managers);
+# solange es etwas findet, sagt status "an: Rückstand …". Ob die Freigabe gilt,
 # entscheidet die Regel selbst, nicht die Uhr; das Ende kommt aus dem monotonen Timer. Keine
 # Prüfung findet jeden Weg, den sich root einrichten kann: Sicher endet eine Freigabe nur mit
 # einem Neustart (GHSA-799j-44qx-x7xj). Bis dahin sagt status nach jeder Freigabe "aus, Neustart
@@ -36,6 +37,20 @@
 set -u
 PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 export LC_ALL=C.UTF-8
+# Als root nur eine feste Umgebung: Die Dienste des Endes erben die Umgebung des systemd-Managers,
+# und die kann root während einer Freigabe ändern, etwa mit DBUS_SYSTEM_BUS_ADDRESS (busctl fragte
+# dann einen fremden Bus nach der Umgebung des Managers) oder POSIXLY_CORRECT. Es bleibt nur, was
+# lf-freigabe selbst liest. HOME zeigt auf eine Datei in /proc: jq liest sonst $HOME/.jq (ohne HOME
+# die von root) und nimmt deren Funktionen statt der eigenen, etwa ein split, das jede Umgebung
+# für sauber erklärt. Unter /proc/self/cmdline kann es keine .jq geben.
+if ((EUID == 0)); then
+	set +o posix
+	for v in $(compgen -e); do
+		case $v in PATH | LC_ALL | SUDO_USER | SUDO_UID) ;; *) unset "$v" 2>/dev/null ;; esac
+	done
+	unset v
+	export HOME=/proc/self/cmdline
+fi
 RULE=/etc/sudoers.d/lf-claude-freigabe
 SUDOERS_D=/etc/sudoers.d/
 SUDOERS=/etc/sudoers
@@ -97,18 +112,27 @@ WATCH=(
 )
 # Credentials je Dienst: systemd hängt sie beim Start unter CRED_DIR/DIENST ein (tmpfs oder ramfs).
 CRED_DIR=$WROOT/run/credentials
+# Dort legt systemd-run die Unit-Datei jedes Dienstes an (kept_unit, kept_fragment).
+TRANSIENT=$WROOT/run/systemd/transient
+# Ein System, in das "systemctl reboot" per soft-reboot wechselt, statt neu zu starten.
+NEXTROOT=$WROOT/run/nextroot
 # Lädt der Lader in jedes Programm, auch in sudo. Neu oder geändert: gesperrt wie cron-Dateien.
 PRELOAD=$WROOT/etc/ld.so.preload
 # Was die Grundregel als root ausführt: die lf-Werkzeuge, alles, was sie aus /usr/local laden oder
-# starten, und die Programme, über die sie laufen. Ändert sich daran etwas oder kommt etwas dazu
-# (etwa eine bash unter /usr/local/bin, die env vor /usr/bin findet), sperrt das Ende die
-# Grundregel bis zum Neustart.
+# starten, und die Programme, über die sie laufen, dazu /etc/lf-release (common.sh und
+# lf-rescue-run lesen es als Shell-Code ein). Ändert sich daran etwas oder kommt etwas dazu (etwa
+# eine bash unter /usr/local/bin, die env vor /usr/bin findet), sperrt das Ende die Grundregel bis
+# zum Neustart.
 CHAIN_DIRS=("$WROOT"/usr/local/bin "$WROOT"/usr/local/sbin "$WROOT"/usr/local/lib/lf)
-CHAIN_BINS=("$WROOT"/usr/bin/bash "$WROOT"/usr/bin/env "$WROOT"/usr/bin/sudo "$WROOT"/usr/bin/systemd-run "$WROOT"/usr/bin/ntfs-3g)
+CHAIN_BINS=("$WROOT"/usr/bin/bash "$WROOT"/usr/bin/env "$WROOT"/usr/bin/sudo "$WROOT"/usr/bin/systemd-run "$WROOT"/usr/bin/ntfs-3g
+	"$WROOT"/etc/lf-release)
 # Kernel-Einstellungen, über die der Kernel selbst ein Programm als root startet: bei einem Absturz
 # (core_pattern mit |), für ein fehlendes Modul (modprobe), bei einem Geräteereignis (uevent_helper)
-# und als Interpreter für ein Dateiformat (binfmt_misc, mit dem Flag C auch für sudo).
-KNOBS=(/proc/sys/kernel/core_pattern /proc/sys/kernel/modprobe "$WROOT"/sys/kernel/uevent_helper)
+# und als Interpreter für ein Dateiformat (binfmt_misc, mit dem Flag C auch für sudo). Dazu ein
+# Kernel, den root für kexec geladen hat: "systemctl reboot" startet ihn statt neu, und ein Kernel
+# für den Absturzfall startet bei einem Absturz (beide mit einer initrd, die niemand prüft).
+KNOBS=(/proc/sys/kernel/core_pattern /proc/sys/kernel/modprobe "$WROOT"/sys/kernel/uevent_helper
+	"$WROOT"/sys/kernel/kexec_loaded "$WROOT"/sys/kernel/kexec_crash_loaded)
 BINFMT=/proc/sys/fs/binfmt_misc
 # Höchstdauer je Suche am Ende einer Freigabe: Ein FUSE-Dateisystem, das root über einen geprüften
 # Ordner gelegt hat, hält sonst das Ende auf. Abgebrochen zählt wie geändert.
@@ -432,7 +456,8 @@ unit_info() {
 		-p Environment,EnvironmentFiles,PassEnvironment,RootDirectory,RootImage,WorkingDirectory,User,Group \
 		-p SupplementaryGroups,OnFailure,OnSuccess,SuccessAction,FailureAction,Requires,Requisite,Wants \
 		-p BindsTo,PartOf,Upholds,Slice,StandardInput,StandardOutput,StandardError,TTYPath,UMask \
-		-p Restart,RestartMode,RestartPreventExitStatus,RestartForceExitStatus "$1" 2>/dev/null)
+		-p Restart,RestartMode,RestartPreventExitStatus,RestartForceExitStatus,ExecReloadPost,PAMName \
+		-p RuntimeDirectory,StartLimitAction,JobTimeoutAction,NeedDaemonReload "$1" 2>/dev/null)
 	return 0
 }
 
@@ -452,19 +477,27 @@ unit_changed() {
 # Ein Dienst, den das Ende einer Freigabe stehen lässt (kept_unit), muss in allem, was bestimmt, was
 # er ausführt, wie, mit welchen Dateien und was er nach sich zieht, so sein, wie systemd-run ihn für
 # ntfs3g_ro und start_rescue anlegt (auf dem ISO gemessen, systemd 259). Leer sein muss: weitere
-# Befehle, Umgebung, Wurzel, Arbeitsordner, Benutzer und Gruppen, das Terminal, Einheiten, die er
-# beim Start, Stoppen oder Enden mitnimmt (Upholds startet eine immer wieder), und Exit-Codes, nach
-# denen er neu startet oder nicht. UnsetEnvironment muss genau ENV_UNSAFE sein.
-KEPT_EMPTY=(DropInPaths ExecCondition ExecStartPre ExecStartPost ExecReload ExecStop ExecStopPost
-	Environment EnvironmentFiles PassEnvironment RootDirectory RootImage WorkingDirectory User Group
-	SupplementaryGroups TTYPath OnFailure OnSuccess Requisite Wants BindsTo PartOf Upholds
-	RestartPreventExitStatus RestartForceExitStatus)
+# Befehle (auch ExecReloadPost, neu in systemd 259), Umgebung, Wurzel, Arbeitsordner, Benutzer und
+# Gruppen, eine PAM-Sitzung (PAMName: Endet der Dienst, schließt systemd sie als root mit den
+# Modulen aus /etc/pam.d), ein Laufzeitordner (RuntimeDirectory: systemd löscht ihn beim Stoppen,
+# etwa /run/lf mit den Marken dieser Prüfung), das Terminal, Einheiten, die er beim Start, Stoppen
+# oder Enden mitnimmt (Upholds startet eine immer wieder), und Exit-Codes, nach denen er neu
+# startet oder nicht. UnsetEnvironment muss genau ENV_UNSAFE sein. Welche Eigenschaft von systemd
+# 259 wohin gehört, hält tests/systemd-259-properties.txt fest (unit-lf-freigabe.sh prüft es).
+KEPT_EMPTY=(DropInPaths ExecCondition ExecStartPre ExecStartPost ExecReload ExecReloadPost ExecStop
+	ExecStopPost Environment EnvironmentFiles PassEnvironment RootDirectory RootImage WorkingDirectory
+	User Group SupplementaryGroups PAMName RuntimeDirectory TTYPath OnFailure OnSuccess Requisite
+	Wants BindsTo PartOf Upholds RestartPreventExitStatus RestartForceExitStatus)
 # Genau so wie von systemd-run: Mit einer Datei als Ein- oder Ausgabe läse oder schriebe ein Dienst,
 # der bleibt, eine Datei, die root gewählt hat (etwa lf-aufgabe), mit Restart= startete er nach dem
-# Ende neu, samt seinen Abhängigkeiten. SuccessAction und FailureAction: was systemd tut, wenn er
-# endet. UMask: die Rechte der Dateien, die er anlegt.
+# Ende neu, samt seinen Abhängigkeiten. SuccessAction, FailureAction, StartLimitAction und
+# JobTimeoutAction: was systemd tut, wenn er endet, zu oft startet oder ein Auftrag hängt (bis zu
+# kexec in einen Kernel, den root geladen hat). UMask: die Rechte der Dateien, die er anlegt.
+# NeedDaemonReload=no: Die Unit-Datei und die Drop-in-Ordner sind so, wie systemd sie geladen hat
+# (kept_fragment prüft den Inhalt).
 KEPT_SAME=(StandardInput=null StandardOutput=journal StandardError=inherit Restart=no RestartMode=normal
-	UMask=0022 Slice=system.slice SuccessAction=none FailureAction=none)
+	UMask=0022 Slice=system.slice SuccessAction=none FailureAction=none StartLimitAction=none
+	JobTimeoutAction=none NeedDaemonReload=no)
 # Requires wie bei jedem Dienst von systemd-run (DefaultDependencies), sortiert: systemctl gibt die
 # Einheiten in keiner festen Reihenfolge aus.
 KEPT_REQUIRES="sysinit.target system.slice"
@@ -532,7 +565,8 @@ chain_ok() {
 #   Argumente) ist eine andere:
 #   - die Einheit (ui von unit_info): vorübergehend wie von systemd-run, ohne Drop-ins, genau ein
 #     Befehl, alles aus KEPT_EMPTY leer, KEPT_SAME und KEPT_REQUIRES wie von systemd-run,
-#     UnsetEnvironment genau ENV_UNSAFE;
+#     UnsetEnvironment genau ENV_UNSAFE, die Unit-Datei Byte für Byte die von systemd-run
+#     (kept_fragment);
 #   - die Argumente: bei ntfs-3g Optionen, Quelle und Einhängepunkt wie in ntfs3g_ro und der Name
 #     zum Einhängepunkt; bei einer Rettung der Name zum Fallordner, und lf-aufgabe selbst prüft
 #     Fallordner und Quelle wie bei retten (nur mit unveränderter Kette, chain_ok);
@@ -545,6 +579,34 @@ chain_ok() {
 #   stop_new_units beendet sie. Prozesse prüfen kann nur root. Was root an einem laufenden Prozess
 #   geändert hat (etwa mit ptrace), sieht keine Prüfung: Sicher ist nur ein Neustart.
 KEPT_FOREIGN=()
+
+# kept_fragment ART ARGV…   Ist die Unit-Datei (ui[FragmentPath]) Byte für Byte die, die systemd-run
+#   für diesen Dienst schreibt (ntfs3g_ro, start_rescue; systemd 259)? systemd liest sie bei jedem
+#   daemon-reload neu: Mit einer Zeile mehr (etwa ExecStopPost=) liefe Code als root, sobald jemand
+#   neu lädt und der Dienst endet. root kann die Datei ändern und ihre Zeit zurückstellen, dann
+#   bleibt NeedDaemonReload=no. Darum vergleicht cmp den ganzen Inhalt: systemd trennt Zeilen auch
+#   an CR und NUL, eine Shell-Variable verlöre NUL. Die Beschreibung folgt aus den Argumenten, die
+#   Maskierung (%, $, \, ") ist die von systemd.
+kept_fragment() {
+	local kind=$1 a q="" d
+	local -a lines
+	shift
+	for a in "$@"; do
+		a=${a//%/%%} a=${a//\$/\$\$} a=${a//\\/\\\\} a=${a//\"/\\\"}
+		q+=${q:+ }\"$a\"
+	done
+	case $kind in
+	ntfs3g) d="ntfs-3g, nur lesend unter $5" ;;
+	rettung) d="Rettung $(basename -- "$2")" ;;
+	esac
+	lines=("# This is a transient unit file, created programmatically via the systemd API. Do not edit."
+		"[Unit]" "Description=Leuchtfeuer: ${d//%/%%}" "CollectMode=inactive-or-failed" "" "[Service]")
+	[[ $kind == ntfs3g ]] && lines+=("Type=forking")
+	lines+=("UnsetEnvironment=\"${ENV_UNSAFE// /\" \"}\"" "ExecStart=" "ExecStart=$q")
+	[[ -n $(scan find "${ui[FragmentPath]}" -maxdepth 0 -type f -size -65k -print 2>/dev/null) ]] || return 1
+	scan cmp -s -- "${ui[FragmentPath]}" <(printf '%s\n' "${lines[@]}")
+}
+
 kept_unit() {
 	local u=$1 kind re path exe pid p n src list
 	local -a argv want cmd procs req
@@ -554,7 +616,7 @@ kept_unit() {
 	lf-claude-rettung-*.service) kind=rettung ;;
 	*) return 1 ;;
 	esac
-	[[ ${ui[Transient]:-} == yes && ${ui[FragmentPath]:-} == "/run/systemd/transient/$u" ]] || return 1
+	[[ ${ui[Transient]:-} == yes && ${ui[FragmentPath]:-} == "$TRANSIENT/$u" ]] || return 1
 	[[ ${ui[UnsetEnvironment]:-} == "$ENV_UNSAFE" ]] || return 1
 	for p in "${KEPT_EMPTY[@]}"; do
 		[[ -z ${ui[$p]:-} ]] || return 1
@@ -587,6 +649,7 @@ kept_unit() {
 		exe=$BASH_EXE want=(bash "${argv[@]}")
 		;;
 	esac
+	kept_fragment "$kind" "${argv[@]}" || return 1
 	pid=${ui[MainPID]:-0}
 	[[ $pid =~ ^[1-9][0-9]*$ ]] || return 1
 	[[ /proc/$pid/exe -ef $exe && /proc/$pid/root/ -ef / && /proc/$pid/ns/mnt -ef /proc/1/ns/mnt ]] || return 1
@@ -757,7 +820,10 @@ menv_changed() {
 # menv_restore   Setzt die Umgebung des Managers auf den Stand beim Freischalten zurück: neue
 #   Variablen fort, geänderte und entfernte wieder wie damals (etwa LD_PRELOAD mit systemctl
 #   set-environment). Ins Protokoll kommen nur die Namen. Was sich nicht zurücksetzen lässt,
-#   meldet residue.
+#   meldet residue. Was ein Dienst schon geerbt hat, nimmt das Zurücksetzen nicht zurück (etwa
+#   einer, den root mit einem eigenen PATH neu gestartet hat): Die Namen kommen nach MENV_RESET und
+#   bleiben bis zum Neustart ein Rückstand.
+MENV_RESET=$SNAP/menv-zurueckgesetzt
 menv_restore() {
 	local now names ok=1
 	local -a gone back
@@ -769,6 +835,7 @@ menv_restore() {
 	if ((${#gone[@]})); then systemctl unset-environment -- "${gone[@]}" 2>/dev/null || ok=0; fi
 	if ((${#back[@]})); then systemctl set-environment -- "${back[@]}" 2>/dev/null || ok=0; fi
 	names=$({ printf '%s\n' "${gone[@]}"; printf '%s\n' "${back[@]%%=*}"; } | sed '/^$/d' | sort -u | tr '\n' ' ')
+	tr ' ' '\n' <<<"$names" | sed '/^$/d' >>"$MENV_RESET"
 	if ((ok)); then
 		note "Manager-Umgebung zurückgesetzt: $names"
 	else
@@ -807,6 +874,31 @@ disable_preload() {
 	now=$(scan find "$PRELOAD" -maxdepth 0 -printf '%C@ %s %p' 2>/dev/null)
 	[[ -n $old && $now == "$old" ]] && return 0
 	mv -f -- "$PRELOAD" "$PRELOAD.lf-gesperrt" 2>/dev/null && note "gesperrt: $PRELOAD"
+	return 0
+}
+
+# disable_nextroot   Ein NEXTROOT kommt in einen neuen Ordner NEXTROOT.lf-gesperrt.*: "systemctl
+#   reboot" wechselte sonst per soft-reboot in dieses System, statt neu zu starten (systemctl(1),
+#   systemd 259), mit demselben Kernel. Eine Einhängung dort löst es vorher. Gelöscht wird nichts,
+#   residue meldet beides bis zum Neustart (nextroot_now).
+disable_nextroot() {
+	local t
+	[[ -e $NEXTROOT || -L $NEXTROOT ]] || return 0
+	mountpoint -q -- "$NEXTROOT" 2>/dev/null && umount -R -l -- "$NEXTROOT" 2>/dev/null
+	if t=$(mktemp -d -- "$NEXTROOT.lf-gesperrt.XXXXXX" 2>/dev/null) && mv -- "$NEXTROOT" "$t/" 2>/dev/null; then
+		note "gesperrt: $NEXTROOT (jetzt $t)"
+	else
+		note "ließ sich nicht sperren: $NEXTROOT"
+	fi
+	return 0
+}
+
+# nextroot_now   Je Zeile ein NEXTROOT, auch ein gesperrter.
+nextroot_now() {
+	local f
+	for f in "$NEXTROOT" "$NEXTROOT".lf-gesperrt.*; do
+		[[ -e $f || -L $f ]] && echo "System für soft-reboot: $f"
+	done
 	return 0
 }
 
@@ -1029,7 +1121,9 @@ quick_residue() {
 #   Wer mit der Freigabe root war, kann sich weitere Wege eingerichtet haben. residue prüft die
 #   naheliegenden, nicht alle: Sicher ist nur ein Neustart. Dazu gehören Wege ohne laufenden
 #   Prozess: geänderte Werkzeuge der Grundregel, Dateien aus WATCH, setuid-Dateien und /usr,
-#   Kernel-Einstellungen, Einhängungen, Credentials von Diensten und die Umgebung des Managers.
+#   Kernel-Einstellungen (auch ein für kexec geladener Kernel), ein System für soft-reboot,
+#   Einhängungen, Credentials von Diensten und die Umgebung des Managers, auch eine schon
+#   zurückgesetzte.
 residue() {
 	local rules procs c
 	rules=$(sudo -l -U "$CLAUDE" 2>&1 | sed -nE 's/^[[:space:]]+(\(.*)$/\1/p')
@@ -1048,9 +1142,14 @@ residue() {
 	files_changed
 	fs_new
 	knobs_changed | sed 's/^/Kernel-Einstellung neu oder geändert: /'
+	nextroot_now
 	mounts_changed
 	creds_changed
 	menv_changed | sed 's/^/Manager-Umgebung: /'
+	if [[ -s $MENV_RESET ]]; then
+		c=$(sort -u "$MENV_RESET")
+		echo "Manager-Umgebung während der Freigabe geändert, Dienste können sie geerbt haben: ${c//$'\n'/ }"
+	fi
 	return 0
 }
 
@@ -1134,6 +1233,7 @@ off() {
 	# Bibliothek aus ld.so.preload mehr mit und kein geändertes lf-aufgabe.
 	disable_preload
 	check_chain
+	disable_nextroot
 	stop_new_units
 	stop_new_at
 	disable_new_cron
