@@ -43,9 +43,14 @@
 # Führte Beenden > Ausschalten oder Neustart etwas aus der Freigabe als root oder als Techniker aus
 # (eine angehaltene Einheit, Dateien geladener Einheiten, /usr, Hooks von finalrd, die
 # Benutzer-Manager, Kernel, ein Weg zu root, den Claude beim Beenden nutzen könnte), steht oben, vor
-# dem Weiterarbeiten am Netzschalter auszuschalten; hat sich nur etwas geändert, das beim
-# Weiterarbeiten von selbst läuft (Hooks, sein Home), über Beenden > Ausschalten. Mit Rückstand
-# bleibt die Grundregel gesperrt, bis ein Ende ohne Rückstand abschließt, und kann sich geändert
+# dem Weiterarbeiten am Netzschalter auszuschalten; bleibt sonst ein Weg zu root aus der Freigabe
+# (Konten, polkit, setuid, SSH-Schlüssel, Hooks, sein Home, der Rest von /etc), über Beenden >
+# Ausschalten. Vom ersten Schritt jedes Endes an sperrt lf-netzschalter.service bei logind den
+# Netzschalter und die Tasten für Neustart und Ruhezustand: Ein kurzer Druck tut nichts, nur
+# Gedrückthalten schaltet aus. Nur ein Ende ohne Hinweis aufs Ausschalten am Netzschalter gibt die
+# Sperre frei, sonst bleibt sie bis zum Neustart. Was sich auf dem Speicher LF-DATA geändert hat,
+# bleibt auch nach dem Ausschalten: Dafür steht oben, ihn vor dem nächsten Entsperren zu prüfen. Mit
+# Rückstand bleibt die Grundregel gesperrt, bis ein Ende ohne Rückstand abschließt, und kann sich geändert
 # haben, was sie als root ausführt oder lädt (lock_lines), bis zum Neustart. Ob die Freigabe gilt,
 # entscheidet die Regel selbst, nicht die Uhr; das Ende kommt aus dem monotonen Timer. Keine
 # Prüfung findet jeden Weg, den sich root einrichten kann: Sicher endet eine Freigabe nur mit einem
@@ -136,8 +141,9 @@ USER_RUN=$WROOT/run/user
 # systemd-modules-load, sysctl, tmpfiles, binfmt, polkit, NetworkManager und chrony unter /run lesen,
 # /run/initramfs (systemd-shutdown führt beim Ausschalten /run/initramfs/shutdown als root aus),
 # /run/finalrd (finalrd.service führt beim Ausschalten und Neustart jedes *.finalrd darin als root
-# aus, wie die unter /etc/finalrd), /run/lf-boot.env (disks.sh liest daraus, welche Disks zum
-# Live-Medium gehören), die Ablagen, aus
+# aus, wie die unter /etc/finalrd), /run/dbus-1 (Dienste für D-Bus, vor denen unter /usr/share:
+# SHUTDOWN_PATHS), /run/lf-boot.env (disks.sh liest daraus, welche Disks zum Live-Medium gehören),
+# die Ablagen, aus
 # denen Dienste beim Start Credentials laden (so lesen getty und login agetty.autologin und
 # login.noauth: Anmelden ohne Kennwort), cron der Benutzer, die Skripte von dpkg (sie laufen bei apt
 # als root), linger, DOTFILES in jedem Home unter /home und beim Live-Benutzer alles, was mit einem
@@ -151,7 +157,7 @@ WATCH=("$WROOT"/etc "$WROOT"/root "$WROOT"/run/systemd/*.conf.d "$WROOT"/run/sys
 	"$WROOT"/run/systemd/network "$WROOT"/run/environment.d "$WROOT"/run/modprobe.d "$WROOT"/run/modules-load.d
 	"$WROOT"/run/udev/rules.d "$WROOT"/run/sysctl.d "$WROOT"/run/tmpfiles.d "$WROOT"/run/binfmt.d
 	"$WROOT"/run/polkit-1/rules.d "$WROOT"/run/NetworkManager/conf.d "$WROOT"/run/NetworkManager/system-connections
-	"$WROOT"/run/chrony-dhcp "$WROOT"/run/initramfs "$WROOT"/run/finalrd "$WROOT"/run/lf-boot.env
+	"$WROOT"/run/chrony-dhcp "$WROOT"/run/initramfs "$WROOT"/run/finalrd "$WROOT"/run/dbus-1 "$WROOT"/run/lf-boot.env
 	"$WROOT"/run/credstore "$WROOT"/run/credstore.encrypted "$WROOT"/run/credentials/{@system,@encrypted}
 	"$WROOT"/var/spool/cron "$WROOT"/var/lib/dpkg/info "$WROOT"/var/lib/systemd/linger)
 for h in "$WROOT"/home/*; do
@@ -182,33 +188,28 @@ LOCK_PATHS=("$WROOT"/etc/ld.so.conf "$WROOT"/etc/ld.so.conf.d "$WROOT"/etc/ld.so
 # Hooks von finalrd (finalrd.service führt beim Stoppen jedes *.finalrd unter /etc/finalrd und
 # /run/finalrd als root aus), die Einstellungen von LVM (lvm2-monitor und blk-availability rufen
 # beim Stoppen lvm auf, und lvm.conf nennt Programme, die lvm startet), die Alternativen (sudo, awk
-# und andere Programme unter /usr zeigen nach /etc/alternatives) und die Ordner der Benutzer-Manager
-# (sie beenden ihre Einheiten), dazu was sudo als root lädt und liest (Beenden ruft es auf): Lader,
-# NSS, PAM, die Umgebung von pam_env und sudo selbst. Hat sich dort etwas geändert, steht zuerst im
-# Rückstand, dass der Techniker vor dem Weiterarbeiten am Netzschalter ausschalten soll
-# (switch_hint).
+# und andere Programme unter /usr zeigen nach /etc/alternatives), casper.conf (casper.service liest
+# sie nach umount.target als root als Shell-Code ein, casper-stop), D-Bus (dbus.service läuft beim
+# Herunterfahren weiter; Dienstdateien unter /etc/dbus-1/system-services und /run/dbus-1 gehen denen
+# unter /usr/share vor, dbus-daemon(1), und ohne SystemdService= startet dbus-daemon-launch-helper
+# ihr Exec= als User=, etwa für nm-dispatcher, den NetworkManager bei jedem Netzwerkereignis über
+# D-Bus startet), die Einstellungen von systemd selbst (system.conf und system.conf.d: Hat root ihn
+# während der Freigabe neu geladen oder neu ausgeführt, gelten DefaultEnvironment= für jeden Befehl
+# beim Stoppen und ein CtrlAltDelBurstAction=, das lf-strg-alt-entf.conf aufhebt) und die Ordner der
+# Benutzer-Manager (sie beenden ihre Einheiten), dazu was sudo als root lädt und liest (Beenden ruft
+# es auf): Lader, NSS, PAM (auch /etc/pam.conf, liest libpam ohne /etc/pam.d), die Umgebung von
+# pam_env und sudo selbst. Abgeglichen mit den Befehlen beim Stoppen aller Einheiten des Images,
+# systemd-shutdown, finalrd, lvm, nm-dispatcher, systemd selbst und der Aktivierung über D-Bus (Pfade
+# unter /etc und /run in Programmen, Skripten und Bibliotheken, ISO 20261120.2). Hat sich dort etwas
+# geändert, steht zuerst im Rückstand, dass der Techniker vor dem Weiterarbeiten am Netzschalter
+# ausschalten soll (switch_hint).
 SHUTDOWN_PATHS=("$WROOT"/etc/NetworkManager/dispatcher.d "$WROOT"/etc/udev "$WROOT"/run/udev/rules.d
 	"$WROOT"/etc/modprobe.d "$WROOT"/run/modprobe.d "$WROOT"/run/initramfs "$WROOT"/etc/finalrd "$WROOT"/run/finalrd
-	"$WROOT"/etc/lvm "$WROOT"/etc/alternatives "$USER_RUN" "$WROOT"/etc/ld.so.conf
-	"$WROOT"/etc/ld.so.conf.d "$WROOT"/etc/ld.so.cache "$WROOT"/etc/ld.so.preload "$WROOT"/etc/nsswitch.conf
-	"$WROOT"/etc/pam.d "$WROOT"/etc/security "$WROOT"/etc/environment "$WROOT"/etc/default/locale
-	"$WROOT"/etc/sudo.conf "$WROOT"/etc/sudoers-rs)
-# Was beim Weiterarbeiten von selbst als root oder als Live-Benutzer läuft, nicht aber beim
-# Ausschalten: Hooks von apt, dpkg, smartd, mdadm (PROGRAM für mdmonitor), logrotate, cron und
-# update-motd, Generatoren von systemd, was Dienste beim Start lesen, die von selbst starten (die
-# EnvironmentFile= von ssh, sshd@ für jede Verbindung, chrony, rpcbind, smartmontools und
-# mdmonitor-oneshot unter /etc/default und /etc/rpcbind.conf, die Einstellungen von sshd; keiner
-# dieser Dienste hat ExecStop=), die Profile der Shells und das Home des Live-Benutzers. Hat sich
-# dort etwas geändert, steht zuerst im Rückstand, dass der Techniker vor dem Weiterarbeiten
-# ausschalten soll, über Beenden > Ausschalten (switch_hint).
-HOOK_PATHS=("$WROOT"/etc/update-motd.d "$WROOT"/etc/smartd.conf "$WROOT"/etc/smartmontools "$WROOT"/etc/mdadm
-	"$WROOT"/etc/default "$WROOT"/etc/rpcbind.conf "$WROOT"/etc/ssh "$WROOT"/etc/logrotate.conf
-	"$WROOT"/etc/logrotate.d "$WROOT"/etc/apt "$WROOT"/etc/dpkg "$WROOT"/var/lib/dpkg/info "$WROOT"/etc/crontab
-	"$WROOT"/etc/cron.d "$WROOT"/etc/cron.hourly "$WROOT"/etc/cron.daily "$WROOT"/etc/cron.weekly "$WROOT"/etc/cron.monthly
-	"$WROOT"/var/spool/cron "$WROOT"/etc/systemd/system-generators "$WROOT"/etc/systemd/user-generators
-	"$WROOT"/run/systemd/system-generators "$WROOT"/run/systemd/user-generators "$WROOT"/etc/profile
-	"$WROOT"/etc/profile.d "$WROOT"/etc/bash.bashrc "$WROOT"/etc/bash.bash_logout "$WROOT"/etc/bash_completion.d
-	"$WROOT"/etc/inputrc "$WROOT"/home/"$LIVE_USER")
+	"$WROOT"/etc/lvm "$WROOT"/etc/alternatives "$WROOT"/etc/casper.conf "$WROOT"/etc/dbus-1 "$WROOT"/run/dbus-1
+	"$WROOT"/etc/systemd/system.conf "$WROOT"/etc/systemd/system.conf.d "$WROOT"/run/systemd/system.conf.d
+	"$USER_RUN" "$WROOT"/etc/ld.so.conf "$WROOT"/etc/ld.so.conf.d "$WROOT"/etc/ld.so.cache "$WROOT"/etc/ld.so.preload
+	"$WROOT"/etc/nsswitch.conf "$WROOT"/etc/pam.d "$WROOT"/etc/pam.conf "$WROOT"/etc/security "$WROOT"/etc/environment
+	"$WROOT"/etc/default/locale "$WROOT"/etc/sudo.conf "$WROOT"/etc/sudoers-rs)
 # EFI-Variablen: Startreihenfolge und Starteinträge, MOK für shim, Herstellervariablen. Was root dort
 # ändert, wirkt beim nächsten Start, auch nach Ausschalten. Das Ende vergleicht Namen und SHA256
 # jeder Variablen (efivars_changed) und schreibt nie etwas zurück.
@@ -259,6 +260,23 @@ BASE_FILE=/etc/sudoers.d/lf-claude
 # legt die Marke schon mit dem geplanten Ende an (auch ein abgebrochenes Ende hinterlässt dann kein
 # blankes "aus"), off schreibt das tatsächliche.
 LAST=/run/lf/claude-freigabe-zuletzt
+# Die Sperre bei logind (systemd-inhibit, Modus block) für den Netzschalter, die Tasten für Neustart,
+# Bereitschaft und Ruhezustand, den Deckelschalter und den Ruhezustand selbst. Ohne sie startete ein
+# kurzer Druck auf den Netzschalter ein geordnetes Ausschalten (logind.conf des Images ist leer:
+# HandlePowerKey=poweroff), mit dem Code, den root während der Freigabe abgelegt haben kann; schon
+# beim Drücken, bevor die Hardware nach einigen Sekunden Gedrückthalten den Strom nimmt. Sie gilt vom
+# ersten Schritt jedes Endes an und bleibt, solange der Rückstand sagt, am Netzschalter auszuschalten
+# (netz_lock, netz_check, netz_release). Sperren dieser Art (handle-*) beachtet logind immer, auch mit
+# *IgnoreInhibited= in logind.conf: Ein Drop-in, das root während der Freigabe ablegt, hebt sie nicht
+# auf. Der Dienst kommt mit dem Image (build/overlay), lf-freigabe lässt ihn nur mit genau dieser
+# Unit-Datei gelten (netz_static). Hält logind die Sperre nach dem Ende nicht, steht das in NETZ_FEHLT.
+NETZ_UNIT=lf-netzschalter.service
+NETZ_FILE=$WROOT/usr/lib/systemd/system/$NETZ_UNIT
+NETZ_SHA=9f1f872f73ba6514392476731c2276d4ed359fa2152f7b8af3527b574e64da1f
+NETZ_WHAT=handle-power-key:handle-reboot-key:handle-suspend-key:handle-hibernate-key:handle-lid-switch:sleep
+NETZ_ARGV=(/usr/bin/systemd-inhibit "--what=$NETZ_WHAT" --who=Leuchtfeuer --why=lf-freigabe --mode=block /usr/bin/sleep infinity)
+INHIBIT_EXE=/usr/bin/systemd-inhibit
+NETZ_FEHLT=/run/lf/claude-netzschalter-frei
 
 note() {
 	logger -t lf-freigabe -- "$*" 2>/dev/null || true
@@ -943,14 +961,170 @@ kept_unit() {
 	return 0
 }
 
+# netz_static   Ist die Einheit (ui von unit_info) genau der Dienst aus dem Image (NETZ_UNIT): nicht
+#   vorübergehend, mit der Unit-Datei NETZ_FILE und deren Inhalt (NETZ_SHA), ohne Drop-ins, genau ein
+#   Befehl (NETZ_ARGV), Type=exec, sonst wie die Dienste, die kept_unit gelten lässt (KEPT_EMPTY,
+#   KEPT_SAME, KEPT_REQUIRES, UnsetEnvironment genau ENV_UNSAFE)? Nur dann lässt das Ende ihn stehen.
+netz_static() {
+	local p re
+	local -a req
+	[[ ${ui[Transient]:-} == no && ${ui[FragmentPath]:-} == "$NETZ_FILE" && ${ui[Type]:-} == exec ]] || return 1
+	[[ ${ui[UnsetEnvironment]:-} == "$ENV_UNSAFE" ]] || return 1
+	for p in "${KEPT_EMPTY[@]}"; do
+		[[ -z ${ui[$p]:-} ]] || return 1
+	done
+	for p in "${KEPT_SAME[@]}"; do
+		[[ ${ui[${p%%=*}]:-} == "${p#*=}" ]] || return 1
+	done
+	read -ra req <<<"${ui[Requires]:-}"
+	[[ $(printf '%s\n' "${req[@]}" | sort | tr '\n' ' ') == "$KEPT_REQUIRES " ]] || return 1
+	re='^[{] path=([^ ]+) ; argv[[][]]=(.*) ; ignore_errors=no ; '
+	[[ ${ui[ExecStart]:-} =~ $re && ${ui[ExecStart]} != *$'\n'* ]] || return 1
+	[[ ${BASH_REMATCH[1]} == "${NETZ_ARGV[0]}" && ${BASH_REMATCH[2]} == "${NETZ_ARGV[*]}" ]] || return 1
+	p=$(scan sha256sum -- "$NETZ_FILE" 2>/dev/null) || return 1
+	[[ ${p%% *} == "$NETZ_SHA" ]]
+}
+
+# netz_procs   Die Prozesse des Dienstes (ui von unit_info): Fremd (KEPT_FOREIGN) ist jeder, der
+#   nicht vom Hauptprozess abstammt, auch in einer Unter-cgroup. Rückgabe 1 ohne Hauptprozess oder
+#   ohne lesbare cgroup.
+netz_procs() {
+	local pid=${ui[MainPID]:-0} list p
+	local -a procs
+	KEPT_FOREIGN=()
+	[[ $pid =~ ^[1-9][0-9]*$ ]] || return 1
+	[[ ${ui[ControlGroup]:-} == /?* && -f $CGROOT${ui[ControlGroup]}/cgroup.procs ]] || return 1
+	list=$(scan find "$CGROOT${ui[ControlGroup]}" -xdev -name cgroup.procs -type f -exec cat {} + 2>/dev/null) || return 1
+	mapfile -t procs <<<"$list"
+	[[ " ${procs[*]} " == *" $pid "* ]] || return 1
+	for p in "${procs[@]}"; do
+		[[ $p =~ ^[0-9]+$ && $p != "$pid" ]] || continue
+		gone "$p" && continue
+		unsafe_env "$p" && KEPT_FOREIGN+=("$p") && continue
+		descends "$p" "$pid" || KEPT_FOREIGN+=("$p")
+	done
+	return 0
+}
+
+# netz_ok   0, wenn der Dienst läuft wie im Image (netz_static), sein Hauptprozess genau NETZ_ARGV
+#   ausführt (mit derselben Wurzel und denselben Einhängungen wie systemd, ohne Variable, die fremden
+#   Code lädt), kein fremder Prozess darin ist und logind seine Sperre führt (netz_held); 1, solange
+#   er nicht läuft, noch startet, nach netz_restart noch der alte Prozess ist (NETZ_OLD) oder die
+#   Sperre noch fehlt; 2, wenn er so nicht stimmt. Nach "restart --no-block" kann er kurz noch
+#   inaktiv oder fehlgeschlagen sein: Darum wartet netz_wait in jedem Zustand außer active.
+NETZ_OLD=0
+netz_ok() {
+	local pid n
+	local -a cmd
+	unit_info "$NETZ_UNIT"
+	netz_static || return 2
+	[[ ${ui[ActiveState]:-} == active ]] || return 1
+	[[ ${ui[MainPID]:-0} != "$NETZ_OLD" ]] || return 1
+	netz_procs || return 1
+	((${#KEPT_FOREIGN[@]} == 0)) || return 2
+	pid=${ui[MainPID]}
+	[[ /proc/$pid/exe -ef $INHIBIT_EXE && /proc/$pid/root/ -ef / && /proc/$pid/ns/mnt -ef /proc/1/ns/mnt ]] || return 2
+	{ mapfile -d '' -t cmd <"/proc/$pid/cmdline"; } 2>/dev/null || return 2
+	((${#cmd[@]} == ${#NETZ_ARGV[@]})) || return 2
+	for ((n = 0; n < ${#NETZ_ARGV[@]}; n++)); do
+		[[ ${cmd[n]} == "${NETZ_ARGV[n]}" ]] || return 2
+	done
+	unsafe_env "$pid" && return 2
+	netz_held "$pid" || return 1
+	return 0
+}
+
+# netz_held PID   Führt logind eine Sperre von PID (uid 0, Modus block, von Leuchtfeuer) für alles
+#   aus NETZ_WHAT? logind gibt die Arten in eigener Reihenfolge aus.
+netz_held() {
+	busctl --json=short call org.freedesktop.login1 /org/freedesktop/login1 org.freedesktop.login1.Manager \
+		ListInhibitors 2>/dev/null | jq -e --arg what "$NETZ_WHAT" --argjson pid "$1" '
+		.data[0] | any(.[]; .[1] == "Leuchtfeuer" and .[3] == "block" and .[4] == 0 and .[5] == $pid and
+			((.[0] | split(":")) as $w | all($what | split(":")[]; IN($w[]))))' >/dev/null 2>&1
+}
+
+# netz_lock   Erster Schritt eines Endes (off): startet den Dienst, wenn er so ist wie im Image
+#   (netz_static), ohne darauf zu warten. Ob logind die Sperre führt, prüft netz_check. Läuft er schon
+#   (von einem früheren Ende mit Rückstand oder von root während der Freigabe gestartet), bleibt er
+#   bis dahin, NETZ_PRE merkt sich seinen Prozess.
+NETZ_PRE=0
+netz_lock() {
+	rm -f "$NETZ_FEHLT"
+	unit_info "$NETZ_UNIT"
+	[[ ${ui[ActiveState]:-} == active && ${ui[MainPID]:-0} =~ ^[1-9][0-9]*$ ]] && NETZ_PRE=${ui[MainPID]}
+	if ! netz_static; then
+		trace "Ende der Freigabe: $NETZ_UNIT nicht wie im Image, Netzschalter nicht gesperrt"
+		return 0
+	fi
+	systemctl start --no-block "$NETZ_UNIT" 2>/dev/null || true
+	trace "Ende der Freigabe: Netzschalter gesperrt ($NETZ_UNIT)"
+}
+
+# netz_wait   Wartet bis zu 3 Sekunden, bis netz_ok stimmt.
+netz_wait() {
+	local i rc
+	for ((i = 0; i < 30; i++)); do
+		netz_ok
+		rc=$?
+		((rc == 0)) && return 0
+		((rc == 2)) && return 1
+		sleep 0.1
+	done
+	return 1
+}
+
+# netz_restart   Startet den Dienst neu, wenn er so ist wie im Image: neu gestartet hat er die
+#   Umgebung, die menv_restore zurückgesetzt hat, keinen fremden Prozess und keine Bibliothek aus
+#   einer gesperrten ld.so.preload mehr. Bis der neue Prozess die Sperre führt, vergehen Millisekunden
+#   ohne sie.
+netz_restart() {
+	unit_info "$NETZ_UNIT"
+	netz_static || return 0
+	NETZ_OLD=${ui[MainPID]:-0}
+	systemctl restart --no-block "$NETZ_UNIT" 2>/dev/null || true
+}
+
+# netz_check   Nach dem Beenden (off): Hält logind die Sperre noch? Wenn nicht, einmal neu starten
+#   und noch einmal prüfen. Gleich neu starten, wenn der Prozess Code aus der Freigabe haben kann:
+#   Er lief schon vor diesem Ende (NETZ_PRE, root konnte ihn ändern), disable_preload hat eine
+#   ld.so.preload gesperrt (er startete davor und lud ihre Bibliothek) oder menv_restore hat Variablen
+#   zurückgesetzt (er kann sie geerbt haben). Fehlt die Sperre danach, steht das in NETZ_FEHLT, und
+#   residue sagt es, sobald der Hinweis aufs Ausschalten am Netzschalter steht.
+netz_check() {
+	unit_info "$NETZ_UNIT"
+	if [[ -s $MENV_RESET || -n $PRELOAD_OFF || ($NETZ_PRE != 0 && ${ui[MainPID]:-0} == "$NETZ_PRE") ]]; then
+		netz_restart
+	fi
+	netz_wait && return 0
+	netz_restart
+	netz_wait && return 0
+	install -d /run/lf
+	: >"$NETZ_FEHLT"
+	note "Netzschalter nicht gesperrt: logind führt keine Sperre von $NETZ_UNIT"
+	return 0
+}
+
+# netz_release   Am Ende ohne Hinweis aufs Ausschalten am Netzschalter (off): gibt die Sperre frei.
+#   Einen Dienst, der nicht so ist wie im Image, beendet es nicht: Dessen Befehle beim Stoppen
+#   liefen sonst (stop_new_units hat ihn schon behandelt).
+netz_release() {
+	rm -f "$NETZ_FEHLT"
+	unit_info "$NETZ_UNIT"
+	netz_static || return 0
+	case ${ui[ActiveState]:-} in inactive | failed | "") return 0 ;; esac
+	systemctl stop "$NETZ_UNIT" 2>/dev/null || true
+	trace "Ende der Freigabe: Netzschalter wieder frei ($NETZ_UNIT)"
+}
+
 # new_units   Laufende Einheiten, die seit dem Freischalten entstanden oder neu gestartet sind
 #   (eine InvocationID, die es beim Freischalten nicht gab, auch unter einem Namen von vorher): jede,
 #   die beim Freischalten nicht lief, auch aus einer Unit-Datei des Systems (etwa debug-shell.service,
 #   eine Shell als root an tty9), und jede, die nur neu gestartet ist, wenn sie vorübergehend ist
 #   (systemd-run) oder ihre Unit-Datei oder eine Ergänzung neuer ist als das Freischalten
 #   (unit_changed). Ausgabe "EINHEIT" je Einheit zum Beenden und "EINHEIT PID" je fremdem Prozess in
-#   einem Dienst, der bleibt. Nicht dazu zählen die eigenen Einheiten, die Dienste der Grundregel
-#   (kept_unit: ntfs-3g für nur lesend eingehängte Quellen, Rettungen von lf-aufgabe), die Sitzungen
+#   einem Dienst, der bleibt. Nicht dazu zählen die eigenen Einheiten, die Sperre des Netzschalters
+#   (NETZ_UNIT, nur mit genau ihrem Namen und ihrer Unit-Datei: netz_static), die Dienste der
+#   Grundregel (kept_unit: ntfs-3g für nur lesend eingehängte Quellen, Rettungen von lf-aufgabe), die Sitzungen
 #   von Claude selbst (claude_scope), Konsolen (getty, serial-getty: ihre Credentials prüft
 #   creds_changed, ihre Einhängung mounts_changed) und Anmeldungen, Benutzer-Manager und
 #   Laufzeitordner von lf-claude (sie haben nur dessen Rechte) und vom Live-Benutzer (eine davon
@@ -979,6 +1153,12 @@ new_units() {
 		esac
 		if [[ -n ${active[$u]:-} && ${ui[Transient]:-} != yes ]]; then
 			unit_changed || continue
+		fi
+		if [[ $u == "$NETZ_UNIT" ]] && netz_static; then
+			if netz_procs; then
+				for p in "${KEPT_FOREIGN[@]}"; do echo "$u $p"; done
+			fi
+			continue
 		fi
 		if kept_unit "$u"; then
 			for p in "${KEPT_FOREIGN[@]}"; do echo "$u $p"; done
@@ -1355,14 +1535,16 @@ files_changed() {
 
 # disable_preload   Eine /etc/ld.so.preload, die seit dem Freischalten neu ist oder sich geändert hat,
 #   bekommt die Endung .lf-gesperrt: Der Lader lädt dann ihre Bibliothek nicht mehr in jedes
-#   Programm, auch nicht in sudo. Gelöscht wird nichts, residue meldet sie (files_changed).
+#   Programm, auch nicht in sudo. Gelöscht wird nichts, residue meldet sie (files_changed). PRELOAD_OFF
+#   sagt netz_check, dass die Sperre des Netzschalters sie geladen haben kann (sie startet davor).
+PRELOAD_OFF=
 disable_preload() {
 	local old now
 	[[ -f $SNAP/files && (-e $PRELOAD || -L $PRELOAD) ]] || return 0
 	old=$(awk -v p="$PRELOAD" '{q = $0; sub(/^[^ ]* [^ ]* /, "", q)} q == p' "$SNAP/files")
 	now=$(scan find "$PRELOAD" -maxdepth 0 -printf '%C@ %s %p' 2>/dev/null)
 	[[ -n $old && $now == "$old" ]] && return 0
-	mv -f -- "$PRELOAD" "$PRELOAD.lf-gesperrt" 2>/dev/null && note "gesperrt: $PRELOAD"
+	mv -f -- "$PRELOAD" "$PRELOAD.lf-gesperrt" 2>/dev/null && PRELOAD_OFF=1 && note "gesperrt: $PRELOAD"
 	return 0
 }
 
@@ -2219,6 +2401,26 @@ efi_hint() {
 	return 0
 }
 
+# persist_hint   Liest Zeilen von residue. Hat sich auf dem Speicher LF-DATA etwas geändert
+#   (persist_changed), eine Zeile mit dem, was der Techniker vor dem nächsten Entsperren tun muss:
+#   Der Inhalt bleibt über jedes Ausschalten, und beim Entsperren übernimmt persist_bind ihn ins
+#   Live-System (das Home des Live-Benutzers mit .ssh und .local/bin, /etc/lf, WLAN-Verbindungen als
+#   root). Nach dem Neustart zeigt sonst nichts mehr, was sich geändert hat.
+persist_hint() {
+	local l n found="" k=0
+	while IFS= read -r l; do
+		case $l in
+		"Datei auf LF-DATA "* | "Ordner auf LF-DATA "*) n=${l#*: } ;;
+		"Speicher LF-DATA "*) n="Inhalt ungeprüft" ;;
+		*) continue ;;
+		esac
+		hint_add found k "$n"
+	done
+	((k > 3)) && found+=", …"
+	[[ -z $found ]] || echo "Speicher LF-DATA geändert ($found): bleibt nach dem Ausschalten, vor dem nächsten Entsperren prüfen oder neu anlegen"
+	return 0
+}
+
 # in_paths PFAD LISTE…   Liegt PFAD in einem Eintrag der LISTE (oder ist er einer)?
 in_paths() {
 	local p q=$1
@@ -2237,7 +2439,7 @@ data_mount() {
 }
 
 # hint_item ZEILE   Ordnet eine Zeile von residue einem Hinweis zu (switch_hint), in HC die Art, in HN
-#   der Name dafür:
+#   der Name dafür (der Pfad, sonst was vor ": " steht):
 #   - jetzt: Eine Einheit aus der Freigabe läuft weiter, ließ sich nicht anhalten, und bei ihrem Ende
 #     führte systemd Code aus (stop_new_units).
 #   - netz: Beenden > Ausschalten oder Neustart führte es als root oder als Live-Benutzer aus: eine
@@ -2250,14 +2452,22 @@ data_mount() {
 #     core_pattern, uevent_helper, modprobe, binfmt_misc und kexec, Module, Taint, BPF), die Umgebung
 #     des Managers, auch eine schon zurückgesetzte (Dienste können sie geerbt haben und bekommen beim
 #     Beenden TERM), ein System für soft-reboot, eine Einhängung außerhalb von data_mount (sie kann
-#     jede dieser Dateien verdecken) und eine Grundregel, die sich nicht sperren ließ (ihre Jobs laufen
-#     weiter, auch wenn sich geändert hat, was sie laden). Eine abgebrochene Prüfung zählt dazu.
-#   Was erst jemand nutzen muss (setuid-Dateien, Konten, polkit, SSH-Schlüssel), zählt nicht: Das
-#   ginge beim Weiterarbeiten jederzeit, nicht erst beim Beenden.
-#   - aus: Es läuft beim Weiterarbeiten von selbst so, aber nicht beim Ausschalten (HOOK_PATHS).
+#     jede dieser Dateien verdecken), eine Grundregel, die sich nicht sperren ließ (ihre Jobs laufen
+#     weiter, auch wenn sich geändert hat, was sie laden), und eine fehlende Sperre des Netzschalters.
+#     Eine abgebrochene Prüfung zählt dazu.
+#   - aus: jede andere Zeile, auch eine, die hier niemand eingeordnet hat. Sie ist ein Weg zu root für
+#     lf-claude oder jeden anderen, oder es läuft als root oder Live-Benutzer, sobald jemand es nutzt:
+#     setuid und capabilities, Konten, Gruppen, polkit, SSH-Schlüssel, /root, tmux, mc, Credentials,
+#     Hooks von apt, dpkg, cron, logrotate, smartd und update-motd, Generatoren, was Dienste beim
+#     Start lesen, die Profile der Shells, das Home des Live-Benutzers, der Rest von /etc,
+#     Einhängungen unter data_mount und der Speicher LF-DATA (dazu persist_hint).
+#   - keine: nur die Zeilen, die kein Weg zu root sind und nichts ausführen: die Sperre der
+#     Grundregel, beendete Einheiten, geänderte Werkzeuge (die Grundregel ist dann bis zum Neustart
+#     gesperrt), gesperrte Kopien eines Systems für soft-reboot und EFI-Variablen (dazu efi_hint).
 hint_item() {
 	local l=$1 p
 	HC='' HN=''
+	[[ -n $l ]] || return 0
 	case $l in
 	"Einheit läuft weiter, ließ sich nicht anhalten: "*) HC=jetzt HN=${l#*: } ;;
 	"Einheit angehalten, nicht beendet: "* | "Einheit mit geänderter Unit-Datei (NeedDaemonReload): "* | \
@@ -2281,19 +2491,29 @@ hint_item() {
 	"Kernel: "*) HC=netz HN=Kernel ;;
 	"Manager-Umgebung: "* | "Manager-Umgebung während der Freigabe geändert"*) HC=netz HN=Manager-Umgebung ;;
 	"Grundregel ließ sich nicht sperren: "*) HC=netz HN="Jobs der Grundregel" ;;
+	"Netzschalter nicht gesperrt: "*) HC=netz HN=Netzschalter ;;
 	"System für soft-reboot: $NEXTROOT") HC=netz HN=$NEXTROOT ;;
 	"Einhängung neu oder geändert: "*)
 		p=${l#*: }
 		p=${p% (*}
-		data_mount "$p" || HC=netz HN=$p
+		HC=aus HN=$p
+		data_mount "$p" || HC=netz
 		;;
+	"Grundregel gesperrt bis zum Neustart: "* | "Grundregel gesperrt, bis ein Ende ohne Rückstand abschließt: "* | \
+		"Grundregel ließ sich nicht wieder freigeben: "* | "Einheit beendet: "* | "Werkzeug neu oder geändert: "* | \
+		"System für soft-reboot: $NEXTROOT.lf-gesperrt."* | "EFI-Variable neu: "* | "EFI-Variable geändert: "* | \
+		"EFI-Variable entfernt: "*) ;;
+	"Datei auf LF-DATA "* | "Ordner auf LF-DATA "* | "Speicher LF-DATA "*) HC=aus HN=LF-DATA ;;
+	"Suche nach capabilities abgebrochen"*) HC=aus HN=capabilities ;;
 	"Datei "* | "Ordner "*)
 		p=${l#*: }
-		if in_paths "$p" "${SHUTDOWN_PATHS[@]}"; then
-			HC=netz HN=$p
-		elif in_paths "$p" "${HOOK_PATHS[@]}"; then
-			HC=aus HN=$p
-		fi
+		HC=aus HN=$p
+		in_paths "$p" "${SHUTDOWN_PATHS[@]}" && HC=netz
+		;;
+	*)
+		p=${l#*: }
+		HC=aus HN=${l%%: *}
+		[[ $l == *": "* && $p == /* ]] && HN=${p%% *}
 		;;
 	esac
 	return 0
@@ -2309,12 +2529,13 @@ hint_add() {
 
 # switch_hint   Aus den Zeilen von residue (Standardeingabe) der Hinweis, wie der Techniker ausschalten
 #   soll (hint_item), oder nichts. Läuft eine Einheit weiter (jetzt): sofort am Netzschalter, nicht
-#   über Beenden, das sie stoppte. Führte Beenden etwas aus der Freigabe aus (netz): vor dem
-#   Weiterarbeiten am Netzschalter. Läuft nur beim Weiterarbeiten etwas von selbst (aus): vor dem
+#   über Beenden oder Strg+Alt+Entf, die sie stoppten. Führte Beenden etwas aus der Freigabe aus
+#   (netz): vor dem Weiterarbeiten am Netzschalter. Bleibt sonst ein Weg zu root (aus): vor dem
 #   Weiterarbeiten über Beenden > Ausschalten. So ein Weg wartet auf das nächste apt, die nächste
 #   Anmeldung oder den nächsten Lauf von cron, nicht auf den Neustart. Es gilt der stärkste Hinweis.
+#   Fehlt die Sperre des Netzschalters, sagt er, dass schon ein kurzer Druck geordnet herunterfährt.
 switch_hint() {
-	local l j="" n="" a="" kj=0 kn=0 ka=0
+	local l j="" n="" a="" kj=0 kn=0 ka=0 k=""
 	while IFS= read -r l; do
 		hint_item "$l"
 		case $HC in
@@ -2322,16 +2543,17 @@ switch_hint() {
 		netz) hint_add n kn "$HN" ;;
 		aus) hint_add a ka "$HN" ;;
 		esac
+		[[ $l == "Netzschalter nicht gesperrt: "* ]] && k=" (ein kurzer Druck fährt geordnet herunter)"
 	done
 	if [[ -n $j ]]; then
 		((kj > 3)) && j+=", …"
-		echo "Sofort ausschalten: Netzschalter gedrückt halten, nicht Beenden > Ausschalten oder Neustart (läuft weiter, beim Beenden liefe Code aus der Freigabe: $j)"
+		echo "Sofort ausschalten: Netzschalter gedrückt halten$k, nicht Beenden > Ausschalten oder Neustart, nicht Strg+Alt+Entf (läuft weiter, beim Beenden liefe Code aus der Freigabe: $j)"
 	elif [[ -n $n ]]; then
 		((kn > 3)) && n+=", …"
-		echo "Vor dem Weiterarbeiten ausschalten: Netzschalter gedrückt halten, nicht Beenden > Ausschalten oder Neustart (beim Beenden liefe als root oder $LIVE_USER Code aus der Freigabe: $n)"
+		echo "Vor dem Weiterarbeiten ausschalten: Netzschalter gedrückt halten$k, nicht Beenden > Ausschalten oder Neustart, nicht Strg+Alt+Entf (beim Beenden liefe als root oder $LIVE_USER Code aus der Freigabe: $n)"
 	elif [[ -n $a ]]; then
 		((ka > 3)) && a+=", …"
-		echo "Vor dem Weiterarbeiten ausschalten (Beenden > Ausschalten): geändert, was von selbst als root oder $LIVE_USER läuft ($a)"
+		echo "Vor dem Weiterarbeiten ausschalten (Beenden > Ausschalten): Weg zu root aus der Freigabe ($a)"
 	fi
 	return 0
 }
@@ -2442,31 +2664,43 @@ quick_residue() {
 #   Credentials von Diensten, EFI-Variablen, der Speicher LF-DATA und die Umgebung des Managers, auch
 #   eine schon zurückgesetzte, die Benutzer-Manager, Prozesse des Live-Benutzers aus der Freigabe und
 #   jede Einheit, die das Ende beendet hat. Zuerst steht, wie der Techniker ausschalten soll
-#   (switch_hint), und was er vor dem nächsten Start tun muss (efi_hint): Ausschalten setzt
-#   EFI-Variablen nicht zurück, den Rückstand aber schon (er liegt im RAM). Sagt der erste Hinweis,
-#   am Netzschalter auszuschalten, kommt der zu EFI in dieselbe Zeile (status zeigt die erste), sonst
-#   steht er davor. Dann eine Grundregel, die sich nicht sperren ließ. Rückgabe 1, wenn residue_lines
-#   abbricht.
+#   (switch_hint), was er vor dem nächsten Start tun muss (efi_hint) und vor dem nächsten Entsperren
+#   von LF-DATA (persist_hint): Ausschalten setzt EFI-Variablen und LF-DATA nicht zurück, den
+#   Rückstand aber schon (er liegt im RAM). Sagt der erste Hinweis, am Netzschalter auszuschalten,
+#   kommen die beiden in dieselbe Zeile (status zeigt die erste), sonst stehen sie davor. Dann eine
+#   Grundregel, die sich nicht sperren ließ. Hält logind die Sperre des Netzschalters nicht
+#   (NETZ_FEHLT, netz_check) und steht ein Hinweis aufs Ausschalten am Netzschalter, kommt eine Zeile
+#   dazu, und der Hinweis sagt, dass ein kurzer Druck geordnet herunterfährt. Ohne so einen Hinweis
+#   braucht es die Sperre nicht (das Ende gibt sie frei). Rückgabe 1, wenn residue_lines abbricht.
 residue() {
-	local e r h f=""
+	local e r h f="" d x=""
 	e=$(efivars_changed)
 	# "ENDE" am Schluss: Fehlt es, ist residue_lines nicht bis zum Ende gekommen (end_residue).
 	r=$(residue_lines "$e" && echo ENDE)
-	h=$(switch_hint <<<"$r")
+	h=$(switch_hint <<<"${r%ENDE}")
+	if [[ $h == *"Netzschalter gedrückt halten"* && -e $NETZ_FEHLT ]]; then
+		x="Netzschalter nicht gesperrt: $NETZ_UNIT"
+		h=$(switch_hint <<<"${r%ENDE}"$'\n'"$x")
+	fi
 	[[ -z $e ]] || f=$(efi_hint <<<"$e")
+	d=$(persist_hint <<<"$r")
 	if [[ $h == *"Netzschalter gedrückt halten"* ]]; then
+		f+=${d:+${f:+. }$d}
 		echo "$h${f:+. Danach: $f}"
 	else
 		[[ -z $f ]] || echo "$f"
+		[[ -z $d ]] || echo "$d"
 		[[ -z $h ]] || echo "$h"
 	fi
 	if [[ $r == ENDE || $r == *$'\n'ENDE ]]; then
 		r=${r%ENDE}
 		r=${r%$'\n'}
 		[[ -z $r ]] || printf '%s\n' "$r"
+		[[ -z $x ]] || echo "$x"
 		return 0
 	fi
 	[[ -z $r ]] || printf '%s\n' "$r"
+	[[ -z $x ]] || echo "$x"
 	return 1
 }
 
@@ -2615,9 +2849,12 @@ off() {
 	install -d /run/lf
 	old=$(awk -v p="$END_OPEN" 'index($0, p) != 1' "$RESIDUE" 2>/dev/null)
 	{
-		echo "$END_OPEN, Ende seit $(date +%H:%M). Vor dem Weiterarbeiten ausschalten: Netzschalter gedrückt halten, nicht Beenden > Ausschalten oder Neustart"
+		echo "$END_OPEN, Ende seit $(date +%H:%M). Vor dem Weiterarbeiten ausschalten: Netzschalter gedrückt halten, nicht Beenden > Ausschalten oder Neustart, nicht Strg+Alt+Entf"
 		[[ -z $old ]] || printf '%s\n' "$old"
 	} >"$RESIDUE.neu" && chmod 0644 "$RESIDUE.neu" && mv -f -- "$RESIDUE.neu" "$RESIDUE"
+	# Gleich danach die Sperre des Netzschalters: Ein kurzer Druck führe sonst ab hier ein geordnetes
+	# Ausschalten aus, mit allem, was aus der Freigabe noch läuft. Bricht das Ende ab, bleibt sie.
+	netz_lock
 	trap 'cg_freeze 0' EXIT
 	# Läuft das Ende in dem Dienst, den "aus" aus der cgroup von Claude eben angelegt hat: dessen
 	# Unit-Datei in den Schnappschuss, wie bei Timer und Dienst von "an".
@@ -2647,6 +2884,9 @@ off() {
 	stop_new_units
 	menv_restore
 	if [[ -e $LINGER/$CLAUDE ]]; then loginctl disable-linger "$CLAUDE" 2>/dev/null || true; fi
+	# Hält logind die Sperre des Netzschalters noch (nach dem Beenden, vor der Prüfung des Rückstands:
+	# residue sagt es, wenn nicht)?
+	netz_check
 	trace "Ende der Freigabe: beendet, prüfe Rückstand"
 	# Prüfen, bevor Claude weiterläuft: Sonst liefe zwischen Auftauen und Sperren noch ein Werkzeug
 	# der Grundregel, das sich geändert haben kann. Gibt es eine Zeile aus lock_lines, bleibt die
@@ -2676,6 +2916,13 @@ off() {
 		r="Grundregel ließ sich nicht wieder freigeben: $(base_locked)"
 	elif [[ -n $r && $(lock_kind) == ende ]]; then
 		r+=$'\n'"Grundregel gesperrt, bis ein Ende ohne Rückstand abschließt: $(base_locked)"
+	fi
+	# Die Sperre des Netzschalters bleibt nur, solange der Rückstand sagt, dort auszuschalten (sie
+	# steht dann in der ersten Zeile), bis zum Neustart oder bis ein späteres Ende sie freigibt.
+	if [[ ${r%%$'\n'*} == *"Netzschalter gedrückt halten"* ]]; then
+		trace "Ende der Freigabe: Netzschalter bleibt gesperrt"
+	else
+		netz_release
 	fi
 	trace "Ende der Freigabe: Rückstand geprüft"
 	cg_freeze 0

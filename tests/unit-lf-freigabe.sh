@@ -52,11 +52,18 @@
 #     zuerst der Hinweis aufs Ausschalten (A1 bis A3, B2 bis B4, B6, B7).
 #   - Nach jeder Freigabe sagt status bis zum Neustart "aus, Neustart empfohlen (…)" (F15). Der
 #     Assistent startet ohne kexec und soft-reboot neu, die Anleitung rät zum Ausschalten.
+#   - Vom ersten Schritt jedes Endes an hält lf-netzschalter.service (Unit-Datei aus dem Image) bei
+#     logind die Sperre des Netzschalters; das Ende lässt den Dienst nur mit genau dieser Datei stehen,
+#     prüft nach dem Beenden über ListInhibitors, ob logind sie führt, startet ihn neu, wenn sein
+#     Prozess Code aus der Freigabe haben kann, und gibt ihn nur ohne Hinweis aufs Ausschalten am
+#     Netzschalter frei. Jede Zeile, die niemand eingeordnet hat, sagt, über Beenden > Ausschalten
+#     auszuschalten; geänderte Dateien auf LF-DATA haben einen eigenen Hinweis. Strg+Alt+Entf ist im
+#     Image ohne Wirkung (nur Attrappen, keine Einheit mit Code beim Stoppen).
 #
 # Hier läuft nichts als root: Eine Kopie von lf-freigabe arbeitet mit eigenen Ordnern statt
 # /etc/sudoers.d, /run/lf, /proc und /sys/fs/cgroup, und mit einer eigenen Wurzel (WROOT) für die
 # Dateien, die das Ende prüft. sudo, systemctl, systemd-run, loginctl, atq, atrm, visudo, logger,
-# id, busctl, getcap und lf-aufgabe sind Attrappen. Beendet werden nur sleep-Prozesse, die der
+# id, busctl (auch logind), getcap und lf-aufgabe sind Attrappen. Beendet werden nur sleep-Prozesse, die der
 # Test selbst startet.
 set -u
 cd "$(dirname "$0")/.." || exit 1
@@ -130,7 +137,11 @@ echo rescue >"$CRED/getty@tty1.service/agetty.autologin"
 # Generator hat beim Start geschrieben.
 TR=$W/run/systemd/transient
 # Der Anfang des Hinweises, vor dem Weiterarbeiten am Netzschalter auszuschalten (switch_hint).
-NETZ="Vor dem Weiterarbeiten ausschalten: Netzschalter gedrückt halten, nicht Beenden > Ausschalten oder Neustart (beim Beenden liefe als root oder rescue Code aus der Freigabe: "
+NETZ="Vor dem Weiterarbeiten ausschalten: Netzschalter gedrückt halten, nicht Beenden > Ausschalten oder Neustart, nicht Strg+Alt+Entf (beim Beenden liefe als root oder rescue Code aus der Freigabe: "
+# Derselbe Hinweis, wenn logind die Sperre des Netzschalters nicht führt (netz_check).
+NETZK="Vor dem Weiterarbeiten ausschalten: Netzschalter gedrückt halten (ein kurzer Druck fährt geordnet herunter), nicht Beenden > Ausschalten oder Neustart, nicht Strg+Alt+Entf (beim Beenden liefe als root oder rescue Code aus der Freigabe: "
+# Der Hinweis, über Beenden > Ausschalten auszuschalten (alles andere, was ein Weg zu root ist).
+AUS="Vor dem Weiterarbeiten ausschalten (Beenden > Ausschalten): Weg zu root aus der Freigabe ("
 mkdir -p "$TR" "$W/etc/systemd/system" "$W/run/systemd/system" "$W/run/systemd/generator"
 printf '[Unit]\nDescription=Platzhalter\n' >"$W/run/systemd/generator/boot.mount"
 # Unit-Dateien unter /usr und ein Dienst, den jeder über D-Bus startet (wie systemd-hostnamed, Q6).
@@ -138,6 +149,23 @@ mkdir -p "$W/usr/lib/systemd/system" "$W/usr/share/dbus-1/system-services"
 for u in debug-shell.service systemd-hostnamed.service systemd-timedated.service systemd-localed.service systemd-machined.service serial-getty@.service user@.service user-runtime-dir@.service; do
 	printf '[Unit]\nDescription=%s\n' "$u" >"$W/usr/lib/systemd/system/$u"
 done
+# Was systemd-run für ntfs3g_ro und start_rescue sonst setzt, wie auf dem ISO gemessen. Requires gibt
+# systemctl in keiner festen Reihenfolge aus.
+SAME=$'StandardInput=null\nStandardOutput=journal\nStandardError=inherit\nRestart=no\nRestartMode=normal\nUMask=0022\nSlice=system.slice\nSuccessAction=none\nFailureAction=none\nStartLimitAction=none\nJobTimeoutAction=none\nNeedDaemonReload=no\nRequires=system.slice sysinit.target'
+# Die Sperre des Netzschalters mit der Unit-Datei aus dem Image (build/overlay). Ihre Eigenschaften in
+# der Attrappe von systemctl folgen der Datei, sonst wie bei systemd-run (SAME), noch nicht gestartet;
+# reboot_sim setzt sie darauf zurück (netz_reset).
+NU=lf-netzschalter.service
+NUF=build/overlay/usr/lib/systemd/system/$NU
+cp "$NUF" "$W/usr/lib/systemd/system/$NU"
+NA=$(sed -n 's/^ExecStart=//p' "$NUF")
+{
+	printf 'Transient=no\nActiveState=inactive\nMainPID=0\nControlGroup=/system.slice/%s\nFragmentPath=%s\n' "$NU" "$W/usr/lib/systemd/system/$NU"
+	printf 'Type=%s\nUnsetEnvironment=%s\n' "$(sed -n 's/^Type=//p' "$NUF")" "$(sed -n 's/^UnsetEnvironment=//p' "$NUF")"
+	printf 'ExecStart={ path=%s ; argv[]=%s ; ignore_errors=no ; start_time=[n/a] ; stop_time=[n/a] ; pid=0 ; code=(null) ; status=0/0 }\n%s\n' \
+		"${NA%% *}" "$NA" "$SAME"
+} >"$T/netz-eigenschaften"
+cp "$T/netz-eigenschaften" "$T/unit/$NU"
 for n in hostname1:hostnamed timedate1:timedated locale1:localed machine1:machined; do
 	printf '[D-BUS Service]\nName=org.freedesktop.%s\nExec=/bin/false\nUser=root\nSystemdService=dbus-org.freedesktop.%s.service\n' "${n%%:*}" "${n%%:*}" \
 		>"$W/usr/share/dbus-1/system-services/org.freedesktop.${n%%:*}.service"
@@ -192,7 +220,7 @@ sed -e "s|^PATH=.*|PATH=$T/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin
 	-e "s|^LINGER=.*|LINGER=$T/linger|" -e "s|^CRON_PATHS=.*|CRON_PATHS=($T/cron.d)|" -e "s|^TTY=.*|TTY=$T/tty|" \
 	-e "s|^SYS_BLOCK=.*|SYS_BLOCK=$T/sysblock|" -e "s|^NTFS3G=.*|NTFS3G=$T/bin/ntfs-3g|" \
 	-e "s|^WROOT=.*|WROOT=$W|" -e "s|^AUFGABE=.*|AUFGABE=$T/bin/lf-aufgabe|" -e "s|^SCAN_TIMEOUT=.*|SCAN_TIMEOUT=5|" \
-	-e "s|^PERL=.*|PERL=$T/bin/perl|" -e "s|((EUID == 0))|((EUID == $(id -u)))|g" \
+	-e "s|^PERL=.*|PERL=$T/bin/perl|" -e "s|^INHIBIT_EXE=.*|INHIBIT_EXE=$T/bin/systemd-inhibit|" -e "s|((EUID == 0))|((EUID == $(id -u)))|g" \
 	-e "s|^USER_PATH=.*|USER_PATH=$T/bin:/usr/bin:/bin|" rescue/bin/lf-freigabe >"$F"
 
 cat >"$T/bin/id" <<MOCK
@@ -302,12 +330,50 @@ freeze)
 	touch "$T/frozen-\$u"
 	;;
 thaw) rm -f "$T/frozen-\$u" ;;
+# Die Sperre des Netzschalters: start und restart legen den Hauptprozess systemd-inhibit mit dem Kind
+# sleep neu an (neue PIDs und InvocationID, die Umgebung des Managers ohne UnsetEnvironment), start
+# nur, wenn sie nicht läuft. Mit der Datei netz-startet-nicht startet sie nicht, mit
+# netz-anderes-programm führt ihr Hauptprozess ein anderes Programm aus.
+start | restart)
+	[[ \$u == $NU && -f "$T/unit/\$u" && ! -e "$T/netz-startet-nicht" ]] || exit 0
+	[[ \$1 == start ]] && grep -qx ActiveState=active "$T/unit/\$u" && exit 0
+	T="$T"
+	source "$T/fake.sh"
+	old=\$(sed -n 's/^MainPID=//p' "$T/unit/\$u")
+	[[ \$old =~ ^[1-9][0-9]*\$ ]] && rm -rf "$T/proc/\$old" "$T/proc/\$((old + 1))"
+	n=\$((\$(cat "$T/netz-n" 2>/dev/null || echo 0) + 1))
+	echo "\$n" >"$T/netz-n"
+	pid=\$((4194380000 + 2 * n))
+	env=\$(jq -r --arg x "\$(sed -n 's/^UnsetEnvironment=//p' "$T/unit/\$u")" '(\$x | split(" ")) as \$x | [.[] | select((split("=")[0]) as \$n | \$x | any(.[]; . == \$n) | not)] + ["INVOCATION_ID=x"] | join("|")' "$T/menv.json")
+	cmd=\$(sed -n 's/^ExecStart={ path=[^ ]* ; argv\[\]=\(.*\) ; ignore_errors=no ; .*/\1/p' "$T/unit/\$u")
+	x="$T/bin/systemd-inhibit"
+	[[ -e "$T/netz-anderes-programm" ]] && x="$T/bin/ntfs-3g"
+	fake "\$pid" 0 0 1 "\$env" "\$cmd" "\$x" 0 9000
+	fake "\$((pid + 1))" 0 0 "\$pid" "\$env" "/usr/bin/sleep infinity" "" 0 9000
+	for p in "\$pid" "\$((pid + 1))"; do
+		ln -sfn / "$T/proc/\$p/root"
+		mkdir -p "$T/proc/\$p/ns" && ln -sfn "$T/proc/1/ns/mnt" "$T/proc/\$p/ns/mnt"
+	done
+	mkdir -p "$T/cg/system.slice/\$u"
+	printf '%s\n' "\$pid" "\$((pid + 1))" >"$T/cg/system.slice/\$u/cgroup.procs"
+	{
+		grep -v -e '^ActiveState=' -e '^MainPID=' -e '^InvocationID=' "$T/unit/\$u"
+		printf 'ActiveState=active\nMainPID=%s\nInvocationID=%032x\n' "\$pid" "\$((n + 65536))"
+	} >"$T/unit/\$u.neu" && mv "$T/unit/\$u.neu" "$T/unit/\$u"
+	grep -q "^\$u " "$T/units" 2>/dev/null || echo "\$u loaded active running x" >>"$T/units"
+	;;
 stop)
 	if [[ -e "$T/frozen-\$u" && -e "$T/prozesslos-\$u" ]]; then
 		echo "Cannot stop frozen unit \$u" >&2
 		exit 1
 	fi
 	if [[ -f "$T/unit/\$u" ]]; then
+		if [[ \$u == $NU ]]; then
+			old=\$(sed -n 's/^MainPID=//p' "$T/unit/\$u")
+			[[ \$old =~ ^[1-9][0-9]*\$ ]] && rm -rf "$T/proc/\$old" "$T/proc/\$((old + 1))"
+			rm -f "$T/cg/system.slice/\$u/cgroup.procs"
+			sed -i 's/^MainPID=.*/MainPID=0/' "$T/unit/\$u"
+		fi
 		sed -i 's/^ActiveState=.*/ActiveState=inactive/' "$T/unit/\$u"
 		# Danach räumt systemd die Einheit weg (nicht mehr geladen), eine aus /run/systemd/transient
 		# mit ihrer Unit-Datei.
@@ -329,10 +395,27 @@ set-environment | unset-environment)
 esac
 exit 0
 MOCK
-# Mit der Datei menv-kaputt antwortet busctl nicht.
+# Mit der Datei menv-kaputt antwortet busctl für den Manager nicht. ListInhibitors (logind): die Sperre
+# des Netzschalters, solange ihr Hauptprozess läuft (die Arten in der Reihenfolge von logind), dazu
+# eine von Claude. Mit der Datei netz-ohne-sperre führt logind sie nicht, mit netz-sperre-anders nur
+# für zwei Arten, mit netz-sperre-fremd für eine andere PID (das Kind sleep).
 cat >"$T/bin/busctl" <<MOCK
 #!/bin/bash
 env >"$T/busctl.env"
+echo "\$*" >>"$T/busctl.log"
+if [[ "\$*" == "--json=short call org.freedesktop.login1 /org/freedesktop/login1 org.freedesktop.login1.Manager ListInhibitors" ]]; then
+	pid=\$(sed -n 's/^MainPID=//p' "$T/unit/$NU" 2>/dev/null)
+	w=sleep:handle-power-key:handle-suspend-key:handle-hibernate-key:handle-lid-switch:handle-reboot-key
+	[[ -e "$T/netz-sperre-anders" ]] && w=handle-power-key:handle-reboot-key
+	[[ -e "$T/netz-sperre-fremd" ]] && pid=\$((pid + 1))
+	c='["shutdown","Claude","x","delay",1001,77]'
+	if grep -qx ActiveState=active "$T/unit/$NU" 2>/dev/null && [[ -e "$T/proc/\$pid" && ! -e "$T/netz-ohne-sperre" ]]; then
+		printf '{"type":"a(ssssuu)","data":[[["%s","Leuchtfeuer","lf-freigabe","block",0,%s],%s]]}\n' "\$w" "\$pid" "\$c"
+	else
+		printf '{"type":"a(ssssuu)","data":[[%s]]}\n' "\$c"
+	fi
+	exit 0
+fi
 [[ -e "$T/menv-kaputt" ]] && exit 1
 [[ "\$*" == "--json=short get-property org.freedesktop.systemd1 /org/freedesktop/systemd1 org.freedesktop.systemd1.Manager Environment" ]] || exit 1
 jq -c '{type: "as", data: .}' "$T/menv.json"
@@ -391,6 +474,8 @@ printf '#!/bin/bash\ncat "%s/atq" 2>/dev/null\n' "$T" >"$T/bin/atq"
 printf '#!/bin/bash\necho "$*" >>"%s/atrm.log"\n' "$T" >"$T/bin/atrm"
 printf '#!/bin/bash\nexit 0\n' >"$T/bin/visudo"
 printf '#!/bin/bash\nexit 0\n' >"$T/bin/logger"
+# Das Programm systemd-inhibit (Ziel von /proc/PID/exe der Sperre des Netzschalters).
+printf '#!/bin/bash\nexit 0\n' >"$T/bin/systemd-inhibit"
 # Das Programm ntfs-3g (Ziel von /proc/PID/exe des echten Dienstes) und ein anderes.
 printf '#!/bin/bash\nexit 0\n' >"$T/bin/ntfs-3g"
 printf '#!/bin/bash\nexit 0\n' >"$T/bin/anderes"
@@ -437,6 +522,8 @@ fake() {
 	[[ -z ${7:-} ]] || ln -s "$7" "$T/proc/$1/exe"
 	printf '%s (%s) S %s %s %s %s 0 0 0 0 0 0 0 0 0 0 20 0 1 0 %s 0 0\n' "$1" "${cmd##*/}" "$4" "$1" "$1" "${8:-0}" "${9:-100}" >"$T/proc/$1/stat"
 }
+# Die Attrappe von systemctl legt die Prozesse der Sperre des Netzschalters mit fake an.
+declare -f fake >"$T/fake.sh"
 # self CGROUP   Die cgroup dieses Aufrufs (/proc/self/cgroup).
 self() { mkdir -p "$T/proc/self" && echo "0::$1" >"$T/proc/self/cgroup"; }
 self /user.slice/user-1000.slice/session-1.scope
@@ -470,6 +557,19 @@ check() {
 NOW=$(date +%s)
 # aus_n   Sagt status "aus, Neustart empfohlen (letzte Freigabe bis HH:MM)" (F15)?
 aus_n() { [[ $(bash "$F" status) =~ ^aus,\ Neustart\ empfohlen\ \(letzte\ Freigabe\ bis\ [0-9]{2}:[0-9]{2}\)$ ]]; }
+# netz_reset   Die Sperre des Netzschalters wie nach dem Start: nicht gestartet, ohne Prozesse, ohne die
+#   Marke, dass sie fehlte.
+netz_reset() {
+	local p
+	p=$(sed -n 's/^MainPID=//p' "$T/unit/$NU" 2>/dev/null)
+	[[ $p =~ ^[1-9][0-9]*$ ]] && rm -rf "$T/proc/$p" "$T/proc/$((p + 1))"
+	rm -rf "$T/cg/system.slice/$NU" "$T/run/claude-netzschalter-frei"
+	cp "$T/netz-eigenschaften" "$T/unit/$NU"
+	sed -i "/^$NU /d" "$T/units" 2>/dev/null
+	return 0
+}
+# netz_pid   Der Hauptprozess der Sperre in der Attrappe von systemctl.
+netz_pid() { sed -n 's/^MainPID=//p' "$T/unit/$NU"; }
 # reboot_sim   Neustart nachgestellt: Grundregel zurück, Schnappschuss, Rückstand und ein System für
 #   soft-reboot weg (/run liegt im RAM).
 reboot_sim() {
@@ -481,6 +581,7 @@ reboot_sim() {
 	done
 	rm -rf "$SNAP" "$R" "$W/run/nextroot" "$W/run/nextroot.lf-gesperrt."*
 	rm -f "$T"/frozen-* "$T"/prozesslos-* "$T"/nicht-anhaltbar-* "$T/run/claude-grundregel-sperre"
+	netz_reset
 	boot
 }
 # soft_lock   Ist die Grundregel seit dem Ende gesperrt, bis eines ohne Rückstand abschließt, nicht bis
@@ -673,9 +774,6 @@ unit lf-claude-rettung-sdb.service yes /system.slice/lf-claude-rettung-sdb.servi
 unit session-5.scope yes /user.slice/user-1000.slice/session-5.scope
 unit run-u9.scope yes /lf.slice/lf-claude.slice/run-u9.scope
 unit getty@tty2.service no /system.slice/system-getty.slice/getty@tty2.service "$T/unitfiles/getty@.service"
-# Was systemd-run für ntfs3g_ro und start_rescue sonst setzt, wie auf dem ISO gemessen. Requires gibt
-# systemctl in keiner festen Reihenfolge aus.
-SAME=$'StandardInput=null\nStandardOutput=journal\nStandardError=inherit\nRestart=no\nRestartMode=normal\nUMask=0022\nSlice=system.slice\nSuccessAction=none\nFailureAction=none\nStartLimitAction=none\nJobTimeoutAction=none\nNeedDaemonReload=no\nRequires=system.slice sysinit.target'
 # fragment NAME BESCHREIBUNG TYP BEFEHL…   Die Unit-Datei, wie systemd 259 sie für systemd-run
 #   --collect [-p Type=TYP] -p UnsetEnvironment=… --description=BESCHREIBUNG schreibt (gemessen mit
 #   systemd 259.9). Ohne TYP keine Zeile Type=.
@@ -958,7 +1056,7 @@ check "die neue cron-Datei ist gesperrt, nicht gelöscht; die alte bleibt" '[[ -
 check "linger für lf-claude ist aufgehoben" '[[ ! -e $T/linger/lf-claude ]] && grep -qx "disable-linger lf-claude" "$T/loginctl.log"'
 check "Reihenfolge: anhalten, Regel, Einheiten, root-Prozesse, weiterlaufen" 'a=$(line "Claude angehalten") u=$(line "beendet: Einheit run-u7.service") r=$(line "Regel entfernt") k=$(line "beendet: $Q1 ") w=$(line "Claude läuft weiter"); [[ -n $a && -n $u && -n $r && -n $k && -n $w ]] && ((a < r && r < u && u < k && k < w))'
 check "die cgroups von Claude laufen danach weiter" '[[ $(cat "$CG/cgroup.freeze") == 0 && $(cat "$CGU/cgroup.freeze") == 0 ]]'
-check "jede beendete Einheit ist bis zum Neustart ein Rückstand, die Dienste, die bleiben, nicht (Q6)" 'grep -qxF "Einheit beendet: run-u7.service" "$R" && grep -qxF "Einheit beendet: boese.timer" "$R" && grep -qxF "Einheit beendet: ${SPOOFS[0]}" "$R" && grep -qxF "Einheit beendet: ${RSPOOFS[0]}" "$R" && ! grep -qF -e "$NT" -e "$RU" "$R" && [[ $(bash "$F" status) == "an: Rückstand nach der Freigabe (Vor dem Weiterarbeiten ausschalten: Netzschalter gedrückt halten, nicht Beenden > Ausschalten oder Neustart (beim Beenden liefe als root oder rescue Code aus der Freigabe: "*"Anmeldung von rescue"*")), Neustart empfohlen" ]]'
+check "jede beendete Einheit ist bis zum Neustart ein Rückstand, die Dienste, die bleiben, nicht (Q6)" 'grep -qxF "Einheit beendet: run-u7.service" "$R" && grep -qxF "Einheit beendet: boese.timer" "$R" && grep -qxF "Einheit beendet: ${SPOOFS[0]}" "$R" && grep -qxF "Einheit beendet: ${RSPOOFS[0]}" "$R" && ! grep -qF -e "$NT" -e "$RU" "$R" && [[ $(bash "$F" status) == "an: Rückstand nach der Freigabe (Vor dem Weiterarbeiten ausschalten: Netzschalter gedrückt halten, nicht Beenden > Ausschalten oder Neustart, nicht Strg+Alt+Entf (beim Beenden liefe als root oder rescue Code aus der Freigabe: "*"Anmeldung von rescue"*")), Neustart empfohlen" ]]'
 check "eine Anmeldung des Technikers aus der Freigabe läuft weiter und ist Rückstand (Q6)" 'grep -qxF "Anmeldung oder Laufzeitordner von rescue seit dem Freischalten: session-5.scope" "$R"'
 check "Unit-Dateien der Dienste, die bleiben, sind kein Rückstand, die der angehaltenen schon; die Grundregel bleibt gesperrt, bis ein Ende ohne Rückstand abschließt, nicht bis zum Neustart" '[[ -z $(grep "^Unit-" "$R" | grep -vxF -f <(for u in "${HELD_SP[@]}" "${HELD_RS[@]}"; do echo "Unit-Datei neu: $TR/$u"; done)) ]] && grep -qxF "Unit-Datei neu: $TR/${HELD_SP[0]}" "$R" && soft_lock'
 kill "$RK" "$RM" "$NM" "$NB" 2>/dev/null
@@ -1008,7 +1106,7 @@ bash "$F" aus >"$T/out" 2>&1
 check "status bleibt an, mit Rückstand und Neustart-Empfehlung" '[[ $(bash "$F" status) == "an: Rückstand"*"Neustart empfohlen" && $(bash "$F" zeile </dev/null) == ACHTUNG* ]]'
 check "das Protokoll warnt und nennt Regel und Gruppe" 'grep "WARNUNG: lf-claude darf nach der Freigabe" "$LOG" | grep -q "NOPASSWD: ALL.*Gruppen: lf-claude render sudo"'
 check "eine weitere sudo-Regel sperrt die Grundregel bis zum Neustart (Q5)" '[[ -f $T/sudoers.d/lf-claude.lf-gesperrt && ! -e $T/sudoers.d/lf-claude ]] && grep -qxF "Grundregel gesperrt bis zum Neustart: $T/sudoers.d/lf-claude.lf-gesperrt" "$R" && grep -qF "bis zum Neustart: sudo: (ALL : ALL) NOPASSWD: ALL" "$LOG"'
-check "…: zuerst der Hinweis aufs Ausschalten am Netzschalter, Beenden ruft sudo auf (Befund 3)" '[[ $(head -n 1 "$R") == "Vor dem Weiterarbeiten ausschalten: Netzschalter gedrückt halten, nicht Beenden > Ausschalten oder Neustart (beim Beenden liefe als root oder rescue Code aus der Freigabe: sudo)" ]]'
+check "…: zuerst der Hinweis aufs Ausschalten am Netzschalter, Beenden ruft sudo auf (Befund 3)" '[[ $(head -n 1 "$R") == "Vor dem Weiterarbeiten ausschalten: Netzschalter gedrückt halten, nicht Beenden > Ausschalten oder Neustart, nicht Strg+Alt+Entf (beim Beenden liefe als root oder rescue Code aus der Freigabe: sudo)" ]]'
 check "bei einem Rückstand bleibt der Schnappschuss der Einheiten" '[[ -f $SNAP/units ]]'
 # Nach dem Ende mit Rückstand entstanden (etwa durch das, was root dort eingerichtet hat)
 unit run-u12.service yes /system.slice/run-u12.service
@@ -1043,7 +1141,7 @@ jq -c '. + ["LD_PRELOAD=/var/lib/lf-claude/x.so"]' "$T/menv-vorher.json" >"$T/me
 touch "$T/menv-fest"
 : >"$LOG"
 bash "$F" aus >"$T/out" 2>&1
-check "lässt sich die Umgebung nicht zurücksetzen: Rückstand mit dem Namen, zuerst der Hinweis aufs Ausschalten am Netzschalter (Befund 3)" 'grep -qF "Manager-Umgebung ließ sich nicht zurücksetzen: LD_PRELOAD " "$LOG" && ! grep -q "Manager-Umgebung zurückgesetzt" "$LOG" && grep -qxF "Manager-Umgebung: LD_PRELOAD" "$T/run/claude-freigabe-rueckstand" && [[ $(bash "$F" status) == "an: Rückstand nach der Freigabe (Vor dem Weiterarbeiten ausschalten: Netzschalter gedrückt halten, nicht Beenden > Ausschalten oder Neustart (beim Beenden liefe als root oder rescue Code aus der Freigabe: Manager-Umgebung)), Neustart empfohlen" && $(sed -n 2p "$R") == "Manager-Umgebung: LD_PRELOAD" && $(stat -c %a "$SNAP/menv-zurueckgesetzt") == 600 ]]'
+check "lässt sich die Umgebung nicht zurücksetzen: Rückstand mit dem Namen, zuerst der Hinweis aufs Ausschalten am Netzschalter (Befund 3)" 'grep -qF "Manager-Umgebung ließ sich nicht zurücksetzen: LD_PRELOAD " "$LOG" && ! grep -q "Manager-Umgebung zurückgesetzt" "$LOG" && grep -qxF "Manager-Umgebung: LD_PRELOAD" "$T/run/claude-freigabe-rueckstand" && [[ $(bash "$F" status) == "an: Rückstand nach der Freigabe (Vor dem Weiterarbeiten ausschalten: Netzschalter gedrückt halten, nicht Beenden > Ausschalten oder Neustart, nicht Strg+Alt+Entf (beim Beenden liefe als root oder rescue Code aus der Freigabe: Manager-Umgebung)), Neustart empfohlen" && $(sed -n 2p "$R") == "Manager-Umgebung: LD_PRELOAD" && $(stat -c %a "$SNAP/menv-zurueckgesetzt") == 600 ]]'
 rm -f "$T/menv-fest"
 bash "$F" aus >"$T/out" 2>&1
 check "ein weiteres aus setzt sie zurück, der Rückstand bleibt bis zum Neustart, mit dem Hinweis aufs Ausschalten am Netzschalter" '[[ $(jq -c sort "$T/menv.json") == "$(jq -c sort "$T/menv-vorher.json")" ]] && grep -qxF "Manager-Umgebung während der Freigabe geändert, Dienste können sie geerbt haben: LD_PRELOAD" "$R" && ! grep -q "^Manager-Umgebung: " "$R" && [[ $(bash "$F" status) == "an: Rückstand nach der Freigabe (${NETZ}Manager-Umgebung)), Neustart empfohlen" ]]'
@@ -1116,7 +1214,7 @@ check "Einhängung über lf-lesen: Rückstand, auch mit nosuid; eine Quelle wie 
 check "Einhängungen, die nur wie eine Quelle von lf-aufgabe aussehen: Rückstand" 'grep -qxF "Einhängung neu oder geändert: /mnt/lf-image/sdc3 (ext4 /dev/sdc3)" "$R" && grep -qxF "Einhängung neu oder geändert: /mnt/lf-image/sdc4 (tmpfs tmpfs)" "$R" && grep -qxF "Einhängung neu oder geändert: /mnt/lf-image/dm-0 (ext4 /dev/dm-0)" "$R"'
 check "eine Rettung mit geänderter Kette ist gestoppt, lf-aufgabe läuft dafür nicht" 'grep -qxF "stop $RU2" "$T/systemctl.log" && ! grep -q "ok-kette" "$T/aufgabe.log"'
 check "Credentials: Inhalt geändert, ohne Einhängung, neu in einer Ablage: Rückstand; im anderen Dateisystem liest das Ende nicht" 'grep -qxF "Credentials geändert: $CRED/getty@tty1.service" "$R" && grep -qxF "Credentials geändert: $CRED/getty@tty2.service" "$R" && grep -qxF "Credentials ohne Einhängung: $CRED/systemd-journald.service" "$R" && grep -qxF "Datei neu: $W/run/credstore/login.noauth" "$R" && ! grep -q "fremd.service" "$R"'
-check "status: an, Rückstand; zuerst der Hinweis aufs Ausschalten am Netzschalter (PAM, modprobe, Drop-in), dann die Sperre; die Statuszeile warnt (A3, Befund 3)" '[[ $(bash "$F" status) == "an: Rückstand nach der Freigabe (Vor dem Weiterarbeiten ausschalten: Netzschalter gedrückt halten, nicht Beenden > Ausschalten oder Neustart (beim Beenden liefe als root oder rescue Code aus der Freigabe: $W/etc/pam.d/common-auth, $W/etc/modprobe.d/x.conf, $W/run/systemd/system/a.service.d/x.conf, …)), Neustart empfohlen" && $(sed -n 2p "$R") == "Grundregel gesperrt bis zum Neustart: $T/sudoers.d/lf-claude.lf-gesperrt" && $(bash "$F" zeile </dev/null) == ACHTUNG* ]]'
+check "status: an, Rückstand; zuerst der Hinweis aufs Ausschalten am Netzschalter (PAM, modprobe, Drop-in), dann die Sperre; die Statuszeile warnt (A3, Befund 3)" '[[ $(bash "$F" status) == "an: Rückstand nach der Freigabe (Vor dem Weiterarbeiten ausschalten: Netzschalter gedrückt halten, nicht Beenden > Ausschalten oder Neustart, nicht Strg+Alt+Entf (beim Beenden liefe als root oder rescue Code aus der Freigabe: $W/etc/pam.d/common-auth, $W/etc/modprobe.d/x.conf, $W/run/systemd/system/a.service.d/x.conf, …)), Neustart empfohlen" && $(sed -n 2p "$R") == "Grundregel gesperrt bis zum Neustart: $T/sudoers.d/lf-claude.lf-gesperrt" && $(bash "$F" zeile </dev/null) == ACHTUNG* ]]'
 echo rescue >"$CRED/getty@tty1.service/agetty.autologin"
 rm -f "$CRED/getty@tty2.service/login.noauth" "$CRED/fremd.service/y"
 rm -r "$W/run/credstore"
@@ -1254,7 +1352,7 @@ check "derselbe mit ExecStopPost=: angehalten, nicht beendet, Rückstand" 'held_
 check "derselbe Dienst mit einem Drop-in (systemd-timedated): gestoppt und Rückstand, das Drop-in auch" 'grep -qx "stop systemd-timedated.service" "$T/systemctl.log" && grep -qxF "Einheit beendet: systemd-timedated.service" "$R" && grep -qxF "Unit-Datei neu: $W/run/systemd/system/systemd-timedated.service.d/q6.conf" "$R"'
 check "Konsolen, Benutzerdienst, Laufzeitordner und Anmeldung des Technikers bleiben; die von root nicht" '! grep -qE "^(stop|freeze|kill -s KILL) (serial-getty@ttyS0.service|user@1000.service|user-runtime-dir@1000.service|session-7.scope)$" "$T/systemctl.log" && grep -qx "stop user@0.service" "$T/systemctl.log" && grep -qx "stop user-runtime-dir@0.service" "$T/systemctl.log" && grep -qx "stop session-8.scope" "$T/systemctl.log" && grep -qxF "Einheit beendet: user@0.service" "$R"'
 check "Anmeldung von lf-claude: bleibt, kein Rückstand; die eines anderen Benutzers: gestoppt, sein Laufzeitordner mit ExecStop= angehalten, nicht beendet (Q6)" '! grep -qE "^(stop|freeze|kill -s KILL) session-9.scope$" "$T/systemctl.log" && ! grep -qF "session-9.scope" "$R" && grep -qx "stop session-10.scope" "$T/systemctl.log" && grep -qxF "Einheit beendet: session-10.scope" "$R" && held_ok user-runtime-dir@1002.service'
-check "Anmeldung, Laufzeitordner und Benutzer-Manager des Technikers aus der Freigabe: Rückstand, zuerst der Hinweis aufs Ausschalten (Q6)" 'grep -qxF "Anmeldung oder Laufzeitordner von rescue seit dem Freischalten: session-7.scope user-runtime-dir@1000.service" "$R" && grep -qxF "Benutzer-Manager neu: user@1000.service" "$R" && [[ $(head -n 1 "$R") == "Vor dem Weiterarbeiten ausschalten: Netzschalter gedrückt halten, nicht Beenden > Ausschalten oder Neustart (beim Beenden liefe als root oder rescue Code aus der Freigabe: "*"Anmeldung von rescue"* ]]'
+check "Anmeldung, Laufzeitordner und Benutzer-Manager des Technikers aus der Freigabe: Rückstand, zuerst der Hinweis aufs Ausschalten (Q6)" 'grep -qxF "Anmeldung oder Laufzeitordner von rescue seit dem Freischalten: session-7.scope user-runtime-dir@1000.service" "$R" && grep -qxF "Benutzer-Manager neu: user@1000.service" "$R" && [[ $(head -n 1 "$R") == "Vor dem Weiterarbeiten ausschalten: Netzschalter gedrückt halten, nicht Beenden > Ausschalten oder Neustart, nicht Strg+Alt+Entf (beim Beenden liefe als root oder rescue Code aus der Freigabe: "*"Anmeldung von rescue"* ]]'
 check "lief schon beim Freischalten, nur neu gestartet, Unit-Datei unverändert: bleibt" '! grep -qx "stop vorher.service" "$T/systemctl.log"'
 check "Einheiten ohne eigene Prozesse (Einhängung, Ziel): nicht gestoppt" '! grep -qE "^stop (mnt-q6.mount|q6.target)$" "$T/systemctl.log"'
 check "beendete Dienste des Systems sperren die Grundregel nur, bis ein Ende ohne Rückstand abschließt, nicht bis zum Neustart" 'soft_lock'
@@ -1371,7 +1469,7 @@ touch "$T/mv-fest"
 bash "$F" an 30 >"$T/out" 2>&1
 echo "# Platzhalter" >"$W/usr/lib/x86_64-linux-gnu/q5-fest.txt"
 bash "$F" aus >"$T/out" 2>&1
-check "lässt sie sich nicht verschieben: gleich nach dem Hinweis aufs Ausschalten am Netzschalter (ihre Jobs, /usr) im Rückstand, einmal; Menü und Statuszeile zeigen den Hinweis" '[[ -f $T/sudoers.d/lf-claude && $(head -n 1 "$R") == "${NETZ}Jobs der Grundregel, $W/usr/lib/x86_64-linux-gnu, $W/usr/lib/x86_64-linux-gnu/q5-fest.txt)" && $(sed -n 2p "$R") == "Grundregel ließ sich nicht sperren: $T/sudoers.d/lf-claude" && $(grep -c "^Grundregel ließ sich nicht sperren" "$R") == 1 && $(bash "$F" status) == "an: Rückstand nach der Freigabe (Vor dem Weiterarbeiten ausschalten: Netzschalter gedrückt halten, nicht Beenden > Ausschalten oder Neustart (beim Beenden liefe als root oder rescue Code aus der Freigabe: "* ]]'
+check "lässt sie sich nicht verschieben: gleich nach dem Hinweis aufs Ausschalten am Netzschalter (ihre Jobs, /usr) im Rückstand, einmal; Menü und Statuszeile zeigen den Hinweis" '[[ -f $T/sudoers.d/lf-claude && $(head -n 1 "$R") == "${NETZ}Jobs der Grundregel, $W/usr/lib/x86_64-linux-gnu, $W/usr/lib/x86_64-linux-gnu/q5-fest.txt)" && $(sed -n 2p "$R") == "Grundregel ließ sich nicht sperren: $T/sudoers.d/lf-claude" && $(grep -c "^Grundregel ließ sich nicht sperren" "$R") == 1 && $(bash "$F" status) == "an: Rückstand nach der Freigabe (Vor dem Weiterarbeiten ausschalten: Netzschalter gedrückt halten, nicht Beenden > Ausschalten oder Neustart, nicht Strg+Alt+Entf (beim Beenden liefe als root oder rescue Code aus der Freigabe: "* ]]'
 rm -f "$T/mv-fest"
 reboot_sim
 bash "$F" an 30 >"$T/out" 2>&1
@@ -1412,7 +1510,7 @@ bash "$F" aus >"$T/out" 2>&1
 check "neue, geänderte und entfernte EFI-Variablen: Rückstand; zurückgeschrieben wird nichts" 'grep -qxF "EFI-Variable neu: Boot0002-$GV" "$R" && grep -qxF "EFI-Variable geändert: BootOrder-$GV" "$R" && grep -qxF "EFI-Variable entfernt: Timeout-$GV" "$R" && grep -qxF "EFI-Variable neu: HerstellerX-12345678-1234-1234-1234-123456789abc" "$R" && [[ -e $EV/Boot0002-$GV && ! -e $EV/Timeout-$GV ]] && ! cmp -s "$EV/BootOrder-$GV" "$T/bootorder"'
 H="EFI-Variablen für den Start geändert (BootOrder, Boot0002, MokNew): vor dem nächsten Start die Startreihenfolge im Firmware-Setup prüfen und eine unerwartete MOK-Abfrage ablehnen"
 check "Variablen für den Start: zuerst der Hinweis für den Techniker, auch in Menü und Statuszeile" '[[ $(head -n 1 "$R") == "$H" && $(bash "$F" status) == "an: Rückstand nach der Freigabe ($H), Neustart empfohlen" ]]'
-check "danach der Hinweis aufs Ausschalten: Ausschalten setzt EFI-Variablen nicht zurück (A3)" '[[ $(sed -n 2p "$R") == "Vor dem Weiterarbeiten ausschalten (Beenden > Ausschalten): geändert, was von selbst als root oder rescue läuft ($W/etc/update-motd.d/98-efi"* ]]'
+check "danach der Hinweis aufs Ausschalten: Ausschalten setzt EFI-Variablen nicht zurück (A3)" '[[ $(sed -n 2p "$R") == "${AUS}$W/etc/update-motd.d/98-efi"* ]]'
 check "EFI-Variablen sperren die Grundregel nicht bis zum Neustart" 'soft_lock'
 rm -f "$W/etc/update-motd.d/98-efi"
 rmdir "$W/etc/update-motd.d" 2>/dev/null
@@ -1422,6 +1520,7 @@ mkdir -p "$W/persist/config" "$W/persist/home"
 echo "63 22 8:50 / $W/persist rw,nosuid,nodev,noatime shared:22 - ext4 /dev/sdb3 rw" >>"$T/proc/1/mountinfo"
 bash "$F" aus >"$T/out" 2>&1
 check "LF-DATA während der Freigabe eingehängt: Rückstand, Inhalt ungeprüft; die neue Einhängung sperrt die Grundregel" 'grep -qxF "Speicher LF-DATA während der Freigabe eingehängt, Inhalt ungeprüft: $W/persist" "$R" && grep -qxF "Einhängung neu oder geändert: $W/persist (ext4 /dev/sdb3)" "$R" && [[ -f $T/sudoers.d/lf-claude.lf-gesperrt ]]'
+check "…: zuerst der Hinweis, LF-DATA vor dem nächsten Entsperren zu prüfen (der Inhalt bleibt nach dem Ausschalten), dann über Beenden > Ausschalten" '[[ $(head -n 1 "$R") == "Speicher LF-DATA geändert (Inhalt ungeprüft): bleibt nach dem Ausschalten, vor dem nächsten Entsperren prüfen oder neu anlegen" && $(sed -n 2p "$R") == "${AUS}$W/persist, LF-DATA)" ]]'
 reboot_sim
 echo "LF_TECHNIKER=vorher" >"$W/persist/config/lf.conf"
 bash "$F" an 30 >"$T/out" 2>&1
@@ -1431,6 +1530,7 @@ mkdir -p "$W/persist/home/.ssh" && echo "# Platzhalter" >"$W/persist/home/.ssh/a
 mkdir -p "$W/persist/claude-home" && echo "# Platzhalter" >"$W/persist/claude-home/notiz"
 bash "$F" aus >"$T/out" 2>&1
 check "offen geblieben: Änderungen in config und home sind Rückstand, claude-home nicht" 'grep -qxF "Datei auf LF-DATA geändert: $W/persist/config/lf.conf" "$R" && grep -qxF "Ordner auf LF-DATA neu: $W/persist/home/.ssh" "$R" && grep -qxF "Datei auf LF-DATA neu: $W/persist/home/.ssh/authorized_keys" "$R" && ! grep -q claude-home "$R"'
+check "…: zuerst der Hinweis auf LF-DATA mit den Pfaden, dann über Beenden > Ausschalten; status zeigt den Hinweis auf LF-DATA" '[[ $(head -n 1 "$R") == "Speicher LF-DATA geändert ($W/persist/config/lf.conf, $W/persist/home/.ssh/authorized_keys, $W/persist/home/.ssh): bleibt nach dem Ausschalten, vor dem nächsten Entsperren prüfen oder neu anlegen" && $(sed -n 2p "$R") == "${AUS}LF-DATA)" && $(bash "$F" status) == "an: Rückstand nach der Freigabe (Speicher LF-DATA geändert ("* ]] && ! grep -qF Netzschalter "$R"'
 reboot_sim
 bash "$F" an 30 >"$T/out" 2>&1
 sed -i "\| $W/persist |d" "$T/proc/1/mountinfo"
@@ -1554,7 +1654,7 @@ check "Umgebung, neue Einheit und geänderte Datei im Benutzer-Manager: Rücksta
 check "neue Datei unter /run/user/UID/systemd: Rückstand, units/ nicht" 'grep -qxF "Datei neu: $W/run/user/1000/systemd/generator.late/b4.service" "$R" && ! grep -qF "/systemd/units" "$R"'
 check "neuer Benutzer-Manager eines anderen Benutzers: beendet, Rückstand; einer antwortet nicht mehr, eine neue linger-Datei: Rückstand (Q6)" 'grep -qx "stop user@4712.service" "$T/systemctl.log" && grep -qxF "Einheit beendet: user@4712.service" "$R" && grep -qxF "Benutzer-Manager antwortet nicht (4711)" "$R" && grep -qxF "Datei neu: $W/var/lib/systemd/linger/rescue" "$R"'
 check "ein Prozess des Technikers aus der Freigabe: Rückstand, er läuft weiter; einer von vorher nicht" 'grep -qxF "Prozesse von rescue seit dem Freischalten: $K1 (sleep)" "$R" && kill -0 "$K1" 2>/dev/null && ! grep -qF "$K2 (sleep)" "$R"'
-check "zuerst der Hinweis aufs Ausschalten am Netzschalter: Prozesse von rescue, Benutzer-Manager, /run/user (A3, Befund 3)" '[[ $(head -n 1 "$R") == "Vor dem Weiterarbeiten ausschalten: Netzschalter gedrückt halten, nicht Beenden > Ausschalten oder Neustart (beim Beenden liefe als root oder rescue Code aus der Freigabe: Prozesse von rescue, Benutzer-Manager, $W/run/user/1000/systemd/generator.late/b4.service)" ]]'
+check "zuerst der Hinweis aufs Ausschalten am Netzschalter: Prozesse von rescue, Benutzer-Manager, /run/user (A3, Befund 3)" '[[ $(head -n 1 "$R") == "Vor dem Weiterarbeiten ausschalten: Netzschalter gedrückt halten, nicht Beenden > Ausschalten oder Neustart, nicht Strg+Alt+Entf (beim Beenden liefe als root oder rescue Code aus der Freigabe: Prozesse von rescue, Benutzer-Manager, $W/run/user/1000/systemd/generator.late/b4.service)" ]]'
 kill "$K1" "$K2" 2>/dev/null
 cleanproc
 awk '$1 != "user@4711.service" && $1 != "user@4712.service"' "$T/units" >"$T/units.neu" && mv "$T/units.neu" "$T/units"
@@ -1588,7 +1688,7 @@ echo "/dev/sdz2 /mnt/b2 ext4 rw 0 0" >"$W/srv/b2/fstab"
 bash "$F" aus >"$T/out" 2>&1
 check "geändertes Ziel einer Verknüpfung, Drop-in und Quelle außerhalb der Suchpfade: Rückstand" 'grep -qxF "Datei einer geladenen Einheit geändert: $W/etc/systemd/system/b2.service" "$R" && grep -qxF "Datei einer geladenen Einheit geändert: $W/srv/b2/b2.conf" "$R" && grep -qxF "Datei einer geladenen Einheit geändert: $W/srv/b2/fstab" "$R"'
 check "auch wenn die Einheit schon beim Freischalten neu zu laden war (NeedDaemonReload)" 'grep -qxF "Datei einer geladenen Einheit geändert: $W/srv/b2/b2r.service" "$R"'
-check "zuerst der Hinweis aufs Ausschalten am Netzschalter, mit den geänderten Dateien (A3, Befund 3)" 'l=$(head -n 1 "$R"); [[ $l == "Vor dem Weiterarbeiten ausschalten: Netzschalter gedrückt halten, nicht Beenden > Ausschalten oder Neustart (beim Beenden liefe als root oder rescue Code aus der Freigabe: "*", …)" && ($l == *"$W/etc/systemd/system/b2.service"* || $l == *"$W/srv/b2/"*) ]]'
+check "zuerst der Hinweis aufs Ausschalten am Netzschalter, mit den geänderten Dateien (A3, Befund 3)" 'l=$(head -n 1 "$R"); [[ $l == "Vor dem Weiterarbeiten ausschalten: Netzschalter gedrückt halten, nicht Beenden > Ausschalten oder Neustart, nicht Strg+Alt+Entf (beim Beenden liefe als root oder rescue Code aus der Freigabe: "*", …)" && ($l == *"$W/etc/systemd/system/b2.service"* || $l == *"$W/srv/b2/"*) ]]'
 awk '$1 !~ /^(b2|b2r)\.service$/ && $1 != "mnt-b2.mount"' "$T/units" >"$T/units.neu" && mv "$T/units.neu" "$T/units"
 rm -rf "$W/srv/b2" "$W/etc/systemd/system/b2.service"
 
@@ -1608,7 +1708,7 @@ printf 'dummy 16384 0 - Live 0x0\nb6x 16384 0 - Live 0x0\nb6neu 16384 0 - Live 0
 bash "$F" aus >"$T/out" 2>&1
 check "neues Taint-Bit und neue BPF-Pins: Rückstand" 'grep -qxF "Kernel: neues Taint-Bit (0, jetzt 4096)" "$R" && grep -qxF "Kernel: BPF-Pin neu: $W/sys/fs/bpf/b6" "$R" && grep -qxF "Kernel: BPF-Pin neu: $W/sys/fs/bpf/b6/map" "$R"'
 check "neue Module ohne Datei, mit neuer Datei oder mit Taint: Rückstand; eins mit Datei von vorher nicht" '(for m in b6x b6neu b6t; do grep -qxF "Kernel: Modul ohne unveränderte Datei unter /lib/modules: $m" "$R" || exit 1; done) && ! grep -qF "/lib/modules: dummy" "$R"'
-check "zuerst der Hinweis aufs Ausschalten am Netzschalter: Kernel (A3, Befund 3)" '[[ $(head -n 1 "$R") == "Vor dem Weiterarbeiten ausschalten: Netzschalter gedrückt halten, nicht Beenden > Ausschalten oder Neustart (beim Beenden liefe als root oder rescue Code aus der Freigabe: "*"Kernel"* ]]'
+check "zuerst der Hinweis aufs Ausschalten am Netzschalter: Kernel (A3, Befund 3)" '[[ $(head -n 1 "$R") == "Vor dem Weiterarbeiten ausschalten: Netzschalter gedrückt halten, nicht Beenden > Ausschalten oder Neustart, nicht Strg+Alt+Entf (beim Beenden liefe als root oder rescue Code aus der Freigabe: "*"Kernel"* ]]'
 echo 0 >"$T/proc/sys/kernel/tainted"
 printf 'loop 40960 0 - Live 0x0\nisofs 61440 1 - Live 0x0\n' >"$T/proc/modules"
 rm -r "$W/sys/fs/bpf/b6" "$W/sys/module/b6t" "$W/lib/modules/$KV/kernel/b6t.ko" "$W/lib/modules/$KV/kernel/b6neu.ko"
@@ -1641,7 +1741,7 @@ check "ganz /root: Rückstand und Sperre der Grundregel (A1, A2)" 'grep -qxF "Da
 check "die Sperre nennt jeden Grund: /root, tmux, mc, lf-boot.env, sudoers-rs und beide Einhängungen (A2, B3)" '(l=$(grep "gesperrt: Grundregel" "$LOG" | tail -n 1); for p in "Datei neu: $W/root/notiz" "Datei neu: $W/root/.jq" "Datei neu: $W/etc/tmux.conf" "Datei neu: $W/etc/mc/mc.ext.ini" "Datei neu: $W/run/lf-boot.env" "Datei neu: $W/etc/sudoers-rs" "Einhängung neu oder geändert: $W/mnt/b3 (tmpfs tmpfs)" "Einhängung neu oder geändert: $W/run (tmpfs tmpfs)"; do [[ $l == *"$p"* ]] || exit 1; done)'
 check "Dotfiles und ~/bin des Technikers, Skripte von dpkg, cron und /run für NetworkManager und modules-load: Rückstand (A1, B7)" '(for p in "$W/home/rescue/.bashrc" "$W/home/rescue/bin/x" "$W/var/lib/dpkg/info/x.postinst" "$W/var/spool/cron/crontabs/rescue" "$W/run/NetworkManager/conf.d/x.conf" "$W/run/modules-load.d/x.conf" "$W/etc/update-motd.d/99-x"; do grep -qxF "Datei neu: $p" "$R" || exit 1; done)'
 check "andere Dateien im Home des Technikers: kein Rückstand" '! grep -qF "$W/home/rescue/Dokumente" "$R"'
-check "zuerst der Hinweis aufs Ausschalten am Netzschalter: sudo und die Einhängung über /run, nicht /root, tmux, mc und /mnt (A3, Befund 3)" '[[ $(head -n 1 "$R") == "Vor dem Weiterarbeiten ausschalten: Netzschalter gedrückt halten, nicht Beenden > Ausschalten oder Neustart (beim Beenden liefe als root oder rescue Code aus der Freigabe: $W/etc/sudoers-rs, $W/run)" ]]'
+check "zuerst der Hinweis aufs Ausschalten am Netzschalter: sudo und die Einhängung über /run, nicht /root, tmux, mc und /mnt (A3, Befund 3)" '[[ $(head -n 1 "$R") == "Vor dem Weiterarbeiten ausschalten: Netzschalter gedrückt halten, nicht Beenden > Ausschalten oder Neustart, nicht Strg+Alt+Entf (beim Beenden liefe als root oder rescue Code aus der Freigabe: $W/etc/sudoers-rs, $W/run)" ]]'
 rm -rf "$W/root/notiz" "$W/root/.jq" "$W/etc/tmux.conf" "$W/etc/mc" "$W/run/lf-boot.env" "$W/etc/sudoers-rs" "$W/home/rescue/.bashrc" \
 	"$W/home/rescue/bin" "$W/home/rescue/Dokumente" "$W/var/lib/dpkg" "$W/var/spool/cron" "$W/run/NetworkManager" "$W/run/modules-load.d" \
 	"$W/etc/update-motd.d"
@@ -1656,7 +1756,7 @@ echo x >"$W/home/rescue/bin/x"
 echo x >"$W/var/lib/dpkg/info/x.postinst"
 printf '#!/bin/sh\n' >"$W/etc/update-motd.d/99-x"
 bash "$F" aus >"$T/out" 2>&1
-check "nur Hooks, /etc/default und das Home des Technikers: zuerst der Hinweis aufs Ausschalten über Beenden > Ausschalten, keiner zum Netzschalter (A3)" '[[ $(head -n 1 "$R") == "Vor dem Weiterarbeiten ausschalten (Beenden > Ausschalten): geändert, was von selbst als root oder rescue läuft ($W/etc/default/q9-ssh, $W/etc/update-motd.d/99-x, $W/home/rescue/.bashrc, …)" ]] && ! grep -qF "Netzschalter" "$R" && soft_lock'
+check "nur Hooks, /etc/default und das Home des Technikers: zuerst der Hinweis aufs Ausschalten über Beenden > Ausschalten, keiner zum Netzschalter (A3)" '[[ $(head -n 1 "$R") == "${AUS}$W/etc/default/q9-ssh, $W/etc/update-motd.d/99-x, $W/home/rescue/.bashrc, …)" ]] && ! grep -qF "Netzschalter" "$R" && soft_lock'
 rm -rf "$W/home/rescue/.bashrc" "$W/home/rescue/bin" "$W/var/lib/dpkg" "$W/etc/update-motd.d" "$W/etc/default/q9-ssh"
 cleanproc
 reboot_sim
@@ -1678,6 +1778,139 @@ rm -rf "$W/run/finalrd" "$W/etc/alternatives/q9-awk" "$TR/q9-abgelegt.service"
 cleanproc
 reboot_sim
 
+echo "Sperre des Netzschalters bei logind, Strg+Alt+Entf und die Einordnung der Zeilen (GHSA-799j-44qx-x7xj):"
+NF_=$T/run/claude-netzschalter-frei
+NW=$(sed -n 's/^NETZ_WHAT=//p' rescue/bin/lf-freigabe)
+check "die Unit-Datei aus dem Image: genau der Befehl aus lf-freigabe (NETZ_ARGV), Type=exec, UnsetEnvironment wie ENV_UNSAFE, ohne [Install], ihre Prüfsumme ist NETZ_SHA" '[[ -n $NW && $NA == "/usr/bin/systemd-inhibit --what=$NW --who=Leuchtfeuer --why=lf-freigabe --mode=block /usr/bin/sleep infinity" && $(grep -c "^ExecStart" "$NUF") == 1 && $(sed -n "s/^Type=//p" "$NUF") == exec && $(sed -n "s/^UnsetEnvironment=//p" "$NUF") == "$ENV_UNSAFE" ]] && ! grep -q "^\[Install\]" "$NUF" && [[ $(sed -n "s/^NETZ_SHA=//p" rescue/bin/lf-freigabe) == "$(sha256sum <"$NUF" | cut -d" " -f1)" ]] && grep -qxF "handle-power-key:handle-reboot-key:handle-suspend-key:handle-hibernate-key:handle-lid-switch:sleep" <<<"$NW"'
+check "das Image maskiert ctrl-alt-del.target, und sieben Mal Strg+Alt+Entf in zwei Sekunden tut nichts (CtrlAltDelBurstAction=none); build.sh kopiert das Overlay" 'grep -qx "systemctl mask ctrl-alt-del.target" build/chroot-setup.sh && grep -qx "CtrlAltDelBurstAction=none" build/overlay/usr/lib/systemd/system.conf.d/lf-strg-alt-entf.conf && grep -qx "\[Manager\]" build/overlay/usr/lib/systemd/system.conf.d/lf-strg-alt-entf.conf && grep -qF "cp -a --no-preserve=ownership \"\$SRC/build/overlay/.\" \"\$CHROOT/\"" build/build.sh'
+# Ein Ende ohne Rückstand.
+reboot_sim
+: >"$T/systemctl.log" && : >"$T/busctl.log" && : >"$LOG"
+bash "$F" an 30 >"$T/out" 2>&1
+bash "$F" aus >"$T/out" 2>&1
+check "die Sperre gilt vom ersten Schritt an: nach dem Sperren der Grundregel, vor dem Anhalten von Claude" 'a=$(line "gesperrt: Grundregel von lf-claude ($T/sudoers.d/lf-claude) während des Endes: Ende der Freigabe") b=$(line "Ende der Freigabe: Netzschalter gesperrt ($NU)") c=$(line "Ende der Freigabe: Claude angehalten"); [[ -n $a && -n $b && -n $c ]] && ((a < b && b < c)) && grep -qxF "start --no-block $NU" "$T/systemctl.log"'
+check "…: nach dem Beenden fragt das Ende logind (ListInhibitors), ohne Rückstand gibt es die Sperre frei, ohne Neustart des Dienstes" 'grep -qF ListInhibitors "$T/busctl.log" && grep -qxF "stop $NU" "$T/systemctl.log" && grep -qx ActiveState=inactive "$T/unit/$NU" && grep -qF "Ende der Freigabe: Netzschalter wieder frei ($NU)" "$LOG" && ! grep -qxF "restart --no-block $NU" "$T/systemctl.log" && [[ ! -e $R && ! -e $NF_ ]] && base_free && ! grep -qF "Netzschalter nicht gesperrt" "$LOG"'
+# Rückstand, der beim Beenden als root liefe: finalrd, ein Dienst für D-Bus unter /run und eine
+# Einstellung von systemd selbst (Platzhalter).
+reboot_sim
+: >"$T/systemctl.log" && : >"$LOG"
+mkdir -p "$W/run/finalrd" "$W/run/dbus-1/system-services" "$W/etc/systemd/system.conf.d"
+bash "$F" an 30 >"$T/out" 2>&1
+printf '#!/bin/sh\n' >"$W/run/finalrd/q10.finalrd"
+printf '[D-BUS Service]\nName=q10\nExec=/bin/true\nUser=root\n' >"$W/run/dbus-1/system-services/q10.service"
+printf '[Manager]\nCtrlAltDelBurstAction=reboot-force\n' >"$W/etc/systemd/system.conf.d/q10.conf"
+bash "$F" aus >"$T/out" 2>&1
+check "mit Hinweis aufs Ausschalten am Netzschalter (finalrd, D-Bus, systemd): die Sperre bleibt, auch über Strg+Alt+Entf sagt der Hinweis etwas" '[[ $(head -n 1 "$R") == "${NETZ}$W/etc/systemd/system.conf.d/q10.conf, $W/run/dbus-1/system-services/q10.service, $W/run/finalrd/q10.finalrd)" ]] && ! grep -qxF "stop $NU" "$T/systemctl.log" && grep -qx ActiveState=active "$T/unit/$NU" && grep -qF "Ende der Freigabe: Netzschalter bleibt gesperrt" "$LOG" && ! grep -qF "Netzschalter nicht gesperrt" "$R" && [[ ! -e $NF_ ]] && soft_lock'
+# Das nächste Ende, ohne den Rückstand: Es gibt die Sperre frei.
+rm -rf "$W/run/finalrd/q10.finalrd" "$W/run/dbus-1/system-services/q10.service" "$W/etc/systemd/system.conf.d/q10.conf"
+: >"$T/systemctl.log"
+bash "$F" aus >"$T/out" 2>&1
+check "…: ein späteres Ende ohne Rückstand gibt sie frei" '[[ ! -e $R ]] && grep -qxF "stop $NU" "$T/systemctl.log" && grep -qx ActiveState=inactive "$T/unit/$NU" && base_free'
+rm -rf "$W/run/finalrd" "$W/run/dbus-1" "$W/etc/systemd/system.conf.d"
+# logind führt die Sperre nicht (Attrappe), mit Rückstand und ohne.
+reboot_sim
+: >"$T/systemctl.log" && : >"$LOG"
+mkdir -p "$W/run/finalrd"
+bash "$F" an 30 >"$T/out" 2>&1
+printf '#!/bin/sh\n' >"$W/run/finalrd/q10.finalrd"
+touch "$T/netz-ohne-sperre"
+bash "$F" aus >"$T/out" 2>&1
+rm -f "$T/netz-ohne-sperre"
+check "führt logind die Sperre nicht: einmal neu gestartet, dann eine Zeile im Rückstand, der Hinweis sagt, dass ein kurzer Druck geordnet herunterfährt" '[[ $(head -n 1 "$R") == "${NETZK}$W/run/finalrd/q10.finalrd, Netzschalter)" && $(grep -c "^restart --no-block $NU$" "$T/systemctl.log") == 1 && -e $NF_ ]] && grep -qxF "Netzschalter nicht gesperrt: $NU" "$R" && grep -qF "Netzschalter nicht gesperrt: logind führt keine Sperre von $NU" "$LOG" && ! grep -qxF "stop $NU" "$T/systemctl.log" && soft_lock'
+check "…: status zeigt den Hinweis mit dem kurzen Druck" '[[ $(bash "$F" status) == "an: Rückstand nach der Freigabe (${NETZK}"* ]]'
+rm -rf "$W/run/finalrd"
+reboot_sim
+: >"$T/systemctl.log" && : >"$LOG"
+bash "$F" an 30 >"$T/out" 2>&1
+touch "$T/netz-sperre-anders"
+bash "$F" aus >"$T/out" 2>&1
+rm -f "$T/netz-sperre-anders"
+check "eine Sperre nur für einen Teil der Tasten zählt nicht; ohne Rückstand steht dafür nichts im Rückstand, das Ende gibt den Dienst frei" '[[ ! -e $R && ! -e $NF_ ]] && grep -qF "Netzschalter nicht gesperrt: logind führt keine Sperre von $NU" "$LOG" && grep -qxF "stop $NU" "$T/systemctl.log" && base_free'
+reboot_sim
+: >"$T/systemctl.log" && : >"$LOG"
+bash "$F" an 30 >"$T/out" 2>&1
+touch "$T/netz-sperre-fremd"
+bash "$F" aus >"$T/out" 2>&1
+rm -f "$T/netz-sperre-fremd"
+check "eine Sperre, die ein anderer Prozess als der Hauptprozess hält, zählt nicht: einmal neu gestartet, dann im Protokoll" '[[ ! -e $R && ! -e $NF_ && $(grep -c "^restart --no-block $NU$" "$T/systemctl.log") == 1 ]] && grep -qF "Netzschalter nicht gesperrt: logind führt keine Sperre von $NU" "$LOG" && base_free'
+reboot_sim
+: >"$T/systemctl.log" && : >"$LOG"
+mkdir -p "$W/run/finalrd"
+bash "$F" an 30 >"$T/out" 2>&1
+printf '#!/bin/sh\n' >"$W/run/finalrd/q10.finalrd"
+touch "$T/netz-anderes-programm"
+bash "$F" aus >"$T/out" 2>&1
+rm -f "$T/netz-anderes-programm"
+check "führt der Hauptprozess ein anderes Programm aus als systemd-inhibit, zählt seine Sperre nicht: mit Rückstand sagt der Hinweis, dass ein kurzer Druck geordnet herunterfährt" '[[ $(head -n 1 "$R") == "$NETZK"* && -e $NF_ && $(grep -c "^restart --no-block $NU$" "$T/systemctl.log") == 1 ]] && grep -qxF "Netzschalter nicht gesperrt: $NU" "$R"'
+rm -rf "$W/run/finalrd"
+# Die Unit-Datei der Sperre geändert (eine Zeile mehr) oder ein Drop-in dazu.
+reboot_sim
+: >"$T/systemctl.log" && : >"$LOG"
+cp "$W/usr/lib/systemd/system/$NU" "$T/netz-datei"
+bash "$F" an 30 >"$T/out" 2>&1
+echo "ExecStopPost=/bin/sh -c /var/lib/lf-claude/x" >>"$W/usr/lib/systemd/system/$NU"
+bash "$F" aus >"$T/out" 2>&1
+cp "$T/netz-datei" "$W/usr/lib/systemd/system/$NU"
+check "Unit-Datei der Sperre geändert: das Ende startet den Dienst nicht, Rückstand, der Hinweis sagt, dass ein kurzer Druck geordnet herunterfährt" '! grep -qE "^(re)?start .*$NU$" "$T/systemctl.log" && grep -qF "Ende der Freigabe: $NU nicht wie im Image, Netzschalter nicht gesperrt" "$LOG" && grep -qxF "Systemdatei neu oder geändert: $W/usr/lib/systemd/system/$NU" "$R" && [[ $(head -n 1 "$R") == "$NETZK"* ]] && grep -qxF "Netzschalter nicht gesperrt: $NU" "$R"'
+reboot_sim
+: >"$T/systemctl.log" && : >"$LOG"
+bash "$F" an 30 >"$T/out" 2>&1
+"$T/bin/systemctl" start "$NU"
+prop "$NU" DropInPaths "/run/systemd/system/$NU.d/x.conf"
+bash "$F" aus >"$T/out" 2>&1
+check "mit einem Drop-in und von root gestartet: nicht ausgenommen, das Ende stoppt ihn wie jede Einheit aus der Freigabe" '! grep -qxF "start --no-block $NU" "$T/systemctl.log" && grep -qxF "stop $NU" "$T/systemctl.log" && grep -qxF "Einheit beendet: $NU" "$R" && grep -qF "Ende der Freigabe: $NU nicht wie im Image" "$LOG"'
+# Von root während der Freigabe gestartet, mit einem fremden Prozess darin und einer geänderten
+# Umgebung des Managers: Der fremde Prozess endet, das Ende startet den Dienst neu (ohne die
+# Variable), er bleibt mit dem Rückstand.
+reboot_sim
+: >"$T/systemctl.log" && : >"$LOG"
+bash "$F" an 30 >"$T/out" 2>&1
+jq -c '. + ["Q10=x"]' "$T/menv.json" >"$T/menv.neu" && mv "$T/menv.neu" "$T/menv.json"
+"$T/bin/systemctl" start "$NU"
+P0=$(netz_pid)
+NG=$(spawn)
+fake "$NG" 0 0 1 "PATH=/usr/bin" "sleep 300"
+echo "$NG" >>"$T/cg/system.slice/$NU/cgroup.procs"
+check "…: der Prozess von root hat die Variable" 'grep -qzx Q10=x "$T/proc/$P0/environ"'
+bash "$F" aus >"$T/out" 2>&1
+P1=$(netz_pid)
+check "von root gestartet: bleibt (nicht gestoppt), ein fremder Prozess darin endet, protokolliert" '! kill -0 "$NG" 2>/dev/null && grep -qF "beendet: $NG sleep 300 (fremd in $NU)" "$LOG" && ! grep -qxF "stop $NU" "$T/systemctl.log" && ! grep -qxF "Einheit beendet: $NU" "$R"'
+check "…: das Ende startet ihn nach dem Zurücksetzen der Umgebung einmal neu, der neue Prozess hat die Variable nicht, logind führt seine Sperre" '[[ $(grep -c "^restart --no-block $NU$" "$T/systemctl.log") == 1 && -n $P1 && $P1 != "$P0" && ! -e $T/proc/$P0 && ! -e $NF_ ]] && ! grep -qzx Q10=x "$T/proc/$P1/environ" && grep -qx ActiveState=active "$T/unit/$NU" && [[ $(head -n 1 "$R") == "${NETZ}Manager-Umgebung)" ]]'
+reboot_sim
+# Die Umgebung des Managers während der Freigabe geändert, die Sperre startet erst das Ende (und erbt
+# die Variable): Nach dem Zurücksetzen startet es sie neu.
+: >"$T/systemctl.log" && : >"$LOG"
+bash "$F" an 30 >"$T/out" 2>&1
+jq -c '. + ["Q10=x"]' "$T/menv.json" >"$T/menv.neu" && mv "$T/menv.neu" "$T/menv.json"
+bash "$F" aus >"$T/out" 2>&1
+P1=$(netz_pid)
+check "eine geänderte Umgebung des Managers: das Ende startet die Sperre nach dem Zurücksetzen einmal neu, ohne die Variable" '[[ $(grep -c "^start --no-block $NU$" "$T/systemctl.log") == 1 && $(grep -c "^restart --no-block $NU$" "$T/systemctl.log") == 1 && -n $P1 ]] && ! grep -qzx Q10=x "$T/proc/$P1/environ" && grep -qx ActiveState=active "$T/unit/$NU" && [[ $(head -n 1 "$R") == "${NETZ}Manager-Umgebung)" ]]'
+reboot_sim
+# Nur von root gestartet (die Umgebung unverändert): Neustart, weil root den Prozess ändern konnte.
+: >"$T/systemctl.log" && : >"$LOG"
+bash "$F" an 30 >"$T/out" 2>&1
+"$T/bin/systemctl" start "$NU"
+bash "$F" aus >"$T/out" 2>&1
+check "lief der Dienst schon vor dem Ende: einmal neu gestartet, dann ohne Rückstand freigegeben" '[[ ! -e $R ]] && [[ $(grep -c "^restart --no-block $NU$" "$T/systemctl.log") == 1 ]] && grep -qxF "start --no-block $NU" "$T/systemctl.log" && grep -qxF "stop $NU" "$T/systemctl.log" && ! grep -qF "beendet: Einheit $NU" "$LOG" && base_free'
+# Eine neue ld.so.preload: Die Sperre startete davor und kann ihre Bibliothek geladen haben.
+reboot_sim
+: >"$T/systemctl.log" && : >"$LOG"
+bash "$F" an 30 >"$T/out" 2>&1
+echo "/var/lib/lf-claude/x.so" >"$W/etc/ld.so.preload"
+bash "$F" aus >"$T/out" 2>&1
+check "eine gesperrte ld.so.preload: das Ende startet die Sperre danach einmal neu" 'grep -qF "gesperrt: $W/etc/ld.so.preload" "$LOG" && [[ $(grep -c "^restart --no-block $NU$" "$T/systemctl.log") == 1 ]] && a=$(grep -n -m1 "^start --no-block $NU$" "$T/systemctl.log" | cut -d: -f1) && b=$(grep -n -m1 "^restart --no-block $NU$" "$T/systemctl.log" | cut -d: -f1) && ((a < b))'
+rm -f "$W/etc/ld.so.preload" "$W/etc/ld.so.preload.lf-gesperrt"
+reboot_sim
+# Die Einordnung jeder Art von Zeile (hint_item), direkt aus der Kopie von lf-freigabe: Was niemand
+# eingeordnet hat, sagt Beenden > Ausschalten.
+head -n $(($(grep -n '^case \${1:-} in$' "$F" | cut -d: -f1) - 1)) "$F" >"$T/lib.sh"
+# klasse ZEILE   KLASSE NAME, wie hint_item sie für ZEILE setzt ("-" für keine).
+klasse() { bash -c 'source "$1" && hint_item "$2" && echo "${HC:--} $HN"' _ "$T/lib.sh" "$1" 2>/dev/null; }
+check "Klassen: polkit, Konten, /root, Credentials, setuid, capabilities, cron, Gruppen, linger, Einhängungen unter /mnt, LF-DATA und jede Zeile, die niemand eingeordnet hat: Beenden > Ausschalten" '(for l in "Datei neu: $W/etc/polkit-1/rules.d/x.rules" "Datei geändert: $W/etc/passwd" "Datei neu: $W/root/.ssh/authorized_keys" "Datei neu: $W/run/credstore/x" "setuid/setgid: $W/var/tmp/x" "capabilities: $W/var/tmp/x cap_setuid=ep" "cron: $W/var/spool/cron/crontabs/root" "Gruppen: lf-claude render sudo" "linger: lf-claude" "Einhängung neu oder geändert: $W/mnt/x (ext4 /dev/sdb1)" "Datei auf LF-DATA neu: $W/persist/home/x" "Speicher LF-DATA während der Freigabe ausgehängt, Inhalt ungeprüft: $W/persist" "Credentials geändert: $W/run/credentials/@system/x" "eine neue Art von Zeile: $W/etc/x" "noch eine neue Art"; do [[ $(klasse "$l") == "aus "* ]] || { echo "    $l: $(klasse "$l")"; exit 1; }; done)'
+check "…: der Name ist der Pfad, sonst was vor dem Doppelpunkt steht" '[[ $(klasse "capabilities: $W/var/tmp/x cap_setuid=ep") == "aus $W/var/tmp/x" && $(klasse "Gruppen: lf-claude render sudo") == "aus Gruppen" && $(klasse "Datei auf LF-DATA neu: $W/persist/home/x") == "aus LF-DATA" && $(klasse "noch eine neue Art") == "aus noch eine neue Art" && $(klasse "Suche nach capabilities abgebrochen (rc 137)") == "aus capabilities" ]]'
+check "…: keine Klasse nur für die Sperre der Grundregel, beendete Einheiten, Werkzeuge, gesperrte Kopien für soft-reboot und EFI-Variablen" '(for l in "Grundregel gesperrt bis zum Neustart: x" "Grundregel gesperrt, bis ein Ende ohne Rückstand abschließt: x" "Grundregel ließ sich nicht wieder freigeben: x" "Einheit beendet: x.service" "Werkzeug neu oder geändert: x" "System für soft-reboot: $W/run/nextroot.lf-gesperrt.abc" "EFI-Variable neu: Boot0001-$GV" "EFI-Variable geändert: BootOrder-$GV" "EFI-Variable entfernt: Timeout-$GV" ""; do [[ $(klasse "$l") == "- " ]] || { echo "    $l: $(klasse "$l")"; exit 1; }; done)'
+check "…: casper.conf, D-Bus (/etc und /run), system.conf(.d) von systemd und pam.conf: am Netzschalter" '(for p in "$W/etc/casper.conf" "$W/etc/dbus-1/system.d/x.conf" "$W/etc/dbus-1/system-services/x.service" "$W/run/dbus-1/system-services/x.service" "$W/etc/systemd/system.conf" "$W/etc/systemd/system.conf.d/x.conf" "$W/run/systemd/system.conf.d/x.conf" "$W/etc/pam.conf"; do [[ $(klasse "Datei neu: $p") == "netz $p" ]] || { echo "    $p: $(klasse "Datei neu: $p")"; exit 1; }; done) && [[ $(klasse "Netzschalter nicht gesperrt: $NU") == "netz Netzschalter" && $(klasse "Einhängung neu oder geändert: $W/etc/x (tmpfs tmpfs)") == "netz $W/etc/x" ]]'
+
 echo "Das Ende sperrt zuerst, Einheiten mit Code beim Beenden bleiben angehalten (GHSA-799j-44qx-x7xj):"
 # Ein Ende, das abbricht (KILL beim Anhalten einer Einheit, nur in der Attrappe von systemctl).
 reboot_sim
@@ -1692,9 +1925,10 @@ rm -f "$T/abbruch-bei-q8-abbruch.service"
 B1=$(cat "$T/proc/sys/kernel/random/boot_id")
 check "ein abgebrochenes Ende: Regel weg, Grundregel gesperrt, die Marke mit der boot_id dieses Starts" '[[ $RC == 137 && ! -e $RULE && ! -e $T/sudoers.d/lf-claude && -f $T/sudoers.d/lf-claude.lf-gesperrt && $(cat "$T/run/claude-grundregel-sperre") == "ende $B1" ]]'
 check "…: die Sperre steht im Protokoll vor dem Anhalten von Claude" 'a=$(line "gesperrt: Grundregel von lf-claude ($T/sudoers.d/lf-claude) während des Endes: Ende der Freigabe") b=$(line "Ende der Freigabe: Claude angehalten"); [[ -n $a && -n $b ]] && ((a < b))'
+check "…: die Sperre des Netzschalters gilt schon und bleibt" 'grep -qxF "start --no-block $NU" "$T/systemctl.log" && ! grep -qxF "stop $NU" "$T/systemctl.log" && grep -qx ActiveState=active "$T/unit/$NU"'
 # Ein soft-reboot behält /etc, /run und die boot_id, nur die Prozesse sind weg.
 cleanproc
-O=". Vor dem Weiterarbeiten ausschalten: Netzschalter gedrückt halten, nicht Beenden > Ausschalten oder Neustart"
+O=". Vor dem Weiterarbeiten ausschalten: Netzschalter gedrückt halten, nicht Beenden > Ausschalten oder Neustart, nicht Strg+Alt+Entf"
 check "nach einem soft-reboot: weiter gesperrt, der Rückstand sagt zuerst, dass die Prüfung nicht abgeschlossen ist und dass der Techniker am Netzschalter ausschalten soll, status zeigt das" '[[ ! -e $T/sudoers.d/lf-claude && $(cat "$T/run/claude-grundregel-sperre") == "ende $B1" && $(head -n 1 "$R") == "Prüfung des Rückstands nicht abgeschlossen, Ende seit "[0-9][0-9]:[0-9][0-9]"$O" && $(bash "$F" status) == "an: Rückstand nach der Freigabe (Prüfung des Rückstands nicht abgeschlossen, Ende seit "[0-9][0-9]:[0-9][0-9]"$O), Neustart empfohlen" ]]'
 bash "$F" aus >"$T/out" 2>&1
 check "das nächste Ende schließt ab und ersetzt die Zeile; mit Rückstand bleibt die Grundregel gesperrt, bis ein Ende ohne Rückstand abschließt" '! grep -qF "Prüfung des Rückstands nicht abgeschlossen" "$R" && grep -qxF "Einheit beendet: q8-abbruch.service" "$R" && soft_lock'
@@ -1783,7 +2017,7 @@ check "ExecStopPost=, OnFailure=, FailureAction= oder ein Beenden, das eine Einh
 check "…: das Protokoll nennt den Grund" 'grep -qF "angehalten, nicht beendet: Einheit q8-stop.service (beim Beenden liefe: ExecStopPost=)" "$LOG" && grep -qF "angehalten, nicht beendet: Einheit q8-aktion.service (beim Beenden liefe: FailureAction=reboot)" "$LOG" && grep -qF "angehalten, nicht beendet: Einheit q8-teil.service (das Beenden nähme mit: ConsistsOf=a.service)" "$LOG"'
 check "eine neue Einheit ohne so etwas: angehalten, beendet, gestoppt, Rückstand" 'grep -qx "freeze q8-frei.service" "$T/systemctl.log" && grep -qx "kill -s KILL q8-frei.service" "$T/systemctl.log" && grep -qx "stop q8-frei.service" "$T/systemctl.log" && grep -qxF "Einheit beendet: q8-frei.service" "$R"'
 check "der root-Prozess des angehaltenen Dienstes in der Slice von Claude: nicht beendet (sonst endete der Dienst)" 'kill -0 "$QH" 2>/dev/null && ! grep -qF "beendet: $QH " "$LOG"'
-check "angehaltene Einheiten: ganz oben am Netzschalter ausschalten, nicht sofort, nicht über Beenden, EFI in derselben Zeile (Befund 1); die Grundregel bleibt gesperrt, bis ein Ende ohne Rückstand abschließt" '[[ $(head -n 1 "$R") == "Vor dem Weiterarbeiten ausschalten: Netzschalter gedrückt halten, nicht Beenden > Ausschalten oder Neustart (beim Beenden liefe als root oder rescue Code aus der Freigabe: "*"q8-aktion.service"*"). Danach: EFI-Variablen für den Start geändert (Boot0001): vor dem nächsten Start die Startreihenfolge im Firmware-Setup prüfen und eine unerwartete MOK-Abfrage ablehnen" && $(head -n 1 "$R") != *"$TR/"* ]] && ! grep -q -e "^Sofort ausschalten" -e "^Vor dem Weiterarbeiten ausschalten (Beenden > Ausschalten)" "$R" && soft_lock'
+check "angehaltene Einheiten: ganz oben am Netzschalter ausschalten, nicht sofort, nicht über Beenden, EFI in derselben Zeile (Befund 1); die Grundregel bleibt gesperrt, bis ein Ende ohne Rückstand abschließt" '[[ $(head -n 1 "$R") == "Vor dem Weiterarbeiten ausschalten: Netzschalter gedrückt halten, nicht Beenden > Ausschalten oder Neustart, nicht Strg+Alt+Entf (beim Beenden liefe als root oder rescue Code aus der Freigabe: "*"q8-aktion.service"*"). Danach: EFI-Variablen für den Start geändert (Boot0001): vor dem nächsten Start die Startreihenfolge im Firmware-Setup prüfen und eine unerwartete MOK-Abfrage ablehnen" && $(head -n 1 "$R") != *"$TR/"* ]] && ! grep -q -e "^Sofort ausschalten" -e "^Vor dem Weiterarbeiten ausschalten (Beenden > Ausschalten)" "$R" && soft_lock'
 kill "$QH" 2>/dev/null
 rm -r "$CG/q8-claude.service"
 cp "$T/boot0001" "$EV/Boot0001-$GV"
@@ -1806,8 +2040,8 @@ printf '\007\000\000\000zwei' >"$EV/Boot0001-$GV"
 bash "$F" aus >"$T/out" 2>&1
 check "ein Timer mit OnSuccess=, der sich nicht anhalten lässt: läuft weiter, nicht gestoppt, Rückstand" '! grep -qxF -e "stop q8-zeit.timer" -e "kill -s KILL q8-zeit.timer" "$T/systemctl.log" && grep -qxF "Einheit läuft weiter, ließ sich nicht anhalten: q8-zeit.timer" "$R" && grep -qF "nicht angehalten und nicht beendet: Einheit q8-zeit.timer (beim Beenden liefe: OnSuccess=)" "$LOG"'
 check "…: jede andere Einheit aus der Freigabe bleibt angehalten, ein Timer ohne so etwas endet" 'held_ok q8-frei.service && grep -qxF "stop q8-leer.timer" "$T/systemctl.log" && grep -qxF "Einheit beendet: q8-leer.timer" "$R"'
-check "…: ganz oben sofort am Netzschalter ausschalten, nicht über Beenden > Ausschalten oder Neustart, EFI in derselben Zeile, kein weiterer Hinweis" '[[ $(head -n 1 "$R") == "Sofort ausschalten: Netzschalter gedrückt halten, nicht Beenden > Ausschalten oder Neustart (läuft weiter, beim Beenden liefe Code aus der Freigabe: q8-zeit.timer). Danach: EFI-Variablen für den Start geändert (Boot0001): vor dem nächsten Start die Startreihenfolge im Firmware-Setup prüfen und eine unerwartete MOK-Abfrage ablehnen" ]] && ! grep -q "^Vor dem Weiterarbeiten ausschalten" "$R" && soft_lock'
-check "…: status zeigt den Hinweis" '[[ $(bash "$F" status) == "an: Rückstand nach der Freigabe (Sofort ausschalten: Netzschalter gedrückt halten, nicht Beenden > Ausschalten oder Neustart (läuft weiter, "* ]]'
+check "…: ganz oben sofort am Netzschalter ausschalten, nicht über Beenden > Ausschalten oder Neustart, EFI in derselben Zeile, kein weiterer Hinweis" '[[ $(head -n 1 "$R") == "Sofort ausschalten: Netzschalter gedrückt halten, nicht Beenden > Ausschalten oder Neustart, nicht Strg+Alt+Entf (läuft weiter, beim Beenden liefe Code aus der Freigabe: q8-zeit.timer). Danach: EFI-Variablen für den Start geändert (Boot0001): vor dem nächsten Start die Startreihenfolge im Firmware-Setup prüfen und eine unerwartete MOK-Abfrage ablehnen" ]] && ! grep -q "^Vor dem Weiterarbeiten ausschalten" "$R" && soft_lock'
+check "…: status zeigt den Hinweis" '[[ $(bash "$F" status) == "an: Rückstand nach der Freigabe (Sofort ausschalten: Netzschalter gedrückt halten, nicht Beenden > Ausschalten oder Neustart, nicht Strg+Alt+Entf (läuft weiter, "* ]]'
 cp "$T/boot0001" "$EV/Boot0001-$GV"
 rm -f "$W/etc/modprobe.d/q8.conf"
 reboot_sim
@@ -1824,6 +2058,8 @@ check "leer ist genau KEPT_EMPTY, gleich genau KEPT_SAME" '[[ -n $(kept KEPT_EMP
 check "unit_info fragt nach jeder Eigenschaft aus leer, gleich und geprueft, und nur nach bekannten" '[[ -z $(comm -23 <({ props leer; props gleich; props geprueft; } | LC_ALL=C sort) <(echo "$QUERY")) && -z $(comm -13 <(props) <(echo "$QUERY")) ]]'
 
 echo "Hinweise für Techniker und Claude:"
+check "Anleitung: ein kurzer Druck tut nichts, solange der Hinweis aufs Ausschalten am Netzschalter steht; Gedrückthalten bricht Schreiben auf angeschlossene Disks ab; Strg+Alt+Entf ohne Wirkung" 'grep -qF "Ein kurzer Druck tut dann nichts: Vom ersten Schritt des Endes an sperrt Leuchtfeuer den Netzschalter und die Tasten für Neustart und Ruhezustand, bis ein Ende ohne so eine Zeile abschließt, sonst bis zum Neustart. Erst Gedrückthalten schaltet aus." docs/anleitung.md && grep -qF "der Hinweis sagt, dass schon ein kurzer Druck geordnet herunterfährt." docs/anleitung.md && grep -qF "Gedrückthalten nimmt den Strom sofort: Was gerade auf angeschlossene Disks schreibt, bricht ab, auch ein Job von lf-aufgabe, der nach dem Ende weiterläuft." docs/anleitung.md && grep -qF "**Strg+Alt+Entf** startet auf Leuchtfeuer keinen Neustart, auch mehrmals schnell hintereinander nicht." docs/anleitung.md'
+check "Anleitung und Code: der Hinweis über Beenden > Ausschalten nennt einen Weg zu root, LF-DATA hat einen eigenen Hinweis" 'grep -qF "Bleibt sonst ein Weg zu root aus der Freigabe, für Claude oder jeden anderen," docs/anleitung.md && grep -qF "echo \"Vor dem Weiterarbeiten ausschalten (Beenden > Ausschalten): Weg zu root aus der Freigabe (" rescue/bin/lf-freigabe && grep -qF "Prüfe LF-DATA dann vor dem nächsten Entsperren oder lege den Speicher neu an." docs/anleitung.md && grep -qF "vor dem nächsten Entsperren prüfen oder neu anlegen\"" rescue/bin/lf-freigabe'
 check "Anleitung: Eine Konsole, die während der Freigabe aufgeht, zeigt danach Rückstand; dann neu starten" 'grep -qF "Öffnest du während einer Freigabe eine weitere Konsole (Alt+F2 … F6), zeigt das Ende danach „Rückstand“" docs/anleitung.md && grep -qF "Starte dann neu. Bis dahin schaltest du eine neue Freigabe nur an einer Konsole des Geräts frei, mit Rückfrage dort." docs/anleitung.md'
 check "der Freigabe-Dialog sagt, dass das Ende auch laufende root-Jobs von Claude beendet" 'grep -q "Am Ende der Freigabe beendet Leuchtfeuer, was Claude damit als root gestartet hat, auch mitten im Schreiben." rescue/lib/claude.sh'
 check "Dialog und Anleitung: sicher endet root-Zugriff nur mit einem Neustart" '(($(grep -c "Sicher endet root-Zugriff nur mit einem Neustart" rescue/lib/claude.sh) >= 4)) && grep -q "Sicher endet root-Zugriff aber nur mit einem Neustart" docs/anleitung.md'
@@ -1846,9 +2082,9 @@ check "Anleitung: Startet ein beendeter Dienst danach nicht (frozen unit), hilft
 check "CLAUDE.md: apt, PAM, sudo oder eine eigene Einhängung sperren lf-lesen und lf-aufgabe bis zum Neustart" 'tr "\n" " " <rescue/claude/CLAUDE.md | grep -qF "sperrt Leuchtfeuer am Ende auch lf-lesen und lf-aufgabe bis zum Neustart und beendet Rettungen aus der Freigabe. Sag das dem Techniker vorher."'
 check "CLAUDE.md: lange Jobs vor dem Freischalten oder nach dem Ende; Jobs und Prozesse aus der Freigabe enden, nach einer Sperre auch Jobs von vorher (B5)" 'c=$(tr "\n" " " <rescue/claude/CLAUDE.md); [[ $c == *"lange Jobs startest du vor dem Freischalten oder nach dem Ende, nicht während einer Freigabe"* && $c == *"auch Jobs von lf-aufgabe"* && $c == *"Laufende Jobs von lf-lesen und lf-aufgabe enden dann auch, wenn du sie vor dem Freischalten gestartet hast."* && $c != *"Jobs von lf-aufgabe laufen weiter."* ]]'
 check "Anleitung: Jobs aus der Freigabe enden, nach einer Sperre auch die von vorher; Programme als rescue und der Hinweis aufs Ausschalten (A3, B4, B5)" 'grep -qF "Auch Jobs von lf-aufgabe, die Claude während der Freigabe startet, und jeder andere Prozess aus der Freigabe mit mehr Rechten als \`lf-claude\` enden dann." docs/anleitung.md && grep -qF "Laufende Jobs der beiden Werkzeuge enden dann auch, wenn sie vor der Freigabe gestartet sind." docs/anleitung.md && grep -qF "Darum zeigt der Rückstand auch Programme und Anmeldungen, die du während der Freigabe startest, und lässt sie laufen" docs/anleitung.md && grep -qF "steht im Rückstand oben „Vor dem Weiterarbeiten ausschalten: Netzschalter gedrückt halten“. Halte dann den Netzschalter gedrückt, bevor du weiterarbeitest." docs/anleitung.md && grep -qF "steht dort „Vor dem Weiterarbeiten ausschalten (Beenden > Ausschalten)“. Schalte das Gerät dann so aus, bevor du weiterarbeitest." docs/anleitung.md'
-check "Anleitung und Code nennen dieselben Hinweise aufs Ausschalten, am Netzschalter und über Beenden" 'grep -qF "„Vor dem Weiterarbeiten ausschalten: Netzschalter gedrückt halten“" docs/anleitung.md && grep -qF "echo \"Vor dem Weiterarbeiten ausschalten: Netzschalter gedrückt halten, nicht Beenden > Ausschalten oder Neustart (" rescue/bin/lf-freigabe && grep -qF "„Vor dem Weiterarbeiten ausschalten (Beenden > Ausschalten)“" docs/anleitung.md && grep -qF "echo \"Vor dem Weiterarbeiten ausschalten (Beenden > Ausschalten): " rescue/bin/lf-freigabe'
+check "Anleitung und Code nennen dieselben Hinweise aufs Ausschalten, am Netzschalter und über Beenden" 'grep -qF "„Vor dem Weiterarbeiten ausschalten: Netzschalter gedrückt halten“" docs/anleitung.md && grep -qF "echo \"Vor dem Weiterarbeiten ausschalten: Netzschalter gedrückt halten\$k, nicht Beenden > Ausschalten oder Neustart, nicht Strg+Alt+Entf (" rescue/bin/lf-freigabe && grep -qF "„Vor dem Weiterarbeiten ausschalten (Beenden > Ausschalten)“" docs/anleitung.md && grep -qF "echo \"Vor dem Weiterarbeiten ausschalten (Beenden > Ausschalten): " rescue/bin/lf-freigabe'
 check "Anleitung: Das Ende sperrt zuerst lf-lesen und lf-aufgabe, mit Rückstand bis zu einem Ende ohne; ein abgebrochenes Ende steht oben im Rückstand, mit demselben Text wie im Code" 'grep -qF "Als Erstes sperrt das Ende lf-lesen und lf-aufgabe für Claude. Findet es keinen Rückstand, gibt es beide wieder frei, sonst bleiben sie gesperrt, bis ein Ende ohne Rückstand abschließt, meist also bis zum Neustart." docs/anleitung.md && grep -qF "Bricht das Ende ab, steht im Rückstand oben „$(sed -n "s/^END_OPEN=\"\(.*\)\"$/\1/p" rescue/bin/lf-freigabe)“, mit dem Hinweis, am Netzschalter auszuschalten." docs/anleitung.md'
-check "Anleitung und Code: Dienste mit Code beim Beenden bleiben angehalten, dann am Netzschalter ausschalten; lässt sich einer nicht anhalten, sofort; nie über Beenden (Befund 1)" 'grep -qF "beendet Leuchtfeuer nicht: Er bleibt angehalten und steht im Rückstand, ganz oben mit „Vor dem Weiterarbeiten ausschalten: Netzschalter gedrückt halten“." docs/anleitung.md && grep -qF "steht dort „Sofort ausschalten“: Halte dann sofort den Netzschalter gedrückt. Wähle in beiden Fällen weder **Beenden > Ausschalten** noch **Beenden > Neustart**" docs/anleitung.md && grep -qF "echo \"Sofort ausschalten: Netzschalter gedrückt halten, nicht Beenden > Ausschalten oder Neustart (" rescue/bin/lf-freigabe'
+check "Anleitung und Code: Dienste mit Code beim Beenden bleiben angehalten, dann am Netzschalter ausschalten; lässt sich einer nicht anhalten, sofort; nie über Beenden (Befund 1)" 'grep -qF "beendet Leuchtfeuer nicht: Er bleibt angehalten und steht im Rückstand, ganz oben mit „Vor dem Weiterarbeiten ausschalten: Netzschalter gedrückt halten“." docs/anleitung.md && grep -qF "steht dort „Sofort ausschalten“: Halte dann sofort den Netzschalter gedrückt. Wähle in beiden Fällen weder **Beenden > Ausschalten** noch **Beenden > Neustart**" docs/anleitung.md && grep -qF "echo \"Sofort ausschalten: Netzschalter gedrückt halten\$k, nicht Beenden > Ausschalten oder Neustart, nicht Strg+Alt+Entf (" rescue/bin/lf-freigabe'
 check "Anleitung: Anmeldungen des Technikers aus der Freigabe laufen weiter und sind Rückstand, die von root enden (Q6)" 'grep -qF "Anmeldungen und Benutzerdienste von root aus der Freigabe beendet es." docs/anleitung.md'
 check "CLAUDE.md: mit Rückstand bleiben lf-lesen und lf-aufgabe gesperrt; keine Dienste und Timer mit Code beim Beenden" 'c=$(tr "\n" " " <rescue/claude/CLAUDE.md); [[ $c == *"Zeigt das Ende „Rückstand“, bleiben lf-lesen und lf-aufgabe gesperrt, bis ein Ende ohne Rückstand abschließt"* && $c == *"Richte mit der Freigabe keinen Dienst und keinen Timer ein, bei dessen Ende systemd noch etwas ausführt"* && $c == *"der Techniker muss das Gerät am Netzschalter ausschalten, sofort, wenn er sich nicht anhalten lässt."* ]]'
 check "CLAUDE.md: mit der Freigabe nur sudo BEFEHL, nie eine Anmelde-Shell als root (R4)" 'c=$(tr "\n" " " <rescue/claude/CLAUDE.md); [[ $c == *"Mit der Freigabe nutzt du nur \`sudo BEFEHL\`, nie eine Anmelde-Shell als root (\`sudo -i\`, \`sudo su -\`, \`su -\`): Ihre Sitzung startet den Laufzeitordner von root (user-runtime-dir@0), und den lässt das Ende angehalten stehen."* ]]'

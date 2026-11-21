@@ -133,6 +133,10 @@ systemctl disable ssh.service ssh.socket >/dev/null 2>&1 || true
 systemctl mask systemd-networkd-wait-online.service NetworkManager-wait-online.service >/dev/null 2>&1 || true
 # Keine automatischen Updates im Live-System
 systemctl mask apt-daily.timer apt-daily-upgrade.timer unattended-upgrades.service >/dev/null 2>&1 || true
+# Strg+Alt+Entf startet keinen Neustart (auch nicht siebenmal in zwei Sekunden:
+# /usr/lib/systemd/system.conf.d/lf-strg-alt-entf.conf aus dem Overlay). Er liefe geordnet, mit dem
+# Code, den root während einer Claude-Freigabe abgelegt haben kann (lf-freigabe).
+systemctl mask ctrl-alt-del.target
 
 log "initramfs neu bauen"
 update-initramfs -u -k all
