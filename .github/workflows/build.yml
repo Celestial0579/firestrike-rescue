@@ -64,7 +64,7 @@ jobs:
       # Hängende Disk: weiter nur mit genau derselben Disk, die Lücke wird nachgeholt (echtes ddrescue).
       # SSH: keine Hostschlüssel im ISO, eigene je Start, Fingerabdruck im Dialog.
       # Images freigeben: nie mit Gewalt, nichts anderes als die eigenen Einhängepunkte, kein
-      # Loop-Gerät, solange ein Job (Klon, P2V) daraus lesen kann.
+      # Loop-Gerät, solange ein Job (Klon, Rettung von Claude) daraus lesen kann.
       - name: Schutz-Tests
         run: |
           sudo apt-get update -qq && sudo apt-get install -y -qq jq whiptail gddrescue

@@ -267,11 +267,26 @@ IMAGE_LOOP_UNITS="lf-claude-rettung-*"
 
 # dev_open GERÄT …   Hat ein Prozess eines dieser Geräte offen, etwa ddrescue in einer Rettung von
 #   Claude? Wie disk_written in lf-aufgabe, nur für jeden Zugriff. Die offenen Dateien fremder
-#   Prozesse sieht nur root. Rückgabe 1 nur, wenn sicher keines offen ist: Lässt es sich nicht
-#   prüfen, gelten die Geräte als offen.
+#   Prozesse sieht nur root.
+#   Verglichen wird, worauf die Verknüpfungen in /proc/*/fd zeigen (find -printf %l), nie die
+#   Datei dahinter: stat auf eine Datei in einem hängenden FUSE-Dateisystem, etwa ntfs-3g auf
+#   einer sterbenden Quelle, käme nicht zurück. Nicht readlink mit allen Verknüpfungen: Das von
+#   uutils (die ISO) hört beim ersten Fehler auf, etwa bei einem Prozess, der gerade endet. Hat
+#   udev einen Geräteknoten neu angelegt, zeigt die Verknüpfung noch auf den alten mit
+#   "(deleted)", das Gerät zählt trotzdem als offen. Bleibt die Suche dennoch hängen, beendet
+#   timeout sie nach 10 s.
+#   Rückgabe 0: offen, 1: sicher keines offen, 2: lässt sich nicht prüfen (gilt wie offen).
 dev_open() {
-	sudo bash -c 'for f in /proc/[0-9]*/fd/*; do for n; do [[ $f -ef $n ]] && exit 0; done; done; exit 3' _ "$@"
-	(($? != 3))
+	sudo timeout -s KILL 10 bash -c 'l=$(find /proc/[0-9]*/fd -mindepth 1 -maxdepth 1 -printf "%l\n" 2>/dev/null)
+		[[ -n $l ]] || exit 2
+		l=${l//" (deleted)"/}
+		for n; do grep -qxF -- "$n" <<<"$l" && exit 0; done
+		exit 3' _ "$@"
+	case $? in
+	0) return 0 ;;
+	3) return 1 ;;
+	*) return 2 ;;
+	esac
 }
 
 # image_loops ORDNER   Loop-Geräte, deren Datei in ORDNER liegt (ein Fallordner oder das Ziel).
@@ -291,7 +306,7 @@ image_loops() {
 #   Image unter derselben Nummer. Was bleibt, steht danach in IMAGE_BUSY. Rückgabe 0, wenn von
 #   diesen Images nichts mehr eingebunden ist.
 image_release() {
-	local j loop p d mp x i busy
+	local j loop p d mp x i o busy units
 	local -a loops parts mps
 	IMAGE_BUSY=""
 	mapfile -t loops < <(image_loops "$1")
@@ -302,8 +317,13 @@ image_release() {
 		log "Images in $1 bleiben eingebunden: $IMAGE_BUSY"
 		return 1
 	done
-	if systemctl list-units --plain --no-legend --state=active,activating "$IMAGE_LOOP_UNITS" 2>/dev/null | grep -q .; then
+	# Wie dev_open: Lässt es sich nicht prüfen, bleiben die Images.
+	if ! units=$(systemctl list-units --plain --no-legend --state=active,activating "$IMAGE_LOOP_UNITS" 2>/dev/null); then
+		IMAGE_BUSY="Ob noch eine Rettung läuft, die Claude gestartet hat, ließ sich nicht prüfen."
+	elif [[ -n $units ]]; then
 		IMAGE_BUSY="Eine Rettung, die Claude gestartet hat, läuft noch und liest womöglich aus dem Image."
+	fi
+	if [[ -n $IMAGE_BUSY ]]; then
 		log "Images in $1 bleiben eingebunden: $IMAGE_BUSY"
 		return 1
 	fi
@@ -336,13 +356,18 @@ image_release() {
 			busy="$(basename "$loop") ist noch außerhalb von $LF_IMAGE_MNT eingehängt. "
 		fi
 		if [[ -z $busy ]]; then
-			# ntfs-3g und dislocker enden erst kurz nach dem Aushängen.
+			# ntfs-3g und dislocker enden erst kurz nach dem Aushängen. Gewartet wird nur auf ein
+			# offenes Gerät, nicht auf eine Suche, die scheitert.
 			i=0
-			while dev_open "$loop" "${parts[@]}"; do
-				((++i > 3)) && break
+			while :; do
+				dev_open "$loop" "${parts[@]}"
+				o=$?
+				((o == 0 && ++i <= 3)) || break
 				sleep 1
 			done
-			if ((i > 3)); then
+			if ((o == 2)); then
+				busy="Ob $(basename "$loop") noch geöffnet ist, ließ sich nicht prüfen. "
+			elif ((o == 0)); then
 				busy="$(basename "$loop") ist noch geöffnet, ein Programm liest daraus. "
 			elif ! run sudo losetup -d "$loop"; then
 				busy="$(basename "$loop") ließ sich nicht lösen. "

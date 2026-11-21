@@ -42,6 +42,8 @@ check() {
 #   sessions NAME              tmux-Sitzungen
 #   units   ZEILE              laufende Rettungen von Claude (systemctl list-units)
 #   ohne-root                  gibt es die Datei, scheitert die Suche nach offenen Geräten
+#   haengt                     gibt es die Datei, kommt die Suche nicht zurück
+#   ohne-systemd               gibt es die Datei, scheitert systemctl
 ohne() { awk -v n="$2" -v w="$3" '$n != w' "$T/$1" >"$T/$1.neu" && mv "$T/$1.neu" "$T/$1"; }
 hat() { awk -v n="$2" -v w="$3" '$n == w {f = 1} END {exit !f}' "$T/$1"; }
 eingehaengt() { hat mounts 2 "$1"; }
@@ -49,21 +51,35 @@ eingebunden() { hat loops 1 "$1"; }
 
 log() { printf '%s\n' "$*" >>"$T/log"; }
 run() { "$@"; }
-# Die Suche nach offenen Geräten (dev_open) läuft als root mit sudo bash -c über /proc. Hier sieht
-# sie den gedachten Kernel, ihr Skript wird für die Probe am Ende aufgehoben.
+# Die Suche nach offenen Geräten (dev_open) läuft als root mit sudo bash -c über /proc, mit
+# timeout als Grenze. Hier sieht sie den gedachten Kernel, ihr Skript wird für die Probe am Ende
+# aufgehoben.
 sudo() {
+	local grenze=""
+	if [[ $1 == timeout ]]; then
+		grenze="$2 $3 $4"
+		shift 4
+	fi
 	if [[ $1 == bash && $2 == -c && $4 == _ ]]; then
 		printf '%s' "$3" >"$T/suche.sh"
 		shift 4
-		offen "$@"
+		offen "$grenze" "$@"
 		return
 	fi
 	"$@"
 }
 offen() {
-	local n k
+	local grenze=$1 n k
+	shift
 	printf '%s\n' "$*" >>"$T/suchen"
 	[[ -e $T/ohne-root ]] && return 1
+	# Kommt die Suche nicht zurück, beendet timeout sie mit KILL und gibt 124 zurück. Ohne Grenze
+	# bliebe lf stehen. Das schreibt die Attrappe nur auf und meldet "offen", damit der Test endet.
+	if [[ -e $T/haengt ]]; then
+		[[ $grenze == "-s KILL 10" ]] && return 124
+		echo "$*" >>"$T/haengen"
+		return 0
+	fi
 	for n; do
 		hat open 1 "$n" && return 0
 		k=$(awk -v d="$n" '$1 == d {print $2}' "$T/kurz")
@@ -77,6 +93,7 @@ offen() {
 }
 systemctl() {
 	printf '%s\n' "$*" >>"$T/systemctl"
+	[[ -e $T/ohne-systemd ]] && return 1
 	[[ $1 == list-units ]] && cat "$T/units"
 }
 sleep() { :; }
@@ -141,8 +158,8 @@ tmux() { [[ $1 == has-session && $3 == =* ]] && hat sessions 1 "${3#=}"; }
 #   Claude mit lf-aufgabe eingehängt hat (sdb1), ein Image aus Fall G und ein Snap des Systems.
 lage() {
 	local f
-	for f in busy open kurz zwischen auto sessions units detached umounts msg log suchen systemctl; do : >"$T/$f"; done
-	rm -f "$T/ohne-root"
+	for f in busy open kurz zwischen auto sessions units detached umounts msg log suchen systemctl haengen; do : >"$T/$f"; done
+	rm -f "$T/ohne-root" "$T/haengt" "$T/ohne-systemd"
 	cat >"$T/loops" <<-EOF
 		/dev/loop0 /var/lib/snapd/snaps/core_1.snap
 		/dev/loop7 $F/image.img
@@ -212,6 +229,12 @@ rc=$?
 check "Rückgabe 1, lf nennt die Rettung" '((rc == 1)) && [[ $IMAGE_BUSY == "Eine Rettung, die Claude gestartet hat, läuft noch und liest womöglich aus dem Image." ]]'
 check "nichts ausgehängt, kein Loop-Gerät gelöst" '[[ ! -s $T/umounts && ! -s $T/detached ]] && eingehaengt "$LF_IMAGE_MNT/loop7p2" && eingebunden /dev/loop7 && eingebunden /dev/loop8'
 check "gefragt wird nach laufenden und startenden Einheiten lf-claude-rettung-*" '[[ $(cat "$T/systemctl") == "list-units --plain --no-legend --state=active,activating lf-claude-rettung-*" ]]'
+lage
+: >"$T/ohne-systemd"
+image_release "$F"
+rc=$?
+check "scheitert systemctl, bleiben die Images ebenso, lf sagt das" '((rc == 1)) && [[ $IMAGE_BUSY == "Ob noch eine Rettung läuft, die Claude gestartet hat, ließ sich nicht prüfen." ]]'
+check "dann nichts ausgehängt, kein Loop-Gerät gelöst" '[[ ! -s $T/umounts && ! -s $T/detached ]] && eingebunden /dev/loop7 && eingebunden /dev/loop8'
 
 echo "Laufende Jobs, die nie aus einem Loop-Gerät lesen (lf-kopie, lf-vhdx, lf-rettung, lf-p2v):"
 lage
@@ -287,6 +310,16 @@ lage
 image_release "$F"
 rc=$?
 check "die Geräte gelten als offen, keines wird gelöst" '((rc == 1)) && [[ ! -s $T/detached ]] && eingebunden /dev/loop7 && eingebunden /dev/loop8'
+check "lf sagt, dass es sich nicht prüfen ließ, und sucht je Gerät nur einmal" '[[ $IMAGE_BUSY == "Ob loop7 noch geöffnet ist, ließ sich nicht prüfen. Ob loop8 noch geöffnet ist, ließ sich nicht prüfen. " && $(grep -c . "$T/suchen") == 2 ]]'
+
+echo "Die Suche kommt nicht zurück:"
+lage
+: >"$T/haengt"
+image_release "$F"
+rc=$?
+check "sie läuft mit Grenze (timeout -s KILL 10), lf bleibt nicht stehen" '[[ -s $T/suchen && ! -s $T/haengen ]]'
+check "danach gelten die Geräte als offen, keines wird gelöst" '((rc == 1)) && [[ ! -s $T/detached ]] && eingebunden /dev/loop7 && eingebunden /dev/loop8'
+check "lf sagt das und wartet nicht noch dreimal 10 s" '[[ $IMAGE_BUSY == "Ob loop7 noch geöffnet ist, ließ sich nicht prüfen. Ob loop8 noch geöffnet ist, ließ sich nicht prüfen. " && $(grep -c . "$T/suchen") == 2 ]]'
 
 echo "'Image weiterverwenden' verlassen:"
 casefile_dirname_ok() { return 0; }
@@ -335,9 +368,15 @@ for i in $(seq 50); do [[ -e $T/bereit ]] && break; command sleep 0.1; done
 suche() { bash -c "$(cat "$T/suche.sh")" _ "$@"; }
 check "das Skript ist aufgezeichnet" '[[ -s $T/suche.sh ]]'
 check "eine Datei, die ein Prozess offen hat: Rückgabe 0" 'suche "$T/frei" "$T/gelesen"'
+# Wie ein Geräteknoten, den udev neu anlegt: Die Verknüpfung zeigt auf den alten mit "(deleted)".
+rm "$T/gelesen" && : >"$T/gelesen"
+check "gelöscht und neu angelegt: zählt weiter als offen" 'suche "$T/frei" "$T/gelesen"'
 kill "$LESER" 2>/dev/null
 wait "$LESER" 2>/dev/null
 check "ist sie wieder zu: Rückgabe 3, keines offen" 'suche "$T/frei" "$T/gelesen"; [[ $? == 3 ]]'
+# Ein find, das nichts ausgibt: Dann sah die Suche gar nichts, auch nicht sich selbst.
+mkdir -p "$T/stumm" && printf '#!/bin/sh\nexit 1\n' >"$T/stumm/find" && chmod +x "$T/stumm/find"
+check "sieht die Suche gar nichts: Rückgabe 2, nicht 3" 'PATH="$T/stumm:$PATH" suche "$T/frei" "$T/gelesen"; [[ $? == 2 ]]'
 
 rm -rf "$T"
 ((fails == 0)) && echo "Alle Tests bestanden." || { echo "$fails Test(s) fehlgeschlagen."; exit 1; }
