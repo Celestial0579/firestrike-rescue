@@ -21,7 +21,7 @@ echo "Quellen für lf-aufgabe:"
 # Dateien; ein losgelöster Prozess hält eine davon zum Schreiben offen wie dd im Klon.
 sed -n '/^disk_written() {/,/^}/p; /^disk_mounted_rw() {/,/^}/p; /^source_ok() {/,/^}/p' rescue/bin/lf-aufgabe >"$T/aufgabe-fns.sh"
 # Die Jobliste aus common.sh: eintragen (Assistent) und lesen (lf-aufgabe).
-sed -n '/^tmux_start() {/,/^}/p; /^tmux_run_writing() {/,/^}/p; /^job_register() {/,/^}/p; /^job_starttime() {/,/^}/p; /^job_disks() {/,/^}/p' rescue/lib/common.sh >>"$T/aufgabe-fns.sh"
+sed -n '/^tmux_size() {/,/^}/p; /^tmux_start() {/,/^}/p; /^tmux_run_writing() {/,/^}/p; /^job_register() {/,/^}/p; /^job_starttime() {/,/^}/p; /^job_disks() {/,/^}/p' rescue/lib/common.sh >>"$T/aufgabe-fns.sh"
 # shellcheck disable=SC1091
 . "$T/aufgabe-fns.sh"
 LF_JOBS="$T/jobs"

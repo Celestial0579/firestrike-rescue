@@ -200,7 +200,7 @@ recover_after() {
 			vhdx "In VHDX umwandeln (Hyper-V, Windows einbinden)" \
 			report "Bericht anzeigen" \
 			claude "Claude um Rat fragen" \
-			"done" "Fertig") || return 0
+			"done" "Fertig") || choice="done"
 		case $choice in
 		copy) image_copy_files "$case" "$img" ;;
 		disk) image_to_disk "$case" "$img" ;;
@@ -210,7 +210,12 @@ recover_after() {
 		vhdx) tmux_run "lf-vhdx" bash -c 'qemu-img convert -p -O vhdx -o subformat=dynamic "$1" "$2"; echo; read -r -p "Fertig. Enter … " _' _ "$img" "$case/image.vhdx" ;;
 		report) ui_textfile "Bericht" "$case/report.txt" ;;
 		claude) claude_start "$case" ;;
-		done) return 0 ;;
+		done)
+			# Was die Menüs hier eingehängt und eingebunden haben, belegte sonst das Ziel (#83).
+			image_release "$case" ||
+				ui_msg "Image noch in Benutzung" "Das Image bleibt eingebunden, das Ziel ist damit noch belegt:\n\n$IMAGE_BUSY\n\nIst das erledigt, gibt lf das Image frei, sobald du ein anderes Ziel einhängst oder 'Image weiterverwenden' wieder mit 'Fertig' verlässt."
+			return 0
+			;;
 		esac
 	done
 }
@@ -245,6 +250,137 @@ image_attach_clear_ro() {
 		log "Loop-Gerät $p trug noch einen alten Schreibschutz, aufgehoben"
 		run sudo blockdev --setrw "$p"
 	done
+}
+
+# Jobs, die aus einem Image lesen können, auch zwischen zwei Schritten, in denen sie es gerade
+# nicht offen haben. Solange einer davon besteht, auch wenn er nur noch auf Enter wartet, bleibt
+# jedes Image eingebunden. Ein gelöstes Loop-Gerät ließe den Job abbrechen, oder er läse im
+# nächsten Schritt ein anderes Image, das inzwischen dieselbe Nummer bekommen hat.
+#   IMAGE_LOOP_JOBS   tmux-Sitzungen: lf-klon ("Image auf eine neue Disk" klont vom Loop-Gerät).
+#                     Nicht lf-p2v und nicht lf-rettung: P2V und die Rettungen des Assistenten
+#                     nehmen als Quelle nur Disks aus disks_json, nie ein Loop-Gerät.
+#   IMAGE_LOOP_UNITS  systemd-Einheiten: Rettungen von Claude (lf-aufgabe retten, fortsetzen).
+#                     Sie nehmen auch ein Loop-Gerät als Quelle, und lf-rescue-run öffnet die
+#                     Quelle in jeder Phase neu.
+IMAGE_LOOP_JOBS="lf-klon"
+IMAGE_LOOP_UNITS="lf-claude-rettung-*"
+
+# dev_open GERÄT …   Hat ein Prozess eines dieser Geräte offen, etwa ddrescue in einer Rettung von
+#   Claude? Wie disk_written in lf-aufgabe, nur für jeden Zugriff. Die offenen Dateien fremder
+#   Prozesse sieht nur root.
+#   Verglichen wird, worauf die Verknüpfungen in /proc/*/fd zeigen (find -printf %l), nie die
+#   Datei dahinter: stat auf eine Datei in einem hängenden FUSE-Dateisystem, etwa ntfs-3g auf
+#   einer sterbenden Quelle, käme nicht zurück. Nicht readlink mit allen Verknüpfungen: Das von
+#   uutils (die ISO) hört beim ersten Fehler auf, etwa bei einem Prozess, der gerade endet. Hat
+#   udev einen Geräteknoten neu angelegt, zeigt die Verknüpfung noch auf den alten mit
+#   "(deleted)", das Gerät zählt trotzdem als offen. Bleibt die Suche dennoch hängen, beendet
+#   timeout sie nach 10 s.
+#   Rückgabe 0: offen, 1: sicher keines offen, 2: lässt sich nicht prüfen (gilt wie offen).
+dev_open() {
+	sudo timeout -s KILL 10 bash -c 'l=$(find /proc/[0-9]*/fd -mindepth 1 -maxdepth 1 -printf "%l\n" 2>/dev/null)
+		[[ -n $l ]] || exit 2
+		l=${l//" (deleted)"/}
+		for n; do grep -qxF -- "$n" <<<"$l" && exit 0; done
+		exit 3' _ "$@"
+	case $? in
+	0) return 0 ;;
+	3) return 1 ;;
+	*) return 2 ;;
+	esac
+}
+
+# image_loops ORDNER   Loop-Geräte, deren Datei in ORDNER liegt (ein Fallordner oder das Ziel).
+image_loops() {
+	losetup -J -O NAME,BACK-FILE 2>/dev/null |
+		jq -r --arg d "${1%/}/" '.loopdevices[]? | select((."back-file" // "") | startswith($d)) | .name'
+}
+
+# image_release ORDNER   Gibt die Images frei, die in ORDNER liegen (ein Fallordner oder das
+#   Ziel): hängt aus, was von ihnen unter $LF_IMAGE_MNT eingehängt ist (auch die reparierte Kopie
+#   und bei BitLocker die entschlüsselte Partition), und löst die Loop-Geräte. Sonst bleibt das
+#   Ziel belegt, und lf hängt bis zum Neustart kein anderes ein (#83).
+#   Ausgehängt wird nie mit Gewalt: Benutzt etwas einen Einhängepunkt noch, etwa rsync in
+#   lf-kopie (sein Arbeitsverzeichnis liegt in der Quelle), bleibt er samt Loop-Gerät. Gelöst
+#   wird ein Loop-Gerät nur, wenn kein Prozess es oder eine seiner Partitionen offen hat. Sonst
+#   löste es der Kernel erst beim Schließen, und wer es danach öffnet, bekäme womöglich ein anderes
+#   Image unter derselben Nummer. Was bleibt, steht danach in IMAGE_BUSY. Rückgabe 0, wenn von
+#   diesen Images nichts mehr eingebunden ist.
+image_release() {
+	local j loop p d mp x i o busy units
+	local -a loops parts mps
+	IMAGE_BUSY=""
+	mapfile -t loops < <(image_loops "$1")
+	((${#loops[@]})) || return 0
+	for j in $IMAGE_LOOP_JOBS; do
+		tmux has-session -t "=$j" 2>/dev/null || continue
+		IMAGE_BUSY="Der Job $j ist noch offen (er läuft oder wartet auf Enter) und liest womöglich aus dem Image. Ansicht: tmux attach -t $j"
+		log "Images in $1 bleiben eingebunden: $IMAGE_BUSY"
+		return 1
+	done
+	# Wie dev_open: Lässt es sich nicht prüfen, bleiben die Images.
+	if ! units=$(systemctl list-units --plain --no-legend --state=active,activating "$IMAGE_LOOP_UNITS" 2>/dev/null); then
+		IMAGE_BUSY="Ob noch eine Rettung läuft, die Claude gestartet hat, ließ sich nicht prüfen."
+	elif [[ -n $units ]]; then
+		IMAGE_BUSY="Eine Rettung, die Claude gestartet hat, läuft noch und liest womöglich aus dem Image."
+	fi
+	if [[ -n $IMAGE_BUSY ]]; then
+		log "Images in $1 bleiben eingebunden: $IMAGE_BUSY"
+		return 1
+	fi
+	for loop in "${loops[@]}"; do
+		busy=""
+		mapfile -t parts < <(lsblk -nr -o PATH "$loop" 2>/dev/null)
+		for p in "${parts[@]}"; do
+			# BitLocker: Eingehängt ist die Datei, die dislocker aus der Partition entschlüsselt,
+			# über ein eigenes Loop-Gerät oder direkt mit ntfs-3g (part_mount_ro).
+			d="$LF_RUN/dislocker-$(basename "$p")"
+			mapfile -t mps < <(
+				findmnt -rn -o TARGET -S "$p" 2>/dev/null || true
+				if mountpoint -q "$d"; then
+					findmnt -rn -o TARGET -S "$d/dislocker-file" 2>/dev/null || true
+					for x in $(losetup -n -O NAME -j "$d/dislocker-file" 2>/dev/null); do
+						findmnt -rn -o TARGET -S "$x" 2>/dev/null || true
+					done
+				fi
+			)
+			for mp in "${mps[@]}"; do
+				[[ $mp == "$LF_IMAGE_MNT"/?* ]] || continue
+				run sudo umount "$mp" || busy+="$mp wird noch benutzt. "
+			done
+			if mountpoint -q "$d"; then
+				run sudo umount "$d" || busy+="$d wird noch benutzt. "
+			fi
+		done
+		# Eingehängt außerhalb von $LF_IMAGE_MNT (von Hand) bleibt eingehängt, das Gerät auch.
+		if [[ -z $busy ]] && lsblk -nr -o MOUNTPOINTS "$loop" 2>/dev/null | grep -q .; then
+			busy="$(basename "$loop") ist noch außerhalb von $LF_IMAGE_MNT eingehängt. "
+		fi
+		if [[ -z $busy ]]; then
+			# ntfs-3g und dislocker enden erst kurz nach dem Aushängen. Gewartet wird nur auf ein
+			# offenes Gerät, nicht auf eine Suche, die scheitert.
+			i=0
+			while :; do
+				dev_open "$loop" "${parts[@]}"
+				o=$?
+				((o == 0 && ++i <= 3)) || break
+				sleep 1
+			done
+			if ((o == 2)); then
+				busy="Ob $(basename "$loop") noch geöffnet ist, ließ sich nicht prüfen. "
+			elif ((o == 0)); then
+				busy="$(basename "$loop") ist noch geöffnet, ein Programm liest daraus. "
+			elif ! run sudo losetup -d "$loop"; then
+				busy="$(basename "$loop") ließ sich nicht lösen. "
+			elif [[ -n $(losetup -n -O BACK-FILE "$loop" 2>/dev/null) ]]; then
+				# Hat es jemand genau jetzt geöffnet, löst es der Kernel erst danach.
+				busy="$(basename "$loop") ist noch geöffnet und wird gelöst, sobald es frei ist. "
+			fi
+		fi
+		IMAGE_BUSY+=$busy
+	done
+	[[ -z $IMAGE_BUSY ]] && return 0
+	log "Images in $1 bleiben teils eingebunden: $IMAGE_BUSY"
+	return 1
 }
 
 # Schutzoptionen für jede Partition aus einem Image. Ein Image ist der Inhalt einer fremden

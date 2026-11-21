@@ -64,6 +64,9 @@ lsblk() {
 		;;
 	esac
 }
+# Keine Loop-Geräte: Vor dem Aushängen des bisherigen Ziels ist kein Image freizugeben
+# (image_release, geprüft in unit-image-release.sh).
+losetup() { :; }
 mountpoint() { [[ -L $T/mnt ]]; }
 findmnt() {
 	[[ -L $T/mnt ]] || return 1

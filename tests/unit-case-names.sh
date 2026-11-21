@@ -103,6 +103,9 @@ tmux_run() {
 }
 qemu-img() { :; }
 export -f qemu-img
+# Keine Loop-Geräte: Beim Verlassen von "Image weiterverwenden" ist kein Image freizugeben
+# (image_release, geprüft in unit-image-release.sh).
+losetup() { :; }
 # Der Filter für angezeigte Texte gehört zu common.sh und spielt hier keine Rolle.
 text_clean() { cat; }
 

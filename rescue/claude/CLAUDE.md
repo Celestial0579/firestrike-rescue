@@ -42,7 +42,10 @@ root darfst du nur die lf-Werkzeuge starten. Mit ihnen erledigst du die Rettungs
 - `sudo lf-aufgabe einhaengen GERÄT`: Partition nur lesend unter `/mnt/lf-image/NAME`. Die Disk
   wird vorher schreibgeschützt. `sudo lf-aufgabe aushaengen NAME` hängt sie wieder aus.
 - `sudo lf-aufgabe image FALL`: das `image.img` eines Rettungsfalls nur lesend einbinden, danach
-  seine Partitionen mit `einhaengen`
+  seine Partitionen mit `einhaengen`. Verlässt der Techniker „Image weiterverwenden“ mit „Fertig“
+  oder wechselt er das Ziel, gibt lf das Image frei, samt deiner Einhängepunkte darin, aus denen
+  gerade nichts liest. Dann `image` und `einhaengen` neu aufrufen. Die Nummer des Loop-Geräts kann
+  sich dabei ändern.
 - `sudo lf-aufgabe kopieren PFAD [ORDNER]`: Dateien aus `/mnt/lf-image` aufs Ziel nach
   `LF/claude/ORDNER`
 - `sudo lf-aufgabe retten GERÄT [--domain PARTITION] [--haengt]`: Rettungsfall auf dem Ziel anlegen,
