@@ -1324,7 +1324,10 @@ power_menu() {
 		fi
 		persist_close
 		sync
-		sudo systemctl "$c"
+		# Ein echter Neustart: Hat root (etwa mit einer Freigabe für Claude) einen Kernel für kexec
+		# geladen oder unter /run/nextroot ein System abgelegt, startete systemctl sonst dorthin
+		# statt neu (GHSA-799j-44qx-x7xj).
+		sudo env SYSTEMCTL_SKIP_AUTO_KEXEC=1 SYSTEMCTL_SKIP_AUTO_SOFT_REBOOT=1 systemctl "$c"
 		;;
 	esac
 }
