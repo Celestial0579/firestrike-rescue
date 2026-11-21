@@ -343,7 +343,7 @@ clone_copy() {
 	chmod +x "$job"
 	log "Klon-Job: $job"
 	# Die Ziel-Disk steht in der Jobliste, solange der Job läuft (GHSA-p86q-3456-f288).
-	tmux_run_writing "lf-klon" "$tdev" sudo "$job"
+	tmux_run_writing "lf-klon" "$tdev" "${LF_JOB_RUN[@]}" "$job"
 	while tmux has-session -t lf-klon 2>/dev/null; do
 		ui_msg "Klon läuft" "Der Klon läuft noch im Hintergrund.\n\nOK zeigt die Ansicht wieder an." && tmux attach -t lf-klon
 	done
@@ -381,10 +381,22 @@ clone_cmd_copy() {
 	esac
 	if [[ -n $tool ]]; then
 		echo "$tool -b -s '$src' -o '$dst' || { echo 'partclone fehlgeschlagen, versuche dd …'; dd if='$src' of='$dst' bs=4M iflag=fullblock conv=fsync status=progress || fail 'Kopie $src'; }"
+		# partclone.ntfs kopiert nur belegte Cluster. Der Sicherungs-Bootsektor im letzten Sektor
+		# der Partition käme nicht mit (#73). Wächst die Partition, schreibt ntfsresize ihn neu.
+		[[ $fs == ntfs ]] && clone_cmd_last_sector "$src" "$dst"
 	else
 		# Unbekannt, leer, MSR, BitLocker: blockweise
 		echo "dd if='$src' of='$dst' bs=4M iflag=fullblock conv=fsync status=progress || fail 'Kopie $src'"
 	fi
+}
+
+# clone_cmd_last_sector QUELLE ZIEL   Gibt Befehle aus, die den letzten Sektor von QUELLE an
+#   dieselbe Stelle von ZIEL kopieren, wenn beide gleich groß sind. Sonst tun sie nichts.
+#   Die Sektorgröße liefert das Gerät, wenn der Job läuft.
+clone_cmd_last_sector() {
+	local src=$1 dst=$2
+	echo "ss=\$(blockdev --getss '$src') && n=\$((\$(blockdev --getsize64 '$src') / ss)) && m=\$(blockdev --getsize64 '$dst') || fail 'Größe von $src oder $dst'"
+	echo "if ((m == n * ss)); then dd if='$src' of='$dst' bs=\$ss skip=\$((n - 1)) seek=\$((n - 1)) count=1 conv=notrunc,fsync status=none || fail 'Sicherungs-Bootsektor $dst'; fi"
 }
 
 clone_cmd_grow() {
@@ -400,26 +412,37 @@ clone_cmd_grow() {
 
 # Verkleinern ohne die Quelle anzufassen: Schreib-Overlay im RAM über die Quellpartition,
 # dort Dateisystem verkleinern, dann von dort auf das Ziel kopieren.
+#   nbd lädt mit denselben Werten wie bei P2V (max_part=16). Wer zuerst lädt, legt sie bis zum
+#   Neustart fest, und P2V braucht Partitionen. Das Overlay nimmt ein freies Gerät, nicht fest
+#   nbd0, denn das kann gerade P2V gehören (#75).
+#   NTFS: ntfsresize markiert das Volume für eine Prüfung beim nächsten Start von Windows, mit
+#   Absicht. partclone lehnt solche Volumes ab, -I lässt sie zu. Außerdem vergleicht partclone
+#   die Größe des Geräts mit dem Ziel, nicht die des Volumes, und das Overlay ist so groß wie
+#   die Quelle. -C schaltet diesen Vergleich ab. Dass das verkleinerte Volume ins Ziel passt,
+#   prüft der Job deshalb vorher selbst (#74).
 clone_cmd_shrink() {
 	local src=$1 dst=$2 fs=$3 bytes=$4
 	cat <<-EOF
-		modprobe nbd max_part=0
+		modprobe nbd max_part=16
+		nbd=; for s in /sys/block/nbd*; do [[ \$(cat "\$s/size" 2>/dev/null) == 0 && ! -e \$s/pid ]] && { nbd=/dev/\${s##*/}; break; }; done
+		[[ -b \$nbd ]] || fail 'kein freies NBD-Gerät'
 		install -d $LF_RUN/cow
 		mountpoint -q $LF_RUN/cow || mount -t tmpfs -o size=60% tmpfs $LF_RUN/cow
-		TMPDIR=$LF_RUN/cow qemu-nbd --snapshot --format=raw --fork -c /dev/nbd0 '$src' || fail 'qemu-nbd'
+		TMPDIR=$LF_RUN/cow qemu-nbd --snapshot --format=raw --fork -c \$nbd '$src' || fail 'qemu-nbd'
 		sleep 1
 	EOF
 	case $fs in
 	ntfs)
-		echo "yes y | ntfsresize --force --no-progress-bar -s $((bytes - 1048576)) /dev/nbd0 || { qemu-nbd -d /dev/nbd0; fail 'ntfsresize (Overlay)'; }"
-		echo "partclone.ntfs -b -s /dev/nbd0 -o '$dst' || { qemu-nbd -d /dev/nbd0; fail 'partclone.ntfs'; }"
+		echo "yes y | ntfsresize --force --no-progress-bar -s $((bytes - 1048576)) \$nbd || { qemu-nbd -d \$nbd; fail 'ntfsresize (Overlay)'; }"
+		echo "v=\$(ntfsresize --info --force --no-action \$nbd 2>/dev/null | grep -oP 'Current volume size: \\K[0-9]+') && t=\$(blockdev --getsize64 '$dst') && ((v > 0 && v <= t)) || { qemu-nbd -d \$nbd; fail 'verkleinertes Volume passt nicht in $dst'; }"
+		echo "partclone.ntfs -I -C -b -s \$nbd -o '$dst' || { qemu-nbd -d \$nbd; fail 'partclone.ntfs'; }"
 		;;
 	ext2 | ext3 | ext4)
-		echo "e2fsck -fy /dev/nbd0; resize2fs /dev/nbd0 $(((bytes - 1048576) / 1024))K || { qemu-nbd -d /dev/nbd0; fail 'resize2fs (Overlay)'; }"
-		echo "partclone.extfs -b -s /dev/nbd0 -o '$dst' || { qemu-nbd -d /dev/nbd0; fail 'partclone.extfs'; }"
+		echo "e2fsck -fy \$nbd; resize2fs \$nbd $(((bytes - 1048576) / 1024))K || { qemu-nbd -d \$nbd; fail 'resize2fs (Overlay)'; }"
+		echo "partclone.extfs -b -s \$nbd -o '$dst' || { qemu-nbd -d \$nbd; fail 'partclone.extfs'; }"
 		;;
 	esac
-	echo "qemu-nbd -d /dev/nbd0"
+	echo "qemu-nbd -d \$nbd"
 	clone_cmd_grow "$dst" "$fs"
 }
 

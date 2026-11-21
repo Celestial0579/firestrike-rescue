@@ -12,6 +12,7 @@
 # Ohne root und ohne Disks: blkid, sfdisk und tmux sind Attrappen. Der Job wird nie gestartet.
 set -u
 cd "$(dirname "$0")/.." || exit 1
+REPO=$PWD
 export LC_ALL=C.UTF-8
 
 T=$(mktemp -d)
@@ -132,7 +133,7 @@ echo "Klon-Job für eine gewöhnliche Disk:"
 SWAP_UUID=$GOOD_UUID SWAP_LABEL="swap"
 plan "/dev/sda1 vfat" "/dev/sda2 ext4" "/dev/sda3 swap" "/dev/sda4 "
 job
-check "Job erzeugt und gestartet" '[[ -n $JOB && $STARTED == "lf-klon sudo $LF_RUN/clone-job.sh" ]]'
+check "Job erzeugt und über bash gestartet (#72)" '[[ -n $JOB && $STARTED == "lf-klon sudo bash $LF_RUN/clone-job.sh" ]]'
 check "die Ziel-Disk steht für den Job in der Jobliste (GHSA-p86q-3456-f288)" '[[ $(tail -n1 "$T/writes" 2>/dev/null) == /dev/sdb ]]'
 check "der Job ist gültiges Shell-Skript" 'bash -n "$LF_RUN/clone-job.sh"'
 check "jede Partition hat ihre Zeile" '[[ $JOB == *"partclone.vfat -b -s '"'"'/dev/sda1'"'"' -o '"'"'/dev/sdb1'"'"'"* && $JOB == *"partclone.extfs -b -s '"'"'/dev/sda2'"'"'"* && $JOB == *"mkswap -U $GOOD_UUID -L '"'"'swap'"'"' '"'"'/dev/sdb3'"'"'"* && $JOB == *"dd if='"'"'/dev/sda4'"'"' of='"'"'/dev/sdb4'"'"'"* ]]'
@@ -216,6 +217,83 @@ table() {
 	clone_write_table /dev/sdb replace
 	SCRIPT=$(cat "$T/sfdisk-skript" 2>/dev/null)
 }
+
+echo "Jobs laufen über bash, nie direkt: /run ist auf der ISO noexec (#72):"
+klon_start='tmux_run_writing "lf-klon" "$tdev" "${LF_JOB_RUN[@]}" "$job"'
+p2v_start='tmux_run "lf-p2v" "${LF_JOB_RUN[@]}" "$job"'
+direkt='sudo "$job"'
+check "Klon und P2V starten ihren Job über LF_JOB_RUN" 'grep -qF -- "$klon_start" "$REPO/rescue/lib/clone.sh" && grep -qF -- "$p2v_start" "$REPO/rescue/lib/p2v.sh"'
+check "kein Job wird direkt als Programm gestartet" '! grep -rnF -- "$direkt" "$REPO/rescue"'
+check "LF_JOB_RUN startet über bash" '[[ ${LF_JOB_RUN[*]} == "sudo bash" ]]'
+
+echo "NTFS: der Sicherungs-Bootsektor im letzten Sektor kommt mit (#73):"
+plan "/dev/sda1 ntfs" "/dev/sda2 vfat"
+job
+check "Job für NTFS und vfat erzeugt" '[[ -n $JOB ]] && bash -n "$LF_RUN/clone-job.sh"'
+check "nur die NTFS-Partition zieht den letzten Sektor nach" '[[ $(grep -c "count=1 conv=notrunc,fsync" <<<"$JOB") == 1 && $(grep -c "^ss=\$(blockdev --getss '"'"'/dev/sda1'"'"')" <<<"$JOB") == 1 ]]'
+# Die zwei Zeilen laufen lassen, mit Dateien statt Geräten: blockdev meldet hier die Dateigröße.
+letzter_sektor() { # QUELLGRÖSSE ZIELGRÖSSE   Ergebnis: RC und das Ende des Ziels in $T/ende
+	head -c "$1" /dev/urandom >"$T/q"
+	printf 'BOOTSEKTOR-SICHERUNG' | dd of="$T/q" bs=1 seek=$(($1 - 512)) conv=notrunc status=none
+	head -c "$2" /dev/zero >"$T/z"
+	{
+		echo 'blockdev() { case $1 in --getss) echo 512 ;; --getsize64) stat -c %s "$2" ;; esac; }'
+		echo 'fail() { echo "FEHLER: $*"; exit 1; }'
+		grep -A1 "^ss=" <<<"$JOB" | sed -e "s|'/dev/sda1'|'$T/q'|g" -e "s|'/dev/sdb1'|'$T/z'|g"
+	} >"$T/letzter-sektor.sh"
+	bash "$T/letzter-sektor.sh" >"$T/letzter-sektor.out" 2>&1
+	RC=$?
+	tail -c 512 "$T/z" >"$T/ende"
+}
+letzter_sektor 1048576 1048576
+check "gleich große Partitionen: der letzte Sektor steht auf dem Ziel" '((RC == 0)) && cmp -s "$T/ende" <(tail -c 512 "$T/q")'
+check "davor bleibt das Ziel unberührt" 'cmp -s -n $((1048576 - 512)) "$T/z" /dev/zero'
+letzter_sektor 1048576 2097152
+check "größeres Ziel (Partition wächst): nichts kopiert, ntfsresize schreibt den Sektor neu" '((RC == 0)) && cmp -s -n 2097152 "$T/z" /dev/zero'
+
+echo "Verkleinern: Overlay auf einem freien nbd-Gerät, NTFS mit eigener Größenprüfung (#74, #75):"
+SHRINK=$(clone_cmd_shrink /dev/sda3 /dev/sdb3 ntfs 6490685440)
+EXT=$(clone_cmd_shrink /dev/sda2 /dev/sdb2 ext4 1073741824)
+check "erzeugter Text ist gültiges bash" 'bash -n <<<"$SHRINK" && bash -n <<<"$EXT"'
+check "nbd lädt wie bei P2V mit max_part=16" '[[ $SHRINK == *"modprobe nbd max_part=16"* && $SHRINK != *"max_part=0"* ]]'
+check "kein festes /dev/nbd0" '[[ $SHRINK != *"/dev/nbd0"* && $EXT != *"/dev/nbd0"* ]]'
+check "NTFS: partclone mit -I -C, erst nach der eigenen Größenprüfung" '(($(grep -n "Current volume size" <<<"$SHRINK" | cut -d: -f1) < $(grep -n "partclone.ntfs -I -C -b" <<<"$SHRINK" | cut -d: -f1)))'
+check "ext4: partclone behält seine eigene Größenprüfung (kein -C)" '[[ $EXT == *"partclone.extfs -b -s \$nbd"* && $EXT != *" -C "* ]]'
+# Die erzeugten Zeilen laufen lassen: sysfs liegt unter $T/sys, alle Programme sind Attrappen.
+# schrumpf "nbdN:GRÖSSE:belegt|frei ..." VOLUMEGRÖSSE ZIELGRÖSSE   Ergebnis: RC, Aufrufe in $T/aufrufe
+schrumpf() {
+	local d n s b
+	rm -rf "$T/sys" "$T/aufrufe"
+	touch "$T/aufrufe"
+	for d in $1; do
+		IFS=: read -r n s b <<<"$d"
+		mkdir -p "$T/sys/block/$n"
+		echo "$s" >"$T/sys/block/$n/size"
+		[[ $b == belegt ]] && echo 4711 >"$T/sys/block/$n/pid"
+	done
+	{
+		echo 'set -u'
+		echo 'fail() { echo "FEHLER: $*"; exit 1; }'
+		echo 'step() { :; }; modprobe() { :; }; install() { :; }; mountpoint() { return 0; }; mount() { :; }; sleep() { :; }; yes() { :; }'
+		echo "qemu-nbd() { echo \"qemu-nbd \$*\" >>'$T/aufrufe'; }"
+		echo "partclone.ntfs() { echo \"partclone.ntfs \$*\" >>'$T/aufrufe'; }"
+		echo "ntfsresize() { [[ \$* == *--info* ]] && [[ -n '$2' ]] && echo 'Current volume size: $2 bytes'; return 0; }"
+		echo "blockdev() { echo $3; }"
+		# Attrappen sind keine Blockgeräte: Nur diese Prüfung weicht vom erzeugten Text ab.
+		sed -e "s|/sys/block/|$T/sys/block/|g" -e 's|\[\[ -b \$nbd \]\]|[[ -n $nbd ]]|' <<<"$SHRINK"
+	} >"$T/schrumpf.sh"
+	bash "$T/schrumpf.sh" >"$T/schrumpf.out" 2>&1
+	RC=$?
+}
+schrumpf "nbd0:0:belegt nbd1:8:frei nbd2:0:frei nbd3:0:frei" 6489636864 6490685440
+check "belegtes und verbundenes Gerät übersprungen, Overlay auf nbd2" '((RC == 0)) && grep -qx "qemu-nbd --snapshot --format=raw --fork -c /dev/nbd2 /dev/sda3" "$T/aufrufe"'
+check "partclone kopiert vom Overlay mit -I -C, danach wird es getrennt" 'grep -qx "partclone.ntfs -I -C -b -s /dev/nbd2 -o /dev/sdb3" "$T/aufrufe" && [[ $(tail -n 1 "$T/aufrufe") == "qemu-nbd -d /dev/nbd2" ]]'
+schrumpf "nbd0:0:frei" 6490685441 6490685440
+check "Volume größer als das Ziel: Abbruch vor partclone" '((RC != 0)) && grep -q "passt nicht in /dev/sdb3" "$T/schrumpf.out" && ! grep -q partclone "$T/aufrufe" && grep -qx "qemu-nbd -d /dev/nbd0" "$T/aufrufe"'
+schrumpf "nbd0:0:frei" "" 6490685440
+check "Volumegröße nicht lesbar: Abbruch vor partclone" '((RC != 0)) && ! grep -q partclone "$T/aufrufe"'
+schrumpf "nbd0:0:belegt nbd1:8:frei" 6489636864 6490685440
+check "kein freies Gerät: Abbruch, bevor ein Overlay entsteht" '((RC != 0)) && grep -q "kein freies NBD-Gerät" "$T/schrumpf.out" && [[ ! -s $T/aufrufe ]]'
 
 echo "Partitionsnamen im sfdisk-Skript:"
 table "EFI System Partition" "Basic data partition" "Daten für Müller"

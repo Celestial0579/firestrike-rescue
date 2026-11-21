@@ -70,6 +70,7 @@ selftest() {
 	selftest_search "$dir" || ok=0
 	selftest_boot "$dir" || ok=0
 	selftest_tmux "$dir" || ok=0
+	selftest_job_run "$dir" || ok=0
 	selftest_loop_rw "$dir" || ok=0
 	selftest_claude "$dir" || ok=0
 	selftest_claude_user "$dir" || ok=0
@@ -427,6 +428,25 @@ selftest_tmux() {
 		echo "LF-SELFTEST: tmux: Pfade kommen als Argumente an, nichts daraus wird ausgeführt"
 	else
 		echo "LF-SELFTEST: tmux: Argumente kamen verändert an oder wurden ausgeführt"
+		return 1
+	fi
+}
+
+# selftest_job_run DIR   Erzeugte Jobs (Klon, P2V) liegen in $LF_RUN unter /run, und /run ist
+#   auf Ubuntu 26.04 noexec. Direkt gestartet, liefe dort kein Job (#72). Geprüft wird der Start
+#   genau so, wie lf ihn macht (LF_JOB_RUN), auf dem Dateisystem der ISO.
+selftest_job_run() {
+	local job="$LF_RUN/selftest-job.sh" out="$1/job-lief" opts
+	rm -f "$out"
+	printf '#!/usr/bin/env bash\necho lief >%q\n' "$out" >"$job"
+	chmod 700 "$job"
+	opts=$(findmnt -no OPTIONS --target "$LF_RUN" 2>/dev/null)
+	"${LF_JOB_RUN[@]}" "$job" >/dev/null 2>&1
+	rm -f "$job"
+	if [[ $(cat "$out" 2>/dev/null) == lief ]]; then
+		echo "LF-SELFTEST: Job-Start: ein Job in $LF_RUN läuft so an, wie lf ihn startet ($opts)"
+	else
+		echo "LF-SELFTEST: Job-Start: ein Job in $LF_RUN läuft nicht an ($opts)"
 		return 1
 	fi
 }
