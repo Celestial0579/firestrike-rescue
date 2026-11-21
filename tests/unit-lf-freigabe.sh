@@ -104,6 +104,32 @@ CRED_LINES=("47 30 0:41 / $CRED/getty@tty1.service rw,nosuid,nodev,noexec,relati
 	"50 30 0:44 / $CRED/fremd.service rw,nosuid,nodev,noexec,relatime shared:11 - fuse.x x rw")
 mkdir -p "$CRED/getty@tty1.service" "$CRED/getty@tty2.service" "$CRED/systemd-journald.service" "$CRED/fremd.service"
 echo rescue >"$CRED/getty@tty1.service/agetty.autologin"
+# Suchpfade für Unit-Dateien (Q7): Dort legt systemd-run vorübergehende Einheiten an (TR), ein
+# Generator hat beim Start geschrieben.
+TR=$W/run/systemd/transient
+mkdir -p "$TR" "$W/etc/systemd/system" "$W/run/systemd/system" "$W/run/systemd/generator"
+printf '[Unit]\nDescription=Platzhalter\n' >"$W/run/systemd/generator/boot.mount"
+# Unit-Dateien unter /usr und ein Dienst, den jeder über D-Bus startet (wie systemd-hostnamed, Q6).
+mkdir -p "$W/usr/lib/systemd/system" "$W/usr/share/dbus-1/system-services"
+for u in debug-shell.service systemd-hostnamed.service systemd-timedated.service serial-getty@.service user@.service user-runtime-dir@.service; do
+	printf '[Unit]\nDescription=%s\n' "$u" >"$W/usr/lib/systemd/system/$u"
+done
+for n in hostname1:hostnamed timedate1:timedated; do
+	printf '[D-BUS Service]\nName=org.freedesktop.%s\nExec=/bin/false\nUser=root\nSystemdService=dbus-org.freedesktop.%s.service\n' "${n%%:*}" "${n%%:*}" \
+		>"$W/usr/share/dbus-1/system-services/org.freedesktop.${n%%:*}.service"
+done
+# Das Home des Live-Benutzers (der Techniker, sudo ohne Kennwort) mit seinen Dotfiles.
+mkdir -p "$W/home/rescue/.local/bin"
+echo "# profile" >"$W/home/rescue/.profile"
+# EFI-Variablen (efivarfs, NAME-GUID) und der persistente Speicher LF-DATA, nicht eingehängt (Q11).
+EV=$W/sys/firmware/efi/efivars
+GV=8be4df61-93ca-11d2-aa0d-00e098032b8c
+GM=605dab50-e046-4300-abb6-3dd810dd8b23
+mkdir -p "$EV" "$W/persist"
+printf '\007\000\000\000\001\000' >"$EV/BootOrder-$GV"
+printf '\007\000\000\000eins' >"$EV/Boot0001-$GV"
+printf '\007\000\000\000\005\000' >"$EV/Timeout-$GV"
+printf '\006\000\000\000mok' >"$EV/MokListRT-$GM"
 # pid1   PID 1 in der Attrappe von /proc: Mount-Namensraum und Einhängungen (WROOT beschreibbar und
 #   ohne nosuid, darunter ein tmpfs mit nosuid, die Credentials). Nach dem Aufräumen von /proc neu
 #   angelegt.
@@ -128,7 +154,7 @@ sed -e "s|^PATH=.*|PATH=$T/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin
 	-e "s|^LINGER=.*|LINGER=$T/linger|" -e "s|^CRON_PATHS=.*|CRON_PATHS=($T/cron.d)|" -e "s|^TTY=.*|TTY=$T/tty|" \
 	-e "s|^SYS_BLOCK=.*|SYS_BLOCK=$T/sysblock|" -e "s|^NTFS3G=.*|NTFS3G=$T/bin/ntfs-3g|" \
 	-e "s|^WROOT=.*|WROOT=$W|" -e "s|^AUFGABE=.*|AUFGABE=$T/bin/lf-aufgabe|" -e "s|^SCAN_TIMEOUT=.*|SCAN_TIMEOUT=5|" \
-	-e "s|((EUID == 0))|((EUID == $(id -u)))|g" rescue/bin/lf-freigabe >"$F"
+	-e "s|^PERL=.*|PERL=$T/bin/perl|" -e "s|((EUID == 0))|((EUID == $(id -u)))|g" rescue/bin/lf-freigabe >"$F"
 
 cat >"$T/bin/id" <<MOCK
 #!/bin/bash
@@ -153,22 +179,31 @@ u=\${!#}
 case \$1 in
 list-timers) cat "$T/timers.json" 2>/dev/null || echo "[]" ;;
 list-units)
-	# Ohne --all nur Einheiten, die nicht inaktiv sind.
+	# Mit --type nur Einheiten dieser Arten, ohne --all nur die, die nicht inaktiv sind.
+	types=""
+	for a in "\$@"; do [[ \$a == --type=* ]] && types=",\${a#--type=},"; done
 	while read -r n _; do
+		[[ -z \$types || \$types == *",\${n##*.},"* ]] || continue
 		[[ " \$* " == *" --all "* ]] || ! grep -qx ActiveState=inactive "$T/unit/\$n" 2>/dev/null || continue
 		echo "\$n loaded active running x"
-	done < <(cat "$T/units" 2>/dev/null)
+	done < <(sort -u "$T/units" 2>/dev/null)
 	;;
 show)
 	if [[ "\$*" == "show -p ControlGroup --value lf-claude.slice" ]]; then
 		echo /lf.slice/lf-claude.slice
-	elif [[ "\$*" == "show -p Id -p InvocationID -- "* ]]; then
-		# Wie systemctl: je Einheit ein Block, dazwischen eine Leerzeile.
-		shift 5
+	elif [[ " \$* " == *" -- "* ]]; then
+		# Mehrere Einheiten (show -p A -p B -- EINHEIT…): wie systemctl je Einheit ein Block,
+		# dazwischen eine Leerzeile.
+		want=()
+		while [[ \$1 != -- ]]; do [[ \$1 == -p ]] && { want+=(\${2//,/ }); shift; }; shift; done
+		shift
+		first=1
 		for n in "\$@"; do
-			[[ \$n == "\$1" ]] || echo
-			echo "Id=\$n"
-			grep '^InvocationID=' "$T/unit/\$n" 2>/dev/null || echo "InvocationID="
+			((first)) || echo
+			first=0
+			for p in "\${want[@]}"; do
+				if [[ \$p == Id ]]; then echo "Id=\$n"; else grep -m1 "^\$p=" "$T/unit/\$n" 2>/dev/null || echo "\$p="; fi
+			done
 		done
 	else
 		# Nur die Eigenschaften, nach denen -p fragt (wie systemctl).
@@ -177,7 +212,15 @@ show)
 		while IFS= read -r l; do [[ \$want == *" \${l%%=*} "* ]] && printf '%s\n' "\$l"; done <"$T/unit/\$u" 2>/dev/null
 	fi
 	;;
-stop) [[ -f "$T/unit/\$u" ]] && sed -i 's/^ActiveState=.*/ActiveState=inactive/' "$T/unit/\$u" ;;
+stop)
+	if [[ -f "$T/unit/\$u" ]]; then
+		sed -i 's/^ActiveState=.*/ActiveState=inactive/' "$T/unit/\$u"
+		# Danach räumt systemd die Einheit weg (nicht mehr geladen), eine aus /run/systemd/transient
+		# mit ihrer Unit-Datei.
+		U=\$u awk '\$1 != ENVIRON["U"]' "$T/units" >"$T/units.neu" && mv "$T/units.neu" "$T/units"
+		rm -f "$TR/\$u"
+	fi
+	;;
 # Mit der Datei menv-fest lässt sich die Umgebung nicht ändern (Rückstand).
 set-environment | unset-environment)
 	[[ -e "$T/menv-fest" ]] && exit 1
@@ -222,7 +265,33 @@ echo "\$*" >>"$T/aufgabe.log"
 [[ \$2 == */ok-haengt ]] && { echo \$\$ >>"$T/haengt.pids"; exec sleep 3600; }
 [[ \$1 == pruefen-rettung && \$# == 3 && \$2 == /mnt/lf-target/LF/ok* && \$3 == /dev/sdb ]]
 MOCK
-printf '#!/bin/bash\necho "$*" >>"%s/systemd-run.log"\n' "$T" >"$T/bin/systemd-run"
+# systemd-run: Für "an" legt es wie systemd die Unit-Dateien von Timer und Dienst des Endes an.
+cat >"$T/bin/systemd-run" <<MOCK
+#!/bin/bash
+echo "\$*" >>"$T/systemd-run.log"
+if [[ " \$* " == *" --unit=lf-claude-freigabe-ende "* ]]; then
+	printf '[Timer]\nOnActiveSec=x\n' >"$TR/lf-claude-freigabe-ende.timer"
+	printf '[Service]\nExecStart=/usr/local/bin/lf-freigabe ablauf\n' >"$TR/lf-claude-freigabe-ende.service"
+fi
+exit 0
+MOCK
+# perl: kexec_file_load mit KEXEC_FILE_UNLOAD (Systemaufruf und Absturzfall stehen hinter dem
+# Programmtext). Mit der Datei kexec-fest bleibt der Kernel geladen (wie nach
+# kernel.kexec_load_disabled=1).
+cat >"$T/bin/perl" <<MOCK
+#!/bin/bash
+echo "\$3 \$4" >>"$T/perl.log"
+[[ -e "$T/kexec-fest" ]] && exit 1
+if [[ \$4 == 1 ]]; then echo 0 >"$W/sys/kernel/kexec_crash_loaded"; else echo 0 >"$W/sys/kernel/kexec_loaded"; fi
+exit 0
+MOCK
+# mv: Mit der Datei mv-fest lässt sich die Grundregel nicht verschieben (etwa ein Ordner, den root
+# unveränderlich gemacht hat).
+cat >"$T/bin/mv" <<MOCK
+#!/bin/bash
+if [[ -e "$T/mv-fest" ]]; then for a in "\$@"; do [[ \$a == "$T/sudoers.d/lf-claude" ]] && exit 1; done; fi
+exec $(command -v mv) "\$@"
+MOCK
 printf '#!/bin/bash\necho "$*" >>"%s/loginctl.log"\n[[ $1 == disable-linger ]] && rm -f "%s/linger/$2"\nexit 0\n' "$T" "$T" >"$T/bin/loginctl"
 printf '#!/bin/bash\ncat "%s/atq" 2>/dev/null\n' "$T" >"$T/bin/atq"
 printf '#!/bin/bash\necho "$*" >>"%s/atrm.log"\n' "$T" >"$T/bin/atrm"
@@ -291,7 +360,12 @@ aus_n() { [[ $(bash "$F" status) =~ ^aus,\ Neustart\ empfohlen\ \(letzte\ Freiga
 # reboot_sim   Neustart nachgestellt: Grundregel zurück, Schnappschuss, Rückstand und ein System für
 #   soft-reboot weg (/run liegt im RAM).
 reboot_sim() {
-	if [[ -e $T/sudoers.d/lf-claude.lf-gesperrt ]]; then mv "$T/sudoers.d/lf-claude.lf-gesperrt" "$T/sudoers.d/lf-claude"; fi
+	local d
+	if [[ -f $T/sudoers.d/lf-claude.lf-gesperrt ]]; then mv "$T/sudoers.d/lf-claude.lf-gesperrt" "$T/sudoers.d/lf-claude"; fi
+	for d in "$T/sudoers.d/lf-claude.lf-gesperrt".*; do
+		if [[ -f $d/lf-claude ]]; then mv "$d/lf-claude" "$T/sudoers.d/lf-claude"; fi
+		rm -rf "$d"
+	done
 	rm -rf "$SNAP" "$R" "$W/run/nextroot" "$W/run/nextroot.lf-gesperrt."*
 }
 
@@ -339,7 +413,8 @@ check "vom Techniker: frei, mit Ablauf, im Protokoll mit seinem Namen" '[[ $RC =
 check "der Dienst des Ablaufs erbt LD_PRELOAD und Co. nicht vom Manager (F13)" 'grep -qF -- "-p Type=oneshot -p UnsetEnvironment=$ENV_UNSAFE /usr/local/bin/lf-freigabe ablauf" "$T/systemd-run.log" && [[ $ENV_UNSAFE == "LD_PRELOAD "*" PS4" ]]'
 check "Freischalten hält Manager-Umgebung, Dateien, Kette, Einhängungen und Kernel-Einstellungen fest" 'grep -qxF "\"LANG=C.UTF-8\"" "$SNAP/menv" && grep -q " $W/etc/shadow$" "$SNAP/files" && grep -qE "^[0-9a-f]{64}  $W/usr/local/bin/lf-aufgabe$" "$SNAP/chain" && grep -qE "^gross:17825792:[0-9.]+  $W/usr/local/lib/lf/claude-cli$" "$SNAP/chain" && grep -qxF "art:l:lf-aufgabe  $W/usr/local/bin/frs-aufgabe" "$SNAP/chain" && grep -qE "^[0-9a-f]{64}  $CS$" "$SNAP/chain" && grep -qE "^[0-9a-f]{64}  $CE$" "$SNAP/chain" && grep -qxF "art:l:$W/etc/alternatives/sudo  $W/usr/bin/sudo" "$SNAP/chain" && grep -q " $W rw" "$SNAP/mounts" && grep -qxF "$T/proc/sys/kernel/core_pattern=|/usr/lib/systemd/systemd-coredump %P " "$SNAP/knobs" && [[ -e $SNAP/zeit ]]'
 check "Freischalten hält den Inhalt der Credentials fest, nur für root lesbar; ein anderes Dateisystem dort liest es nicht" 'grep -qE "^$CRED/getty@tty1.service [0-9a-f]{64}$" "$SNAP/creds" && grep -qxF "$CRED/fremd.service art:fuse.x" "$SNAP/creds" && [[ $(stat -c %a "$SNAP/creds") == 600 ]]'
-check "die Schnappschüsse, die comm vergleicht, sind ganzzeilig sortiert (wie lf-freigabe: C.UTF-8)" '(for f in units at cron sudoers menv chain knobs mounts; do LC_ALL=C.UTF-8 sort -c "$SNAP/$f" 2>/dev/null || exit 1; done)'
+check "Freischalten hält aktive Einheiten, Unit-Dateien (mit Timer und Dienst des Endes), NeedDaemonReload, EFI-Variablen und den Speicher fest, Summen und Namen nur für root lesbar" 'grep -qE "^[0-9a-f]{64} - $W/run/systemd/generator/boot.mount$" "$SNAP/unitpaths" && grep -qE "^[0-9a-f]{64} - $TR/lf-claude-freigabe-ende.service$" "$SNAP/unitpaths" && grep -qE "^[0-9a-f]{64} - $TR/lf-claude-freigabe-ende.timer$" "$SNAP/unitpaths" && grep -qxF "d:$(stat -c %a:%u:%g "$W/etc/systemd/system") - $W/etc/systemd/system" "$SNAP/unitpaths" && [[ -f $SNAP/units-aktiv && -f $SNAP/reload ]] && grep -qE "^[0-9a-f]{64} BootOrder-$GV$" "$SNAP/efivars" && [[ $(wc -l <"$SNAP/efivars") == 4 && $(cat "$SNAP/persist-zustand") == zu && ! -s $SNAP/persist ]] && [[ $(stat -c %a "$SNAP/unitpaths") == 600 && $(stat -c %a "$SNAP/efivars") == 600 && $(stat -c %a "$SNAP/persist") == 600 ]]'
+check "die Schnappschüsse, die comm vergleicht, sind ganzzeilig sortiert (wie lf-freigabe: C.UTF-8)" '(for f in units units-aktiv at cron sudoers menv chain knobs mounts reload; do LC_ALL=C.UTF-8 sort -c "$SNAP/$f" 2>/dev/null || exit 1; done)'
 
 echo "Verlängern, solange Claude root hat:"
 echo "[{\"next\": $(((NOW + 600) * 1000000)), \"unit\": \"lf-claude-freigabe-ende.timer\"}]" >"$T/timers.json"
@@ -469,8 +544,6 @@ SAME=$'StandardInput=null\nStandardOutput=journal\nStandardError=inherit\nRestar
 # fragment NAME BESCHREIBUNG TYP BEFEHL…   Die Unit-Datei, wie systemd 259 sie für systemd-run
 #   --collect [-p Type=TYP] -p UnsetEnvironment=… --description=BESCHREIBUNG schreibt (gemessen mit
 #   systemd 259.9). Ohne TYP keine Zeile Type=.
-TR=$W/run/systemd/transient
-mkdir -p "$TR"
 fragment() {
 	local f=$TR/$1 d=$2 t=$3 a q=""
 	shift 3
@@ -744,8 +817,14 @@ check "die neue cron-Datei ist gesperrt, nicht gelöscht; die alte bleibt" '[[ -
 check "linger für lf-claude ist aufgehoben" '[[ ! -e $T/linger/lf-claude ]] && grep -qx "disable-linger lf-claude" "$T/loginctl.log"'
 check "Reihenfolge: anhalten, Regel, Einheiten, root-Prozesse, weiterlaufen" 'a=$(line "Claude angehalten") u=$(line "beendet: Einheit run-u7.service") r=$(line "Regel entfernt") k=$(line "beendet: $Q1 ") w=$(line "Claude läuft weiter"); [[ -n $a && -n $u && -n $r && -n $k && -n $w ]] && ((a < r && r < u && u < k && k < w))'
 check "die cgroups von Claude laufen danach weiter" '[[ $(cat "$CG/cgroup.freeze") == 0 && $(cat "$CGU/cgroup.freeze") == 0 ]]'
-check "danach: status aus, Neustart empfohlen" 'aus_n'
+check "jede beendete Einheit ist bis zum Neustart ein Rückstand, die Dienste, die bleiben, nicht (Q6)" 'grep -qxF "Einheit beendet: run-u7.service" "$R" && grep -qxF "Einheit beendet: boese.timer" "$R" && grep -qxF "Einheit beendet: ${SPOOFS[0]}" "$R" && grep -qxF "Einheit beendet: ${RSPOOFS[0]}" "$R" && ! grep -qF -e "$NT" -e "$RU" "$R" && [[ $(bash "$F" status) == "an: Rückstand nach der Freigabe (Einheit beendet: b.service), Neustart empfohlen" ]]'
+check "Unit-Dateien der Dienste, die bleiben, sind kein Rückstand; die Grundregel bleibt" '! grep -q "^Unit-" "$R" && [[ -f $T/sudoers.d/lf-claude && ! -e $T/sudoers.d/lf-claude.lf-gesperrt ]]'
 kill "$RK" "$RM" "$NM" "$NB" 2>/dev/null
+# Neustart, dann eine Freigabe ohne Rückstand: Die Abschnitte danach brauchen ein sauberes Ende.
+reboot_sim
+bash "$F" an 30 >"$T/out" 2>&1
+bash "$F" aus >"$T/out" 2>&1
+check "nach dem Neustart: eine Freigabe ohne Änderungen endet sauber, aus, Neustart empfohlen" 'aus_n && [[ ! -e $R ]]'
 
 echo "status ohne Regel, mit Rückstand:"
 Q9=$(spawn)
@@ -766,7 +845,7 @@ rm -f "$T/timers.json"
 # nicht aus der Freigabe.
 unit run-u11.service yes /system.slice/run-u11.service
 check "nach einem sauberen Ende ist der Schnappschuss der Einheiten weg, eine spätere Einheit ist kein Rückstand" '[[ ! -e $SNAP/units && -e $SNAP/sudoers ]] && aus_n'
-check "nach einem sauberen Ende zählen spätere Änderungen an Dateien, Kette, Einhängungen und Credentials nicht" '[[ ! -e $SNAP/files && ! -e $SNAP/chain && ! -e $SNAP/mounts && ! -e $SNAP/creds && ! -e $SNAP/knobs && ! -e $SNAP/menv && ! -e $SNAP/zeit ]]'
+check "nach einem sauberen Ende zählen spätere Änderungen an Dateien, Unit-Dateien, Kette, Einhängungen, Credentials, EFI-Variablen und dem Speicher nicht" '(for f in units-aktiv files unitpaths reload chain mounts creds knobs efivars persist persist-zustand menv zeit beendet; do [[ ! -e $SNAP/$f ]] || exit 1; done)'
 sed -i 's/^ActiveState=.*/ActiveState=inactive/' "$T/unit/run-u11.service"
 touch "$T/linger/lf-claude"
 check "linger für lf-claude: an, Rückstand" '[[ $(bash "$F" status) == "an: Rückstand nach der Freigabe (linger: lf-claude), Neustart empfohlen" ]]'
@@ -786,14 +865,18 @@ echo "lf-claude render sudo" >"$T/groups"
 bash "$F" aus >"$T/out" 2>&1
 check "status bleibt an, mit Rückstand und Neustart-Empfehlung" '[[ $(bash "$F" status) == "an: Rückstand"*"Neustart empfohlen" && $(bash "$F" zeile </dev/null) == ACHTUNG* ]]'
 check "das Protokoll warnt und nennt Regel und Gruppe" 'grep "WARNUNG: lf-claude darf nach der Freigabe" "$LOG" | grep -q "NOPASSWD: ALL.*Gruppen: lf-claude render sudo"'
+check "eine weitere sudo-Regel sperrt die Grundregel bis zum Neustart (Q5)" '[[ -f $T/sudoers.d/lf-claude.lf-gesperrt && ! -e $T/sudoers.d/lf-claude ]] && grep -qxF "Grundregel gesperrt bis zum Neustart: $T/sudoers.d/lf-claude.lf-gesperrt" "$R" && grep -qF "bis zum Neustart: sudo: (root) NOPASSWD:" "$LOG"'
 check "bei einem Rückstand bleibt der Schnappschuss der Einheiten" '[[ -f $SNAP/units ]]'
 # Nach dem Ende mit Rückstand entstanden (etwa durch das, was root dort eingerichtet hat)
 unit run-u12.service yes /system.slice/run-u12.service
 sudo_l
 echo "lf-claude render" >"$T/groups"
 bash "$F" ablauf >"$T/out" 2>&1
-check "ohne Rückstand: nach dem Ablauf wieder aus, Neustart empfohlen" 'aus_n && [[ ! -e $T/run/claude-freigabe-rueckstand ]] && grep -q "abgelaufen" "$LOG"'
-check "das nächste Ende prüft weiter gegen den Schnappschuss, erst ein sauberes Ende löscht ihn" 'grep -qx "stop run-u12.service" "$T/systemctl.log" && [[ ! -e $SNAP/units ]]'
+check "das nächste Ende prüft weiter gegen den Schnappschuss: eine Einheit von danach ist gestoppt und bleibt Rückstand" 'grep -qx "stop run-u12.service" "$T/systemctl.log" && grep -qxF "Einheit beendet: run-u12.service" "$R" && [[ -f $SNAP/units ]] && grep -q "abgelaufen" "$LOG"'
+reboot_sim
+bash "$F" an 30 >"$T/out" 2>&1
+bash "$F" ablauf >"$T/out" 2>&1
+check "nach dem Neustart, ohne Rückstand: nach dem Ablauf wieder aus, Neustart empfohlen; ein sauberes Ende löscht den Schnappschuss" 'aus_n && [[ ! -e $R && ! -e $SNAP/units ]]'
 
 echo "Manager-Umgebung (F13):"
 : >"$LOG"
@@ -875,14 +958,15 @@ timeout 120 bash "$F" aus >"$T/out" 2>&1
 RC=$?
 check "das Ende läuft durch, auch mit einer Verknüpfung auf /dev/zero und einem FIFO in der Kette" '[[ $RC == 0 ]] && grep -q "Claude läuft weiter" "$LOG"'
 check "eine neue ld.so.preload ist gesperrt, nicht gelöscht, und gemeldet" '[[ ! -e $W/etc/ld.so.preload && -f $W/etc/ld.so.preload.lf-gesperrt ]] && grep -qF "gesperrt: $W/etc/ld.so.preload" "$LOG" && grep -qxF "Datei neu: $W/etc/ld.so.preload.lf-gesperrt" "$R"'
-check "Drop-in an einer Einheit von vorher: Rückstand" 'grep -qxF "Datei neu: $W/run/systemd/system/a.service.d/x.conf" "$R"'
+check "Drop-in an einer Einheit von vorher: Rückstand" 'grep -qxF "Unit-Datei neu: $W/run/systemd/system/a.service.d/x.conf" "$R" && grep -qxF "Unit-Ordner neu: $W/run/systemd/system/a.service.d" "$R"'
 check "shadow, PAM, polkit, SSH und modprobe: Rückstand" 'grep -qxF "Datei geändert: $W/etc/shadow" "$R" && grep -qxF "Datei geändert: $W/etc/pam.d/common-auth" "$R" && grep -qxF "Datei neu: $W/etc/polkit-1/rules.d/00-x.rules" "$R" && grep -qxF "Datei neu: $W/root/.ssh/authorized_keys" "$R" && grep -qxF "Datei neu: $W/etc/modprobe.d/x.conf" "$R"'
 check "setuid-Kopie einer Shell und capabilities: Rückstand" 'grep -qxF "setuid/setgid: $W/var/tmp/sh" "$R" && grep -qxF "capabilities: $W/var/tmp/py cap_setuid=ep" "$R"'
 check "lf-aufgabe geändert: Grundregel bis zum Neustart gesperrt, Rückstand" '[[ ! -e $T/sudoers.d/lf-claude && -f $T/sudoers.d/lf-claude.lf-gesperrt ]] && grep -qF "gesperrt: Grundregel von lf-claude ($T/sudoers.d/lf-claude) bis zum Neustart" "$LOG" && grep -qxF "Werkzeug neu oder geändert: $W/usr/local/bin/lf-aufgabe" "$R" && grep -qxF "Grundregel gesperrt bis zum Neustart: $T/sudoers.d/lf-claude.lf-gesperrt" "$R"'
 check "unveränderte Werkzeuge und Programme stehen nicht im Rückstand" '! grep -qxF "Werkzeug neu oder geändert: $W/usr/local/bin/lf-lesen" "$R" && ! grep -qF "$CS" "$R"'
 check "neue Verknüpfung und FIFO in der Kette: Rückstand, ohne sie zu lesen" 'grep -qxF "Werkzeug neu oder geändert: $W/usr/local/bin/null" "$R" && grep -qxF "Werkzeug neu oder geändert: $W/usr/local/lib/lf/fifo" "$R"'
 check "unter /usr ist jede neue oder geänderte Datei ein Rückstand" 'grep -qxF "Systemdatei neu oder geändert: $W/usr/lib/x86_64-linux-gnu/security/pam_x.so" "$R" && grep -qxF "Systemdatei neu oder geändert: $W/usr/local/bin/null" "$R"'
-check "Kernel-Einstellungen: core_pattern, ein neuer binfmt_misc-Eintrag, ein Kernel für kexec" 'grep -qxF "Kernel-Einstellung neu oder geändert: $T/proc/sys/kernel/core_pattern" "$R" && grep -qxF "Kernel-Einstellung neu oder geändert: $T/proc/sys/fs/binfmt_misc/x" "$R" && grep -qxF "Kernel-Einstellung neu oder geändert: $W/sys/kernel/kexec_loaded" "$R" && ! grep -qF "kexec_crash_loaded" "$R"'
+check "Kernel-Einstellungen: core_pattern, ein neuer binfmt_misc-Eintrag" 'grep -qxF "Kernel-Einstellung neu oder geändert: $T/proc/sys/kernel/core_pattern" "$R" && grep -qxF "Kernel-Einstellung neu oder geändert: $T/proc/sys/fs/binfmt_misc/x" "$R"'
+check "ein Kernel für kexec, während der Freigabe geladen: entladen (kexec_file_load), danach kein Rückstand dafür (9)" 'grep -qF "entladen: Kernel für kexec (kexec_loaded)" "$LOG" && grep -qxE "(320|294) 0" "$T/perl.log" && [[ $(cat "$W/sys/kernel/kexec_loaded") == 0 ]] && ! grep -qF "kexec" "$R"'
 check "ein System für soft-reboot ist gesperrt, nicht gelöscht, und gemeldet" 'n=("$W"/run/nextroot.lf-gesperrt.*/nextroot/etc/os-release); [[ ! -e $W/run/nextroot && -f ${n[0]} ]] && grep -qF "gesperrt: $W/run/nextroot (jetzt $W/run/nextroot.lf-gesperrt." "$LOG" && grep -qxF "System für soft-reboot: ${n[0]%/nextroot/etc/os-release}" "$R"'
 check "/etc/lf-release geändert: Werkzeug der Grundregel" 'grep -qxF "Werkzeug neu oder geändert: $W/etc/lf-release" "$R"'
 check "Einhängung über lf-lesen: Rückstand, auch mit nosuid; eine Quelle wie von lf-aufgabe nicht" 'grep -qxF "Einhängung neu oder geändert: $W/usr/local/bin/lf-lesen (overlay overlay)" "$R" && grep -qxF "Einhängung neu oder geändert: /mnt/lf-image/sdc2 (ntfs3 /dev/sdc2)" "$R" && ! grep -q "/mnt/lf-image/sdc1" "$R"'
@@ -969,6 +1053,225 @@ mv "$T/journald-creds" "$CRED/systemd-journald.service"
 printf '%s\n' "${CRED_LINES[2]}" >>"$T/proc/1/mountinfo"
 reboot_sim
 
+echo "Einheiten aus Unit-Dateien des Systems, Konsolen und Benutzer (Q6):"
+reboot_sim
+: >"$T/systemctl.log"
+: >"$LOG"
+US=$W/usr/lib/systemd/system
+printf '[Unit]\nDescription=vorher\n' >"$US/vorher.service"
+touch -d '-2 minutes' "$US/vorher.service"
+unit vorher.service no /system.slice/vorher.service "$US/vorher.service"
+bash "$F" an 30 >"$T/out" 2>&1
+# Lief schon beim Freischalten und startet nur neu (neue InvocationID, Unit-Datei unverändert).
+unit vorher.service no /system.slice/vorher.service "$US/vorher.service"
+# Während der Freigabe gestartet: debug-shell (eine Shell als root an tty9) und zwei Dienste, die
+# jeder über D-Bus startet, einer davon mit einem Drop-in (ein Platzhalter, nur Description).
+unit debug-shell.service no /system.slice/debug-shell.service "$US/debug-shell.service"
+unit systemd-hostnamed.service no /system.slice/systemd-hostnamed.service "$US/systemd-hostnamed.service"
+prop systemd-hostnamed.service Names "systemd-hostnamed.service dbus-org.freedesktop.hostname1.service"
+mkdir -p "$W/run/systemd/system/systemd-timedated.service.d"
+printf '[Unit]\nDescription=Platzhalter\n' >"$W/run/systemd/system/systemd-timedated.service.d/q6.conf"
+unit systemd-timedated.service no /system.slice/systemd-timedated.service "$US/systemd-timedated.service" "" "$W/run/systemd/system/systemd-timedated.service.d/q6.conf"
+prop systemd-timedated.service Names "systemd-timedated.service dbus-org.freedesktop.timedate1.service"
+# Eine serielle Konsole; Benutzerdienst, Laufzeitordner und Anmeldung des Technikers und von root.
+unit serial-getty@ttyS0.service no /system.slice/serial-getty@ttyS0.service "$US/serial-getty@.service"
+unit user@1000.service no /user.slice/user-1000.slice/user@1000.service "$US/user@.service"
+unit user-runtime-dir@1000.service no /user.slice/user-1000.slice/user-runtime-dir@1000.service "$US/user-runtime-dir@.service"
+unit session-7.scope yes /user.slice/user-1000.slice/session-7.scope
+unit user@0.service no /user.slice/user-0.slice/user@0.service "$US/user@.service"
+unit user-runtime-dir@0.service no /user.slice/user-0.slice/user-runtime-dir@0.service "$US/user-runtime-dir@.service"
+unit session-8.scope yes /user.slice/user-0.slice/session-8.scope
+# Ohne eigene Prozesse: eine Einhängung (die prüft mounts_changed) und ein Ziel.
+unit mnt-q6.mount no "" "$W/run/systemd/generator/boot.mount"
+unit q6.target no "" ""
+bash "$F" aus >"$T/out" 2>&1
+check "debug-shell.service (eine Shell als root an tty9), während der Freigabe gestartet: gestoppt und Rückstand (Q6)" 'grep -qx "stop debug-shell.service" "$T/systemctl.log" && grep -qxF "Einheit beendet: debug-shell.service" "$R"'
+check "ein Dienst des Systems, den jeder über D-Bus startet (systemd-hostnamed): gestoppt, ohne Rückstand" 'grep -qx "stop systemd-hostnamed.service" "$T/systemctl.log" && ! grep -qF "systemd-hostnamed" "$R"'
+check "derselbe Dienst mit einem Drop-in (systemd-timedated): gestoppt und Rückstand, das Drop-in auch" 'grep -qx "stop systemd-timedated.service" "$T/systemctl.log" && grep -qxF "Einheit beendet: systemd-timedated.service" "$R" && grep -qxF "Unit-Datei neu: $W/run/systemd/system/systemd-timedated.service.d/q6.conf" "$R"'
+check "Konsolen, Benutzerdienst, Laufzeitordner und Anmeldung des Technikers bleiben; die von root nicht" '! grep -qE "^(stop|freeze|kill -s KILL) (serial-getty@ttyS0.service|user@1000.service|user-runtime-dir@1000.service|session-7.scope)$" "$T/systemctl.log" && grep -qx "stop user@0.service" "$T/systemctl.log" && grep -qx "stop user-runtime-dir@0.service" "$T/systemctl.log" && grep -qx "stop session-8.scope" "$T/systemctl.log" && grep -qxF "Einheit beendet: user@0.service" "$R"'
+check "lief schon beim Freischalten, nur neu gestartet, Unit-Datei unverändert: bleibt" '! grep -qx "stop vorher.service" "$T/systemctl.log"'
+check "Einheiten ohne eigene Prozesse (Einhängung, Ziel): nicht gestoppt" '! grep -qE "^stop (mnt-q6.mount|q6.target)$" "$T/systemctl.log"'
+check "beendete Dienste des Systems sperren die Grundregel nicht" '[[ -f $T/sudoers.d/lf-claude && ! -e $T/sudoers.d/lf-claude.lf-gesperrt ]]'
+rm -r "$W/run/systemd/system/systemd-timedated.service.d"
+
+echo "Suchpfade für Unit-Dateien (Q7):"
+reboot_sim
+: >"$T/systemctl.log"
+: >"$LOG"
+# Schon beim Freischalten nicht so geladen, wie es auf der Platte steht: kommt nicht aus der Freigabe.
+prop a.service NeedDaemonReload yes
+printf '[Unit]\nDescription=gleich\n' >"$W/run/systemd/generator/gleich.mount"
+bash "$F" an 30 >"$T/out" 2>&1
+# Platzhalter: ein Drop-in, das nur Description setzt, eine neue Verknüpfung in .wants, eine
+# Generator-Datei mit anderem Inhalt und eine mit gleichem Inhalt neu geschrieben (wie bei
+# daemon-reload). c.service: Unit-Datei geändert, noch nicht neu geladen.
+mkdir -p "$W/etc/systemd/system/c.service.d" "$W/etc/systemd/system/multi-user.target.wants"
+printf '[Unit]\nDescription=Platzhalter\n' >"$W/etc/systemd/system/c.service.d/q7.conf"
+ln -s "$US/debug-shell.service" "$W/etc/systemd/system/multi-user.target.wants/debug-shell.service"
+printf '[Unit]\nDescription=Platzhalter 2\n' >"$W/run/systemd/generator/boot.mount"
+cp "$W/run/systemd/generator/gleich.mount" "$T/gleich.mount" && mv -f "$T/gleich.mount" "$W/run/systemd/generator/gleich.mount"
+prop c.service NeedDaemonReload yes
+bash "$F" aus >"$T/out" 2>&1
+check "neues Drop-in, das nur Description setzt: Rückstand, mit seinem Ordner (Q7)" 'grep -qxF "Unit-Datei neu: $W/etc/systemd/system/c.service.d/q7.conf" "$R" && grep -qxF "Unit-Ordner neu: $W/etc/systemd/system/c.service.d" "$R"'
+check "neue Verknüpfung in multi-user.target.wants: Rückstand" 'grep -qxF "Unit-Datei neu: $W/etc/systemd/system/multi-user.target.wants/debug-shell.service" "$R"'
+check "Generator-Datei mit anderem Inhalt: Rückstand; mit gleichem Inhalt neu geschrieben nicht" 'grep -qxF "Unit-Datei geändert: $W/run/systemd/generator/boot.mount" "$R" && ! grep -qF "gleich.mount" "$R"'
+check "NeedDaemonReload=yes am Ende: Rückstand; schon beim Freischalten: nicht" 'grep -qxF "Einheit mit geänderter Unit-Datei (NeedDaemonReload): c.service" "$R" && ! grep -qF "NeedDaemonReload): a.service" "$R"'
+check "Timer und Dienst des Endes, wie systemd-run sie anlegt: kein Rückstand" '! grep -qF "lf-claude-freigabe-ende" "$R"'
+check "nichts davon betrifft einen Dienst der Grundregel: Sie bleibt" '[[ -f $T/sudoers.d/lf-claude && ! -e $T/sudoers.d/lf-claude.lf-gesperrt ]]'
+prop a.service NeedDaemonReload no
+prop c.service NeedDaemonReload no
+rm -r "$W/etc/systemd/system/c.service.d" "$W/etc/systemd/system/multi-user.target.wants"
+
+echo "Grundregel bis zum Neustart gesperrt (Q5):"
+# q5 ÄNDERUNG   Freigabe an, ÄNDERUNG (eine Funktion: ein harmloser Platzhalter, während der
+#   Freigabe), aus. Ist die Grundregel danach gesperrt, mit dem Grund im Protokoll?
+q5() {
+	reboot_sim
+	: >"$LOG"
+	bash "$F" an 30 >"$T/out" 2>&1
+	"$1"
+	bash "$F" aus >"$T/out" 2>&1
+	[[ -f $T/sudoers.d/lf-claude.lf-gesperrt && ! -e $T/sudoers.d/lf-claude ]] &&
+		grep -qF "gesperrt: Grundregel von lf-claude ($T/sudoers.d/lf-claude) bis zum Neustart: " "$LOG"
+}
+q5_usr() { echo "# Platzhalter" >"$W/usr/lib/x86_64-linux-gnu/q5.txt"; }
+q5_opt() { mkdir -p "$W/opt/q5"; }
+q5_ldso() { mkdir -p "$W/etc/ld.so.conf.d" && echo "# Platzhalter" >"$W/etc/ld.so.conf.d/q5.conf"; }
+q5_nss() { echo "# Platzhalter" >>"$W/etc/nsswitch.conf"; }
+q5_pam() { echo "# Platzhalter" >>"$W/etc/pam.d/sudo"; }
+q5_security() { mkdir -p "$W/etc/security" && echo "# Platzhalter" >>"$W/etc/security/limits.conf"; }
+q5_env() { echo "# Platzhalter" >>"$W/etc/environment"; }
+q5_locale() { mkdir -p "$W/etc/default" && echo "# Platzhalter" >>"$W/etc/default/locale"; }
+q5_sudoconf() { echo "# Platzhalter" >>"$W/etc/sudo.conf"; }
+q5_sudoers() { echo "# Platzhalter" >"$T/sudoers.d/q5"; }
+q5_mount() { echo "60 22 0:50 / /mnt/q5 rw,nosuid,nodev,noexec shared:20 - tmpfs tmpfs rw" >>"$T/proc/1/mountinfo"; }
+q5_dropin() { mkdir -p "$W/run/systemd/system/service.d" && printf '[Unit]\nDescription=Platzhalter\n' >"$W/run/systemd/system/service.d/q5.conf"; }
+q5_prefix() { mkdir -p "$W/run/systemd/system.control/lf-.service.d" && printf '[Unit]\nDescription=Platzhalter\n' >"$W/run/systemd/system.control/lf-.service.d/q5.conf"; }
+q5_own() { echo "Description=Platzhalter" >>"$TR/lf-claude-freigabe-ende.service"; }
+q5_reload() { prop "$NT" NeedDaemonReload yes; }
+q5_kexec() { echo 1 >"$W/sys/kernel/kexec_crash_loaded" && touch "$T/kexec-fest"; }
+n=0
+for c in usr opt ldso nss pam security env locale sudoconf sudoers mount dropin prefix own reload kexec; do
+	q5 "q5_$c" || { echo "    nicht gesperrt: $c"; n=$((n + 1)); }
+done
+check "Dateien unter /usr und /opt, Lader, NSS, PAM, sudo, die Umgebung von sudo, eine Einhängung, Unit-Dateien für Dienste der Grundregel und ihr Ende: Grundregel bis zum Neustart gesperrt" '((n == 0))'
+check "ein Kernel für den Absturzfall, der sich nicht entladen lässt: Rückstand, Grundregel gesperrt (9)" 'grep -qF "ließ sich nicht entladen: Kernel für kexec (kexec_crash_loaded)" "$LOG" && grep -qxE "(320|294) 1" "$T/perl.log" && grep -qxF "Kernel-Einstellung neu oder geändert: $W/sys/kernel/kexec_crash_loaded" "$R"'
+rm -f "$T/kexec-fest" "$T/sudoers.d/q5"
+echo 0 >"$W/sys/kernel/kexec_crash_loaded"
+sed -i '\| /mnt/q5 |d' "$T/proc/1/mountinfo"
+prop "$NT" NeedDaemonReload no
+rm -r "$W/run/systemd/system/service.d" "$W/run/systemd/system.control"
+# Andere Dateien in /etc und in den Homes, eine neue Konsole und eine Quelle wie von lf-aufgabe.
+reboot_sim
+: >"$LOG"
+bash "$F" an 30 >"$T/out" 2>&1
+echo q5 >"$W/etc/hostname"
+echo "# Platzhalter" >>"$W/home/rescue/.profile"
+echo "# Platzhalter" >"$W/home/rescue/.local/bin/q5"
+echo "61 22 8:49 / /mnt/lf-image/sdd1 ro,nosuid,nodev,noexec,relatime shared:9 - ntfs3 /dev/sdd1 ro" >>"$T/proc/1/mountinfo"
+mkdir -p "$CRED/getty@tty3.service"
+echo "62 30 0:51 / $CRED/getty@tty3.service rw,nosuid,nodev,noexec,relatime,nosymfollow shared:21 - tmpfs none ro,size=1024k,nr_inodes=1024,mode=700" >>"$T/proc/1/mountinfo"
+bash "$F" aus >"$T/out" 2>&1
+check "andere Dateien in /etc, Dotfiles, eine neue Konsole: Rückstand, die Grundregel bleibt; eine Quelle wie von lf-aufgabe ist nichts" '[[ -f $T/sudoers.d/lf-claude && ! -e $T/sudoers.d/lf-claude.lf-gesperrt ]] && grep -qxF "Datei neu: $W/etc/hostname" "$R" && grep -qxF "Datei geändert: $W/home/rescue/.profile" "$R" && grep -qxF "Datei neu: $W/home/rescue/.local/bin/q5" "$R" && grep -qxF "Einhängung neu oder geändert: $CRED/getty@tty3.service (tmpfs none)" "$R" && ! grep -q "/mnt/lf-image/sdd1" "$R"'
+sed -i -e '\| /mnt/lf-image/sdd1 |d' -e "\| $CRED/getty@tty3.service |d" "$T/proc/1/mountinfo"
+rm -r "$CRED/getty@tty3.service"
+# Dienste der Grundregel, während der Freigabe gestartet, bei gesperrter Grundregel.
+reboot_sim
+: >"$T/systemctl.log"
+bash "$F" an 30 >"$T/out" 2>&1
+NT7='lf-ntfs3g-mnt-lf\x2dimage-sdb7.service'
+ntfs "$NT7" /usr/bin/ntfs-3g ro,nodev,nosuid,noexec,recover /dev/sdb1 /mnt/lf-image/sdb7
+RU6=$(runit /mnt/lf-target/LF/ok-gesperrt)
+rescue "$RU6" /mnt/lf-target/LF/ok-gesperrt /dev/sdb
+echo "# Platzhalter" >"$W/usr/lib/x86_64-linux-gnu/q5-dienste.txt"
+bash "$F" aus >"$T/out" 2>&1
+check "gesperrte Grundregel: ntfs-3g und Rettungen aus der Freigabe sind gestoppt und Rückstand, ältere Dienste bleiben (F16)" 'grep -qxF "stop $NT7" "$T/systemctl.log" && grep -qxF "stop $RU6" "$T/systemctl.log" && grep -qxF "Einheit beendet: $NT7" "$R" && grep -qxF "Einheit beendet: $RU6" "$R" && ! grep -qxF "stop $NT" "$T/systemctl.log" && [[ -f $T/sudoers.d/lf-claude.lf-gesperrt ]]'
+# Die Grundregel lässt sich nicht verschieben, oder an ihrem Platz steht ein Ordner.
+reboot_sim
+touch "$T/mv-fest"
+bash "$F" an 30 >"$T/out" 2>&1
+echo "# Platzhalter" >"$W/usr/lib/x86_64-linux-gnu/q5-fest.txt"
+bash "$F" aus >"$T/out" 2>&1
+check "lässt sie sich nicht verschieben: zuerst im Rückstand, Menü und Statuszeile zeigen es" '[[ -f $T/sudoers.d/lf-claude && $(head -n 1 "$R") == "Grundregel ließ sich nicht sperren: $T/sudoers.d/lf-claude" && $(bash "$F" status) == "an: Rückstand nach der Freigabe (Grundregel ließ sich nicht sperren: $T/sudoers.d/lf-claude), Neustart empfohlen" ]]'
+rm -f "$T/mv-fest"
+reboot_sim
+bash "$F" an 30 >"$T/out" 2>&1
+mkdir -p "$T/sudoers.d/lf-claude.lf-gesperrt/lf-claude"
+echo "# Platzhalter" >"$W/usr/lib/x86_64-linux-gnu/q5-ordner.txt"
+bash "$F" aus >"$T/out" 2>&1
+check "steht an ihrem Platz ein Ordner, kommt sie in einen neuen" 'd=("$T/sudoers.d/lf-claude.lf-gesperrt".*); [[ ! -e $T/sudoers.d/lf-claude && -f ${d[0]}/lf-claude ]] && grep -qxF "Grundregel gesperrt bis zum Neustart: ${d[0]}/lf-claude" "$R"'
+rm -r "$T/sudoers.d/lf-claude.lf-gesperrt"
+
+echo "Kernel für kexec (9):"
+reboot_sim
+echo 1 >"$W/sys/kernel/kexec_loaded"
+: >"$T/perl.log"
+bash "$F" an 30 >"$T/out" 2>&1
+bash "$F" aus >"$T/out" 2>&1
+check "ein Kernel für kexec, der schon beim Freischalten geladen war: bleibt geladen, kein Rückstand dafür" '[[ $(cat "$W/sys/kernel/kexec_loaded") == 1 && ! -s $T/perl.log ]] && ! grep -qsF kexec "$R"'
+echo 0 >"$W/sys/kernel/kexec_loaded"
+reboot_sim
+bash "$F" an 30 >"$T/out" 2>&1
+echo 1 >"$W/sys/kernel/kexec_crash_loaded"
+bash "$F" aus >"$T/out" 2>&1
+check "ein Kernel für den Absturzfall aus der Freigabe: entladen, kein Rückstand dafür" 'grep -qxE "(320|294) 1" "$T/perl.log" && [[ $(cat "$W/sys/kernel/kexec_crash_loaded") == 0 ]] && ! grep -qsF kexec "$R"'
+
+echo "EFI-Variablen und der Speicher LF-DATA (Q11):"
+reboot_sim
+: >"$LOG"
+bash "$F" an 30 >"$T/out" 2>&1
+cp "$EV/BootOrder-$GV" "$T/bootorder"
+printf '\007\000\000\000zwei' >"$EV/Boot0002-$GV"
+printf '\007\000\000\000\002\000\001\000' >"$EV/BootOrder-$GV"
+rm "$EV/Timeout-$GV"
+printf '\007\000\000\000neu' >"$EV/MokNew-$GM"
+printf '\007\000\000\000x' >"$EV/HerstellerX-12345678-1234-1234-1234-123456789abc"
+bash "$F" aus >"$T/out" 2>&1
+check "neue, geänderte und entfernte EFI-Variablen: Rückstand; zurückgeschrieben wird nichts" 'grep -qxF "EFI-Variable neu: Boot0002-$GV" "$R" && grep -qxF "EFI-Variable geändert: BootOrder-$GV" "$R" && grep -qxF "EFI-Variable entfernt: Timeout-$GV" "$R" && grep -qxF "EFI-Variable neu: HerstellerX-12345678-1234-1234-1234-123456789abc" "$R" && [[ -e $EV/Boot0002-$GV && ! -e $EV/Timeout-$GV ]] && ! cmp -s "$EV/BootOrder-$GV" "$T/bootorder"'
+H="EFI-Variablen für den Start geändert (BootOrder, Boot0002, MokNew): vor dem nächsten Start die Startreihenfolge im Firmware-Setup prüfen und eine unerwartete MOK-Abfrage ablehnen"
+check "Variablen für den Start: zuerst der Hinweis für den Techniker, auch in Menü und Statuszeile" '[[ $(head -n 1 "$R") == "$H" && $(bash "$F" status) == "an: Rückstand nach der Freigabe ($H), Neustart empfohlen" ]]'
+check "EFI-Variablen sperren die Grundregel nicht" '[[ -f $T/sudoers.d/lf-claude && ! -e $T/sudoers.d/lf-claude.lf-gesperrt ]]'
+reboot_sim
+bash "$F" an 30 >"$T/out" 2>&1
+mkdir -p "$W/persist/config" "$W/persist/home"
+echo "63 22 8:50 / $W/persist rw,nosuid,nodev,noatime shared:22 - ext4 /dev/sdb3 rw" >>"$T/proc/1/mountinfo"
+bash "$F" aus >"$T/out" 2>&1
+check "LF-DATA während der Freigabe eingehängt: Rückstand, Inhalt ungeprüft; die neue Einhängung sperrt die Grundregel" 'grep -qxF "Speicher LF-DATA während der Freigabe eingehängt, Inhalt ungeprüft: $W/persist" "$R" && grep -qxF "Einhängung neu oder geändert: $W/persist (ext4 /dev/sdb3)" "$R" && [[ -f $T/sudoers.d/lf-claude.lf-gesperrt ]]'
+reboot_sim
+echo "LF_TECHNIKER=vorher" >"$W/persist/config/lf.conf"
+bash "$F" an 30 >"$T/out" 2>&1
+check "beim Freischalten offen: der Inhalt von config und home steht im Schnappschuss" '[[ $(cat "$SNAP/persist-zustand") == offen ]] && grep -qF " $W/persist/config/lf.conf" "$SNAP/persist"'
+echo "LF_TECHNIKER=nachher" >"$W/persist/config/lf.conf"
+mkdir -p "$W/persist/home/.ssh" && echo "# Platzhalter" >"$W/persist/home/.ssh/authorized_keys"
+mkdir -p "$W/persist/claude-home" && echo "# Platzhalter" >"$W/persist/claude-home/notiz"
+bash "$F" aus >"$T/out" 2>&1
+check "offen geblieben: Änderungen in config und home sind Rückstand, claude-home nicht" 'grep -qxF "Datei auf LF-DATA geändert: $W/persist/config/lf.conf" "$R" && grep -qxF "Ordner auf LF-DATA neu: $W/persist/home/.ssh" "$R" && grep -qxF "Datei auf LF-DATA neu: $W/persist/home/.ssh/authorized_keys" "$R" && ! grep -q claude-home "$R"'
+reboot_sim
+bash "$F" an 30 >"$T/out" 2>&1
+sed -i "\| $W/persist |d" "$T/proc/1/mountinfo"
+bash "$F" aus >"$T/out" 2>&1
+check "während der Freigabe ausgehängt: Rückstand, Inhalt ungeprüft" 'grep -qxF "Speicher LF-DATA während der Freigabe ausgehängt, Inhalt ungeprüft: $W/persist" "$R"'
+
+echo "Jobs über LF_JOB_RUN (sudo bash JOB, #72):"
+reboot_sim
+: >"$LOG"
+bash "$F" an 30 >"$T/out" 2>&1
+J1=$(spawn) J2=$(spawn)
+# Ein Klon des Technikers in tmux (lf, LF_JOB_RUN): sudo bash JOB.
+fake 4194399601 1000 1000 1 "" "tmux new-session -d -s lf-klon"
+fake 4194399602 1000 0 4194399601 "" "sudo bash /run/lf/klon.sh" "$T/bin/sudo"
+fake "$J1" 0 0 4194399602 "SUDO_USER=rescue|SUDO_UID=1000|SUDO_COMMAND=/usr/bin/bash /run/lf/klon.sh" "bash /run/lf/klon.sh" /usr/bin/bash
+# Derselbe Aufruf von lf-claude mit der Freigabe.
+fake 4194399603 1001 1001 1 "" "bash"
+fake 4194399604 1001 0 4194399603 "" "sudo bash /var/lib/lf-claude/job.sh" "$T/bin/sudo"
+fake "$J2" 0 0 4194399604 "SUDO_USER=lf-claude|SUDO_UID=1001|SUDO_COMMAND=/usr/bin/bash /var/lib/lf-claude/job.sh" "bash /var/lib/lf-claude/job.sh" /usr/bin/bash
+bash "$F" aus >"$T/out" 2>&1
+check "ein Job des Technikers über LF_JOB_RUN läuft weiter und ist kein Rückstand; derselbe Aufruf von lf-claude ist beendet (#72)" 'kill -0 "$J1" 2>/dev/null && ! kill -0 "$J2" 2>/dev/null && grep -qF "beendet: $J2 bash /var/lib/lf-claude/job.sh" "$LOG" && ! grep -qsF "$J1" "$R"'
+check "die Grundregel erlaubt nie bash, und lf-aufgabe startet nichts über LF_JOB_RUN" '[[ $(sed -n "s/^BASE_RULE=//p" rescue/bin/lf-freigabe) != *bash* ]] && grep -qx "lf-claude ALL=(root) NOPASSWD: /usr/local/bin/lf-lesen, /usr/local/bin/lf-aufgabe" build/chroot-setup.sh && [[ $(sed -n "s/^LF_JOB_RUN=//p" rescue/lib/common.sh) == "(sudo bash)" ]] && ! grep -q "LF_JOB_RUN" rescue/bin/lf-aufgabe'
+kill "$J1" 2>/dev/null
+cleanproc
+reboot_sim
+
 echo "Eigenschaften eines Dienstes in systemd 259 (F16):"
 # props [KLASSE]   Die Namen aus systemd-259-properties.txt (einer Klasse), sortiert.
 P=tests/systemd-259-properties.txt
@@ -996,6 +1299,10 @@ check "Neustart im Assistenten: echt, ohne kexec und soft-reboot; sonst startet 
 check "Anleitung: auch eigene Änderungen zeigen Rückstand; sicher ist Ausschalten, Beenden > Neustart übergeht nur kexec und nextroot" 'grep -qF "Leuchtfeuer sieht nicht, wer etwas geändert hat." docs/anleitung.md && grep -qF "Am sichersten ist Ausschalten: Wähle **Beenden > Ausschalten** und warte, bis das Gerät wirklich aus ist. Bleibt es an, halte den Netzschalter gedrückt." docs/anleitung.md && grep -qF "ein \`reboot\` in der Shell nicht. Eine Umleitung im Neustart selbst übergeht es nicht." docs/anleitung.md && ! grep -qF "Starte über **Beenden > Neustart** neu" docs/anleitung.md'
 check "Hardware-Prüfung: nach der Freigabe bis zum Neustart der Hinweis auf einen Neustart" 'grep -qF "Bis zum Neustart steht im Hauptmenü „Hinweis: Claude hatte volles sudo, Neustart empfohlen (letzte Freigabe bis HH:MM)“" docs/hardware-pruefung.md'
 check "CLAUDE.md: lange Kopien nur über lf-aufgabe, nie direkt mit sudo" 'tr "\n" " " <rescue/claude/CLAUDE.md | grep -q "Lange Kopien (dd, ddrescue, partclone) startest du auch dann nur über lf-aufgabe, nie direkt mit sudo"'
+check "Anleitung: Änderungen an dem, was die Grundregel als root ausführt, und neue Einhängungen sperren lf-lesen und lf-aufgabe bis zum Neustart (Q5)" 'grep -qF "sperrt Leuchtfeuer diese beiden Werkzeuge für Claude bis zum Neustart und beendet Rettungen und Einhängungen, die während der Freigabe gestartet sind. Wähle das Ziel und entsperre LF-DATA darum vor dem Freischalten." docs/anleitung.md'
+check "Anleitung: geänderte EFI-Variablen zuerst im Rückstand, dann Startreihenfolge und MOK prüfen; Firmware, Disks und Hardware erkennt Leuchtfeuer nicht" 'grep -qF "Hat sich eine EFI-Variable für den Start geändert, zeigt der Rückstand das zuerst: Prüfe dann vor dem nächsten Start die Startreihenfolge im Firmware-Setup und lehne eine unerwartete MOK-Abfrage ab." docs/anleitung.md && grep -qF "Was root sonst in der Firmware, auf angeschlossenen Disks oder an der Hardware ändert, erkennt Leuchtfeuer nicht, und ein Neustart setzt es nicht zurück." docs/anleitung.md'
+check "Anleitung und Code nennen denselben Schritt für geänderte EFI-Variablen" 'grep -qF "vor dem nächsten Start die Startreihenfolge im Firmware-Setup prüfen und eine unerwartete MOK-Abfrage ablehnen" rescue/bin/lf-freigabe'
+check "CLAUDE.md: apt, PAM, sudo oder eine eigene Einhängung sperren lf-lesen und lf-aufgabe bis zum Neustart" 'tr "\n" " " <rescue/claude/CLAUDE.md | grep -qF "sperrt Leuchtfeuer am Ende auch lf-lesen und lf-aufgabe bis zum Neustart und beendet Rettungen aus der Freigabe. Sag das dem Techniker vorher."'
 
 rm -rf "$T"
 ((fails == 0)) && echo "Alle Tests bestanden." || { echo "$fails Test(s) fehlgeschlagen."; exit 1; }
