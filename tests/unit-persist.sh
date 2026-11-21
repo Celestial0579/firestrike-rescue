@@ -7,9 +7,11 @@
 # sie ohne Rückfrage eingehängt und ihre lf.conf als Shell-Code gelesen. Der Test prüft:
 #   - der Boot-Stick ist das eingehängte Live-Medium, nicht irgendeine Disk mit dem Label der ISO,
 #   - der Speicher ist nur die Partition LF-DATA auf diesem Stick,
+#   - tragen dort mehrere Partitionen den Namen, wird keine verwendet und keine weitere angelegt,
 #   - ein unverschlüsselter Speicher wird nie ohne Rückfrage eingebunden,
 #   - lf.conf wird als Daten gelesen: Nichts daraus wird ausgeführt.
-# Ohne root und ohne Disks: lsblk, blkid, findmnt, sudo und die Dialoge sind Attrappen.
+# Ohne root und ohne Disks: lsblk, blkid, findmnt, sudo und die Dialoge sind Attrappen. lsblk
+# gibt JSON aus wie util-linux 2.41 auf der ISO.
 set -u
 cd "$(dirname "$0")/.." || exit 1
 export LC_ALL=C.UTF-8
@@ -44,7 +46,10 @@ mkdir -p "$LF_RUN" "$HOME" "$T/etc-lf"
 #   BLOCKDEVS     Pfade, die Blockgeräte sind
 #   ISO_LABEL     Geräte mit dem Label LEUCHTFEUER laut blkid, in dieser Reihenfolge
 #   PARTS         Zeilen "PFAD DISK PARTLABEL LABEL TYP": Partitionen und ihr Inhalt laut blkid
+#   HOLDERS       Zeilen "PFAD ELTERN LABEL TYP": Geräte auf einer Partition, etwa der entsperrte
+#                 Speicher (crypt) mit dem Dateisystem darin
 # ---------------------------------------------------------------------------
+HOLDERS=""
 findmnt() { [[ -n $CDROM ]] && echo "$CDROM"; }
 is_blockdev() { [[ " $BLOCKDEVS " == *" $1 "* ]]; }
 # blkid -t NAME=WERT -o device: alle Geräte mit diesem Merkmal, wie das echte blkid ohne
@@ -73,25 +78,68 @@ parent() {
 	*) sed -E 's|^/dev/([a-z]+)[0-9]+$|\1|' <<<"$1" ;;
 	esac
 }
+# Die Blockgeräte der gedachten Maschine, je Zeile eines: die Disks aus PARTS, ihre Partitionen
+# und die Geräte aus HOLDERS. "eltern" ist das Gerät, auf dem es liegt. Die Disks tragen das
+# Label der ISO, wenn ISO_LABEL sie nennt.
+geraete() {
+	local path disk partlabel label type
+	while read -r path disk partlabel label type; do
+		[[ -n $path ]] || continue
+		jq -cn --arg p "$disk" --arg l "$([[ " $ISO_LABEL " == *" $disk "* ]] && echo LEUCHTFEUER)" \
+			'{path: $p, type: "disk", label: $l}'
+		jq -cn --arg p "$path" --arg e "$disk" --arg pl "${partlabel#-}" --arg l "${label#-}" \
+			'{path: $p, eltern: $e, type: "part", partlabel: $pl, label: $l}'
+	done <<<"$PARTS"
+	while read -r path disk label type; do
+		[[ -n $path ]] || continue
+		jq -cn --arg p "$path" --arg e "$disk" --arg l "${label#-}" --arg t "$type" \
+			'{path: $p, eltern: $e, type: $t, label: $l}'
+	done <<<"$HOLDERS"
+}
+# lsblk -J wie util-linux 2.41 auf der ISO: Jede Spalte aus -o ist ein Schlüssel in
+# Kleinbuchstaben, ein leerer Wert ist null. Als children unter ihre Eltern kommen Geräte nur
+# mit der Spalte NAME oder mit --tree (man lsblk), sonst ist die Liste flach: jede Disk, dahinter
+# ihre Partitionen und was darauf liegt. Mit einem Gerät zeigt lsblk nur dieses und was darauf
+# liegt. LSBLK_BAUM=1 verschachtelt immer, auch ohne NAME und --tree.
+LSBLK_JQ='
+def leer: if . == "" then null else . end;
+def name: .path | ltrimstr("/dev/") | ltrimstr("mapper/");
+reduce .[] as $g ([]; if any(.[]; .path == $g.path) then . else . + [$g] end) | . as $alle
+| def wert($s):
+	if $s == "name" then name
+	elif $s == "pkname" then (.eltern as $e | first($alle[] | select(.path == $e) | name) // null)
+	else (.[$s] // null | leer) end;
+  def zeile: . as $g | reduce ($cols | ascii_downcase | split(","))[] as $s ({}; .[$s] = ($g | wert($s)));
+  def kinder: .path as $p | $alle[] | select(.eltern == $p);
+  def baum: zeile + ([kinder | baum] | if length > 0 then {children: .} else {} end);
+  def flach: zeile, (kinder | flach);
+  [if $dev == "" then $alle[] | select(.eltern == null) else $alle[] | select(.path == $dev) end] as $wurzeln
+| if $dev != "" and $wurzeln == [] then "lsblk: \($dev): not a block device\n" | halt_error(32)
+  else {blockdevices: [$wurzeln[] | if $verschachtelt then baum else flach end]} end'
 lsblk() {
-	local last path disk partlabel label type
-	for last; do :; done
-	case "$*" in
-	"-no PKNAME "*) parent "$last" ;;
-	"-J -o PATH,PARTLABEL,LABEL "*)
-		while read -r path disk partlabel label type; do
-			[[ $disk == "$last" ]] || continue
-			jq -cn --arg p "$path" --arg pl "${partlabel#-}" --arg l "${label#-}" '{path: $p, partlabel: $pl, label: $l}'
-		done <<<"$PARTS" | jq -cs '{blockdevices: [{children: .}]}'
-		;;
-	"-J -o PATH,PKNAME,TYPE,PARTLABEL,LABEL")
-		while read -r path disk partlabel label type; do
-			[[ -n $path ]] || continue
-			jq -cn --arg p "$path" --arg d "${disk#/dev/}" --arg pl "${partlabel#-}" --arg l "${label#-}" \
-				'{path: $p, pkname: $d, type: "part", partlabel: $pl, label: $l}'
-		done <<<"$PARTS" | jq -cs '{blockdevices: [{type: "disk", children: .}]}'
-		;;
-	esac
+	local cols="" baum=false dev=""
+	if [[ $* == "-no PKNAME "* ]]; then
+		parent "$3"
+		return
+	fi
+	while (($#)); do
+		case $1 in
+		-J) ;;
+		-o)
+			cols=$2
+			shift
+			;;
+		-T | --tree) baum=true ;;
+		/dev/*) dev=$1 ;;
+		*)
+			echo "lsblk-Attrappe: $1 ist nicht nachgebildet" >&2
+			return 2
+			;;
+		esac
+		shift
+	done
+	[[ ,$cols, == *,NAME,* || ${LSBLK_BAUM:-} == 1 ]] && baum=true
+	geraete | jq -cs --arg cols "$cols" --arg dev "$dev" --argjson verschachtelt "$baum" "$LSBLK_JQ"
 }
 sudo() {
 	local path disk partlabel label type
@@ -156,7 +204,21 @@ normal() {
 /dev/sda9 /dev/sda LF-DATA LF-DATA ext4
 /dev/sdb1 /dev/sdb - LEUCHTFEUER iso9660
 /dev/sdb3 /dev/sdb LF-DATA LF-DATA crypto_LUKS"
+	HOLDERS=""
 }
+# Ein Stick, wie die ISO ihn anlegt: hinter der ISO die EFI-Partition, eine Lücke und LF-DATA.
+stick() {
+	CDROM=/dev/sda1
+	BLOCKDEVS="/dev/sda1 /dev/sda /dev/sr0"
+	ISO_LABEL="/dev/sda /dev/sda1"
+	PARTS="/dev/sda1 /dev/sda ISO9660 LEUCHTFEUER iso9660
+/dev/sda2 /dev/sda Appended2 LF_EFI vfat
+/dev/sda3 /dev/sda Gap1 - -
+/dev/sda4 /dev/sda LF-DATA LF-DATA ext4"
+	HOLDERS=""
+}
+# So gab lsblk -J -o PATH,PARTLABEL,LABEL /dev/sda auf der ISO diesen Stick aus (util-linux 2.41).
+STICK_LSBLK='{"blockdevices":[{"path":"/dev/sda","partlabel":null,"label":"LEUCHTFEUER"},{"path":"/dev/sda1","partlabel":"ISO9660","label":"LEUCHTFEUER"},{"path":"/dev/sda2","partlabel":"Appended2","label":"LF_EFI"},{"path":"/dev/sda3","partlabel":"Gap1","label":null},{"path":"/dev/sda4","partlabel":"LF-DATA","label":"LF-DATA"}]}'
 
 # ---------------------------------------------------------------------------
 echo "Boot-Stick:"
@@ -173,9 +235,26 @@ check "kein Live-Medium, kein Label: kein Boot-Stick" '! boot_disk >/dev/null'
 
 # ---------------------------------------------------------------------------
 echo "Welche Partition ist der eigene Speicher:"
+stick
+check "die Attrappe gibt aus, was lsblk 2.41 auf der ISO ausgab: eine flache Liste ohne children" \
+	'[[ $(lsblk -J -o PATH,PARTLABEL,LABEL /dev/sda | jq -c .) == "$STICK_LSBLK" ]]'
+check "LF-DATA hinter der EFI-Partition und der Lücke wird gefunden" '[[ $(persist_find) == /dev/sda4 ]]'
+fresh
+persist_create
+rc=$?
+result
+check "Anlegen sieht sie auch: kein zweiter Speicher (die Sperre in persist_create)" '[[ $rc != 0 && $SUDO != *sgdisk* && $MSG == *"schon eine Partition"* ]]'
 normal
 check "LF-DATA auf dem Stick, nicht die gleichnamige auf der internen Disk" '[[ $(persist_find) == /dev/sdb3 ]]'
 check "die fremde Partition wird als fremd erkannt" '[[ $(persist_foreign) == /dev/sda9 ]]'
+HOLDERS="/dev/mapper/lf-data /dev/sdb3 LF-DATA crypt"
+check "entsperrt trägt auch das Dateisystem im Speicher den Namen, es zählt nicht als zweite Partition" \
+	'[[ $(persist_find) == /dev/sdb3 && $(persist_foreign) == /dev/sda9 ]]'
+HOLDERS=""
+LSBLK_BAUM=1
+check "verschachtelt lsblk die Geräte (NAME oder --tree), gilt dasselbe" \
+	'[[ $(persist_find) == /dev/sdb3 && $(persist_foreign) == /dev/sda9 ]]'
+unset LSBLK_BAUM
 PARTS="/dev/sda9 /dev/sda LF-DATA LF-DATA ext4
 /dev/sdb1 /dev/sdb - LEUCHTFEUER iso9660"
 check "nur auf der fremden Disk: kein eigener Speicher" '! persist_find >/dev/null && [[ -z $(persist_find) ]]'
@@ -285,6 +364,40 @@ persist_create
 rc=$?
 result
 check "gibt es auf dem Stick schon einen Speicher, wird kein zweiter angelegt" '[[ $rc != 0 && $SUDO != *sgdisk* && $MSG == *"schon eine Partition"* ]]'
+
+echo "Zwei Partitionen mit dem Namen auf dem Stick, aus der Zeit, als der Speicher nicht gefunden wurde:"
+PARTS="/dev/sdb1 /dev/sdb - LEUCHTFEUER iso9660
+/dev/sdb3 /dev/sdb LF-DATA LF-DATA ext4
+/dev/sdb4 /dev/sdb LF-DATA LF-DATA ext4"
+# Platz für einen weiteren Speicher wäre da.
+persist_free_bytes() { echo 1073741824; }
+fresh
+YESNO_RC=0
+persist_startup
+result
+check "der Start sagt es, statt anzubieten, einen Speicher anzulegen" '[[ $MSG == "Persistenter Speicher|"*"mehrere Partitionen"*":\n\n   /dev/sdb3 /dev/sdb4\n\n"* && -z $YESNO ]]'
+check "nichts wird angelegt, eingehängt oder eingebunden" '[[ $SUDO != *sgdisk* && $SUDO != *mount* && -z $BIND ]]'
+check "im Protokoll stehen beide" '[[ $(grep -F "keine wird verwendet" "$T/log") == *"keine wird verwendet: /dev/sdb3 /dev/sdb4" ]]'
+rm -f "$T/msg"
+persist_startup
+result
+check "der Hinweis kommt je Sitzung nur einmal, ein Angebot auch danach nicht" '[[ -z $MSG && -z $YESNO ]]'
+fresh
+persist_create
+rc=$?
+result
+check "auch über das Menü wird kein weiterer angelegt" '[[ $rc != 0 && $SUDO != *sgdisk* && $MSG == *"schon eine Partition"* ]]'
+PARTS="/dev/sdb1 /dev/sdb - LEUCHTFEUER iso9660
+/dev/sdb3 /dev/sdb LF-DATA LF-DATA ext4"
+printf 'LF_BOOT_DEV=/dev/sdb\nLF_BOOT_DISKS=2\n' >"$T/lf-boot.env"
+LF_BOOT_ENV="$T/lf-boot.env"
+fresh
+YESNO_RC=1
+persist_startup
+result
+check "nur eine, aber der Stick ist nicht sicher erkannt: kein Hinweis auf mehrere" '[[ $MSG != *"mehrere Partitionen"* ]]'
+LF_BOOT_ENV="$T/fehlt"
+persist_free_bytes() { echo 0; }
 
 # ---------------------------------------------------------------------------
 echo "lf.conf wird gelesen, nicht ausgeführt:"

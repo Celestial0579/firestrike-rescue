@@ -69,6 +69,8 @@ angeschlossen sind.
    Erwartet: `findmnt /persist` zeigt die Partition `LF-DATA` auf dem Stick, mit `nodev,nosuid`.
 2. Dasselbe mit einem unverschlüsselten Speicher auf dem zweiten Stick: Der Assistent fragt vor dem Einbinden nach.
 3. Eine Partition mit dem Label `LF-DATA` auf einer anderen Disk anlegen und anschließen: Der Assistent verwendet sie nie, er weist nur auf sie hin.
+   - Auf dem Stick aus Schritt 2 an einem anderen Rechner eine zweite Partition mit dem Namen `LF-DATA` anlegen (`sudo sgdisk -n 0:0:+600M -c 0:LF-DATA /dev/sdX`, `/dev/sdX` ist der Stick), wie es frühere Betas bei einem „Ja“ beim Start taten. Dann davon starten.
+   - Erwartet: Der Assistent bindet keine der beiden ein, sagt das beim Start und bietet keinen neuen Speicher an.
 4. **Wirkung von `nosuid`.** Der Selbsttest läuft als root und kann das nicht prüfen. Als Live-Benutzer in der Shell:
    ```bash
    sudo cp /usr/bin/id /persist/id-probe && sudo chmod 4755 /persist/id-probe
