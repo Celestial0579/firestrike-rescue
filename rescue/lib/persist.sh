@@ -23,9 +23,14 @@ PERSIST_CONFIG="/etc/lf/lf.conf"
 PERSIST_HOME_DIRS=(.claude .config/Claude .local/share/keyrings .local/share/claude .local/bin .ssh .config/rclone)
 
 # persist_candidates DISK   Partitionen von DISK, die den Namen des Speichers tragen.
+# Als children verschachtelt lsblk -J die Partitionen nur mit der Spalte NAME oder mit --tree,
+# sonst ist die Liste flach (util-linux 2.41, die ISO). jq sucht deshalb wie persist_foreign in
+# allen Geräten, gleich in welcher Form, und nimmt nur Partitionen. Das Dateisystem im
+# entsperrten Speicher trägt auch den Namen, liegt aber in einem crypt-Gerät und zählt nicht mit.
 persist_candidates() {
-	lsblk -J -o PATH,PARTLABEL,LABEL "$1" 2>/dev/null |
-		jq -r --arg l "$PERSIST_LABEL" --arg o "$PERSIST_LABEL_OLD" '.blockdevices[0].children[]?
+	lsblk -J -o PATH,TYPE,PARTLABEL,LABEL "$1" 2>/dev/null |
+		jq -r --arg l "$PERSIST_LABEL" --arg o "$PERSIST_LABEL_OLD" '.blockdevices[]? | .. | objects
+			| select(.type? == "part")
 			| select(.partlabel == $l or .label == $l or .partlabel == $o or .label == $o) | .path'
 }
 
@@ -60,6 +65,23 @@ persist_foreign_notice() {
 	[[ -f $LF_RUN/persist-foreign-told ]] && return 0
 	touch "$LF_RUN/persist-foreign-told"
 	ui_msg "Persistenter Speicher" "Auf einer anderen Disk liegt eine Partition mit dem Namen $PERSIST_LABEL:\n\n   $list\n\nDer Speicher dieses Rettungssystems liegt nur auf dem Stick, von dem es gestartet wurde. Die Partition wird nicht verwendet und nicht eingehängt.\n\nStammt die Disk aus fremder Hand, ist Vorsicht angebracht. Ist es dein Speicher auf einem anderen Stick, starte von jenem Stick."
+}
+
+# Tragen auf dem Stick mehrere Partitionen den Namen des Speichers, nimmt persist_find keine, und
+# es wird auch keine weitere angelegt. Das sagt diese Funktion einmal je Sitzung (Rückgabe 0).
+# Solche Sticks gibt es aus der Zeit, als der Assistent den Speicher nicht fand und bei jedem
+# Start anbot, einen neuen anzulegen.
+persist_ambiguous_notice() {
+	local bd list
+	bd=$(boot_disk 2>/dev/null) || return 1
+	list=$(persist_candidates "$bd" | tr '\n' ' ')
+	list=${list% }
+	(($(wc -w <<<"$list") > 1)) || return 1
+	log "Mehrere Partitionen mit dem Namen $PERSIST_LABEL auf dem Stick, keine wird verwendet: $list"
+	[[ -f $LF_RUN/persist-ambiguous-told ]] && return 0
+	touch "$LF_RUN/persist-ambiguous-told"
+	ui_msg "Persistenter Speicher" "Auf dem Stick tragen mehrere Partitionen den Namen $PERSIST_LABEL:\n\n   $list\n\nWelche davon der Speicher ist, lässt sich nicht sicher sagen. Keine wird verwendet, und es wird kein weiterer Speicher angelegt.\n\nAn einem anderen Rechner prüfen, welche die Daten enthält, die anderen löschen und neu starten."
+	return 0
 }
 
 # Einstellungen, die lf.conf setzen darf, mit dem Muster ihres Wertes. Hier steht nur, was der
@@ -314,6 +336,7 @@ persist_startup() {
 		persist_open startup || true
 		return 0
 	fi
+	persist_ambiguous_notice && return 0
 	[[ -f $LF_RUN/persist-declined ]] && return 0
 	local bd free
 	bd=$(boot_disk 2>/dev/null) || return 0
