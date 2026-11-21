@@ -18,24 +18,35 @@
 #
 # Ob ein Aufruf von lf-claude kommt, zeigen SUDO_USER und SUDO_UID, alle Vorfahren des Aufrufs
 # und die cgroup: Claude läuft in einer eigenen (lf-claude.slice, claude_scope in claude.sh), und
-# ein Prozess behält sie, auch wenn er sich abkoppelt. Am Ende (aus, Ablauf) hält lf-freigabe
-# diese cgroup an und nimmt sofort die Regel zurück. Eine neue /etc/ld.so.preload und ein
-# /run/nextroot (soft-reboot) sperrt es, einen Kernel für kexec entlädt es, und hat sich an
-# lf-aufgabe, lf-lesen oder den Programmen darunter etwas geändert, sperrt es bis zum Neustart
-# auch die Grundregel. Dann beendet es jede Einheit, die während der Freigabe gestartet ist (außer
-# Anmeldungen, Benutzern außer root und Diensten, die Claude über lf-aufgabe auch ohne Freigabe
-# bekommt: kept_unit), at-Aufträge und cron-Dateien, jeden root-Prozess in der cgroup (außer sudo
-# selbst und Jobs von lf-lesen und lf-aufgabe) und alles, was lf-claude sonst nachweislich mit der
-# Freigabe gestartet hat, und setzt die Umgebung des systemd-Managers zurück. Danach prüft es,
-# bevor Claude weiterläuft, ob lf-claude noch mehr darf als lf-lesen und lf-aufgabe, auch über Wege
-# ohne laufenden Prozess (Dateien in /etc und in den Homes, Unit-Dateien, setuid-Dateien, /usr,
-# Kernel-Einstellungen, Einhängungen, EFI-Variablen, der Speicher LF-DATA, eine geänderte Umgebung
-# des Managers); solange es etwas findet, sagt status "an: Rückstand …". Kann sich dabei geändert
-# haben, was die Grundregel als root ausführt oder lädt (lock_lines), bleibt sie bis zum Neustart
-# gesperrt. Ob die Freigabe gilt, entscheidet die Regel selbst, nicht die Uhr; das Ende kommt aus
-# dem monotonen Timer. Keine Prüfung findet jeden Weg, den sich root einrichten kann: Sicher endet
-# eine Freigabe nur mit einem Neustart, am sichersten mit Ausschalten (GHSA-799j-44qx-x7xj). Bis
-# dahin sagt status nach jeder Freigabe "aus, Neustart empfohlen".
+# ein Prozess behält sie, auch wenn er sich abkoppelt. Am Ende (aus, Ablauf) sperrt lf-freigabe
+# als Erstes die Grundregel und hält im Rückstand fest, dass seine Prüfung nicht abgeschlossen ist:
+# Bricht das Ende ab, bleibt beides. Dann hält es die cgroup von Claude an und nimmt sofort die
+# Regel zurück. Eine neue /etc/ld.so.preload und ein /run/nextroot (soft-reboot) sperrt es, einen
+# Kernel für kexec entlädt es, und hat sich an lf-aufgabe, lf-lesen oder den Programmen darunter
+# etwas geändert, sperrt es die Grundregel bis zum Neustart. Dann hält es jede Einheit an, die
+# während der Freigabe gestartet ist (außer Anmeldungen und Benutzerdiensten von lf-claude und dem
+# Techniker und Diensten, die Claude über lf-aufgabe auch ohne Freigabe bekommt: kept_unit), und
+# beendet sie, wenn systemd dabei nichts mehr ausführt, sonst bleibt sie angehalten. Es beendet
+# at-Aufträge und cron-Dateien, in der cgroup jeden Prozess aus der Freigabe mit mehr Rechten als
+# lf-claude (auch Jobs von lf-aufgabe: root kann an ihnen alles fälschen) und jeden root-Prozess
+# von vorher (außer sudo selbst und Jobs von lf-lesen und lf-aufgabe, solange die Grundregel nicht
+# bis zum Neustart gesperrt ist), dazu alles, was lf-claude sonst nachweislich mit der Freigabe
+# gestartet hat, und setzt die Umgebung des systemd-Managers zurück. Danach prüft es, bevor Claude
+# weiterläuft, ob lf-claude noch mehr darf als lf-lesen und lf-aufgabe, auch über Wege ohne
+# laufenden Prozess (Dateien in /etc, /root und in den Homes, Unit-Dateien und die Dateien
+# geladener Einheiten, die Benutzer-Manager, setuid-Dateien, /usr, Kernel-Einstellungen, Module,
+# Taint und BPF-Pins, Einhängungen, EFI-Variablen, der Speicher LF-DATA, eine geänderte Umgebung
+# des Managers, Prozesse des Technikers aus der Freigabe); solange es etwas findet, sagt status
+# "an: Rückstand …". Läuft eine Einheit aus der Freigabe weiter, die sich nicht anhalten ließ und
+# bei deren Ende systemd Code ausführte, steht ganz oben, sofort am Netzschalter auszuschalten. Hat
+# sich etwas geändert, das von selbst als root oder als Techniker läuft (Hooks, sein Home, der
+# Kernel), steht oben der Hinweis, vor dem Weiterarbeiten auszuschalten. Mit Rückstand bleibt die
+# Grundregel gesperrt, bis ein Ende ohne Rückstand abschließt, und kann sich geändert haben, was
+# sie als root ausführt oder lädt (lock_lines), bis zum Neustart. Ob die Freigabe gilt, entscheidet
+# die Regel selbst, nicht die Uhr;
+# das Ende kommt aus dem monotonen Timer. Keine Prüfung findet jeden Weg, den sich root einrichten
+# kann: Sicher endet eine Freigabe nur mit einem Neustart, am sichersten mit Ausschalten
+# (GHSA-799j-44qx-x7xj). Bis dahin sagt status nach jeder Freigabe "aus, Neustart empfohlen".
 set -u
 PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 export LC_ALL=C.UTF-8
@@ -71,6 +82,8 @@ CRON_PATHS=(/etc/crontab /etc/cron.d /var/spool/cron/crontabs)
 TTY=/dev/tty
 # Was lf-claude nach dem Ende einer Freigabe noch mehr darf als die Grundregel.
 RESIDUE=/run/lf/claude-freigabe-rueckstand
+# Die erste Zeile im Rückstand, solange ein Ende läuft (off). Bricht es ab, bleibt sie stehen.
+END_OPEN="Prüfung des Rückstands nicht abgeschlossen"
 BASE_RULE="(root) NOPASSWD: /usr/local/bin/lf-lesen, /usr/local/bin/lf-aufgabe"
 # Blockgeräte, die der Kernel kennt (Quellen, die kept_unit gelten lässt).
 SYS_BLOCK=/sys/class/block
@@ -106,34 +119,69 @@ UNIT_PATHS=("$WROOT"/etc/systemd/system.control "$WROOT"/run/systemd/system.cont
 DOTFILES=(.bashrc .bash_profile .bash_login .bash_logout .profile .inputrc .tmux.conf .config/tmux .config/mc
 	.local/share/mc .vimrc .vim .exrc .lessfilter .gitconfig .config/git .config/rclone .jq .local/bin .ssh
 	.pam_environment .xsessionrc .xprofile .config/environment.d .config/systemd .config/autostart)
+# Der Live-Benutzer (casper, USERNAME in build/chroot-setup.sh). Er hat sudo ohne Kennwort: Was er
+# ausführt, kann root sein.
+LIVE_USER=rescue
+# Die Ordner der Benutzer-Manager liegen unter USER_RUN/UID/systemd (user_paths_now).
+USER_RUN=$WROOT/run/user
 # Dateien und Ordner, über die sich root einen Weg zurück einrichten kann, ohne dass ein Prozess
-# läuft: ganz /etc (Konten, Lader, PAM, polkit, sudo, SSH, udev, modprobe, D-Bus, cron, Skripte,
-# die Dienste von selbst starten, und was die Shells des Technikers lesen), was systemd, udev,
-# modprobe, sysctl, tmpfiles, binfmt und polkit unter /run lesen, die Ablagen, aus denen Dienste
-# beim Start Credentials laden (so lesen getty und login agetty.autologin und login.noauth:
-# Anmelden ohne Kennwort), und DOTFILES. Neu, geändert oder entfernt ist ein Rückstand. Nicht
-# dabei: sudoers und /etc/sudoers.d (sudo_files; dort legt "an" die Regel der Freigabe ab),
-# UNIT_PATHS und was auf einer anderen Einhängung liegt (find -xdev, die Einhängung selbst meldet
-# mounts_changed), etwa /etc/lf vom Speicher (persist_changed). Die lf-Werkzeuge prüft check_chain,
-# /usr und /opt fs_new.
-WATCH=("$WROOT"/etc "$WROOT"/run/systemd/*.conf.d "$WROOT"/run/systemd/user
+# läuft. Die Wurzel des Live-Systems ist ein overlay, dessen obere Schicht (/cow/upper) im laufenden
+# System nicht eingehängt ist: Was sich im RAM geändert hat, sieht das Ende nur in dieser Liste. Ganz
+# /etc (Konten, Lader, PAM, polkit, sudo, SSH, udev, modprobe, D-Bus, cron, Skripte, die Dienste von
+# selbst starten, und was die Shells des Technikers lesen), ganz /root, was systemd, udev, modprobe,
+# systemd-modules-load, sysctl, tmpfiles, binfmt, polkit, NetworkManager und chrony unter /run lesen,
+# /run/initramfs (systemd-shutdown führt beim Ausschalten /run/initramfs/shutdown als root aus),
+# /run/lf-boot.env (disks.sh liest daraus, welche Disks zum Live-Medium gehören), die Ablagen, aus
+# denen Dienste beim Start Credentials laden (so lesen getty und login agetty.autologin und
+# login.noauth: Anmelden ohne Kennwort), cron der Benutzer, die Skripte von dpkg (sie laufen bei apt
+# als root), linger, DOTFILES in jedem Home unter /home und beim Live-Benutzer alles, was mit einem
+# Punkt beginnt, dazu ~/bin (.profile nimmt es in PATH auf). Neu, geändert oder entfernt ist ein
+# Rückstand. Nicht dabei: sudoers und /etc/sudoers.d (sudo_files; dort legt "an" die Regel der
+# Freigabe ab), UNIT_PATHS und was auf einer anderen Einhängung liegt (find -xdev, die Einhängung
+# selbst meldet mounts_changed), etwa /etc/lf vom Speicher (persist_changed). Die lf-Werkzeuge prüft
+# check_chain, /usr und /opt fs_new, die Ordner der Benutzer-Manager user_paths_changed.
+WATCH=("$WROOT"/etc "$WROOT"/root "$WROOT"/run/systemd/*.conf.d "$WROOT"/run/systemd/user
 	"$WROOT"/run/systemd/{system-generators,system-environment-generators,user-generators,user-environment-generators}
-	"$WROOT"/run/modprobe.d "$WROOT"/run/udev/rules.d "$WROOT"/run/sysctl.d "$WROOT"/run/tmpfiles.d
-	"$WROOT"/run/binfmt.d "$WROOT"/run/polkit-1/rules.d
-	"$WROOT"/run/credstore "$WROOT"/run/credstore.encrypted "$WROOT"/run/credentials/{@system,@encrypted})
-for h in "$WROOT"/root "$WROOT"/home/*; do
-	[[ -d $h && ! -L $h ]] && WATCH+=("${DOTFILES[@]/#/$h/}")
+	"$WROOT"/run/systemd/network "$WROOT"/run/environment.d "$WROOT"/run/modprobe.d "$WROOT"/run/modules-load.d
+	"$WROOT"/run/udev/rules.d "$WROOT"/run/sysctl.d "$WROOT"/run/tmpfiles.d "$WROOT"/run/binfmt.d
+	"$WROOT"/run/polkit-1/rules.d "$WROOT"/run/NetworkManager/conf.d "$WROOT"/run/NetworkManager/system-connections
+	"$WROOT"/run/chrony-dhcp "$WROOT"/run/initramfs "$WROOT"/run/lf-boot.env
+	"$WROOT"/run/credstore "$WROOT"/run/credstore.encrypted "$WROOT"/run/credentials/{@system,@encrypted}
+	"$WROOT"/var/spool/cron "$WROOT"/var/lib/dpkg/info "$WROOT"/var/lib/systemd/linger)
+for h in "$WROOT"/home/*; do
+	[[ -d $h && ! -L $h ]] || continue
+	if [[ ${h##*/} == "$LIVE_USER" ]]; then
+		WATCH+=("$h"/.[!.]* "$h"/..?* "$h"/bin)
+	else
+		WATCH+=("${DOTFILES[@]/#/$h/}")
+	fi
 done
 unset h
 # Was ein Werkzeug der Grundregel als root ausführt oder lädt, außer der Kette (CHAIN_DIRS,
 # CHAIN_BINS): der Lader und seine Einstellungen, NSS, PAM mit seinen Einstellungen (sudo durchläuft
-# es bei jedem Aufruf), sudo selbst und die Umgebung, die pam_env für sudo liest (/etc/pam.d/sudo:
-# /etc/environment und /etc/default/locale). Neu, geändert oder entfernt sperrt die Grundregel bis
-# zum Neustart (lock_lines), ebenso sudo-Dateien, jede Datei unter /usr und /opt (fs_new) und jede
-# neue oder geänderte Einhängung.
+# es bei jedem Aufruf), sudo selbst (sudo-rs liest /etc/sudoers-rs vor /etc/sudoers) und die
+# Umgebung, die pam_env für sudo liest (/etc/pam.d/sudo: /etc/environment und /etc/default/locale),
+# ganz /root (das Home der Werkzeuge: jq liest ~/.jq, tmux und mc ihre Einstellungen), /etc/tmux.conf,
+# /etc/mc und /run/lf-boot.env. Neu, geändert oder entfernt sperrt die Grundregel bis zum Neustart
+# (lock_lines), ebenso sudo-Dateien, jede Datei unter /usr und /opt (fs_new) und jede neue oder
+# geänderte Einhängung.
 LOCK_PATHS=("$WROOT"/etc/ld.so.conf "$WROOT"/etc/ld.so.conf.d "$WROOT"/etc/ld.so.cache "$WROOT"/etc/ld.so.preload
 	"$WROOT"/etc/ld.so.preload.lf-gesperrt "$WROOT"/etc/nsswitch.conf "$WROOT"/etc/pam.d "$WROOT"/etc/security
-	"$WROOT"/etc/environment "$WROOT"/etc/default/locale "$WROOT"/etc/sudo.conf)
+	"$WROOT"/etc/environment "$WROOT"/etc/default/locale "$WROOT"/etc/sudo.conf "$WROOT"/etc/sudoers-rs
+	"$WROOT"/root "$WROOT"/etc/tmux.conf "$WROOT"/etc/mc "$WROOT"/run/lf-boot.env)
+# Was beim Weiterarbeiten von selbst als root oder als Live-Benutzer läuft: Hooks von apt, dpkg,
+# NetworkManager, udev, modprobe, smartd, logrotate, cron und update-motd, Generatoren von systemd,
+# systemd-shutdown (/run/initramfs), die Profile der Shells, das Home des Live-Benutzers und die
+# Ordner der Benutzer-Manager. Hat sich dort etwas geändert, steht zuerst im Rückstand, dass der
+# Techniker vor dem Weiterarbeiten ausschalten soll (off_hint), ebenso nach einer Änderung am Kernel.
+HOOK_PATHS=("$WROOT"/etc/update-motd.d "$WROOT"/etc/NetworkManager/dispatcher.d "$WROOT"/etc/smartd.conf
+	"$WROOT"/etc/smartmontools "$WROOT"/etc/logrotate.conf "$WROOT"/etc/logrotate.d "$WROOT"/etc/apt "$WROOT"/etc/dpkg
+	"$WROOT"/var/lib/dpkg/info "$WROOT"/etc/crontab "$WROOT"/etc/cron.d "$WROOT"/etc/cron.hourly "$WROOT"/etc/cron.daily
+	"$WROOT"/etc/cron.weekly "$WROOT"/etc/cron.monthly "$WROOT"/var/spool/cron "$WROOT"/etc/udev "$WROOT"/run/udev/rules.d
+	"$WROOT"/etc/modprobe.d "$WROOT"/run/modprobe.d "$WROOT"/etc/systemd/system-generators "$WROOT"/etc/systemd/user-generators
+	"$WROOT"/run/systemd/system-generators "$WROOT"/run/systemd/user-generators "$WROOT"/run/initramfs
+	"$WROOT"/etc/profile "$WROOT"/etc/profile.d "$WROOT"/etc/bash.bashrc "$WROOT"/etc/bash_completion.d "$WROOT"/etc/inputrc
+	"$WROOT"/home/"$LIVE_USER" "$USER_RUN")
 # EFI-Variablen: Startreihenfolge und Starteinträge, MOK für shim, Herstellervariablen. Was root dort
 # ändert, wirkt beim nächsten Start, auch nach Ausschalten. Das Ende vergleicht Namen und SHA256
 # jeder Variablen (efivars_changed) und schreibt nie etwas zurück.
@@ -170,6 +218,11 @@ CHAIN_BINS=("$WROOT"/usr/bin/bash "$WROOT"/usr/bin/env "$WROOT"/usr/bin/sudo "$W
 KNOBS=(/proc/sys/kernel/core_pattern /proc/sys/kernel/modprobe "$WROOT"/sys/kernel/uevent_helper
 	"$WROOT"/sys/kernel/kexec_loaded "$WROOT"/sys/kernel/kexec_crash_loaded)
 BINFMT=/proc/sys/fs/binfmt_misc
+# Was der Kernel über sich zeigt und root zur Laufzeit ändern kann (kernel_changed): Taint-Bits,
+# geladene Module und die Pins im BPF-Dateisystem.
+TAINTED=/proc/sys/kernel/tainted
+MODULES=/proc/modules
+BPF_FS=$WROOT/sys/fs/bpf
 # Höchstdauer je Suche am Ende einer Freigabe: Ein FUSE-Dateisystem, das root über einen geprüften
 # Ordner gelegt hat, hält sonst das Ende auf. Abgebrochen zählt wie geändert.
 SCAN_TIMEOUT=30
@@ -314,16 +367,15 @@ caller_name() {
 	echo "${SUDO_USER:-root}"
 }
 
-# from_claude PID UID   Hat lf-claude (UID) diesen Prozess über die Freigabe gestartet? Erkannt an
+# from_claude PID UID   Hat lf-claude (UID) diesen Prozess über sudo gestartet? Erkannt an
 #   SUDO_USER=lf-claude in seiner Umgebung oder an den Vorfahren: über sudo von einem Prozess von
-#   lf-claude. Was über die Grundregel läuft (lf-lesen, lf-aufgabe und ihre Jobs), zählt nicht,
-#   ebenso wenig ein setuid-Programm, das lf-claude ohne sudo startet (etwa chrome-sandbox).
+#   lf-claude. Ein setuid-Programm, das lf-claude ohne sudo startet (etwa chrome-sandbox), zählt
+#   nicht. Welche Jobs der Grundregel bleiben, entscheidet nicht die Umgebung oder die Befehlszeile
+#   (beides kann root für einen Prozess setzen), sondern kept_pids.
 from_claude() {
 	local pid=$1 n=0 r e p s c via_sudo=0
-	grep -qzE '^SUDO_COMMAND=/usr/local/bin/lf-(lesen|aufgabe)( |$)' "/proc/$pid/environ" 2>/dev/null && return 1
 	grep -qzx "SUDO_USER=$CLAUDE" "/proc/$pid/environ" 2>/dev/null && return 0
 	while [[ $pid =~ ^[0-9]+$ ]] && ((pid > 1 && n++ < 64)); do
-		grep -qaE '/usr/local/bin/lf-(lesen|aufgabe)' "/proc/$pid/cmdline" 2>/dev/null && return 1
 		read -r r e p s <<<"$(st "$pid")"
 		c=$(cat "/proc/$pid/comm" 2>/dev/null)
 		if [[ $c == sudo ]]; then
@@ -337,14 +389,132 @@ from_claude() {
 	return 1
 }
 
-# granted_pids   Laufende Prozesse, die lf-claude über die Freigabe gestartet hat, als root oder
-#   als ein anderer Benutzer (sudo -u).
+# uptime_ticks   Jetzt, in Ticks seit dem Systemstart wie die Startzeit in /proc/PID/stat (Feld 22).
+uptime_ticks() {
+	awk -v hz="$(getconf CLK_TCK 2>/dev/null)" '{ if (hz !~ /^[1-9][0-9]*$/) hz = 100; printf "%d\n", $1 * hz; exit }' \
+		/proc/uptime 2>/dev/null
+}
+
+# start_ticks PID   Wann PID gestartet ist, in Ticks seit dem Systemstart (Feld 22 in /proc/PID/stat).
+start_ticks() {
+	local s
+	local -a f
+	{ read -r s <"/proc/$1/stat"; } 2>/dev/null || return 1
+	s=${s##*) }
+	read -ra f <<<"$s"
+	[[ ${f[19]:-} =~ ^[0-9]+$ ]] || return 1
+	echo "${f[19]}"
+}
+
+# since_grant PID   Ist PID während der Freigabe gestartet, nach dem Schnappschuss (SNAP/start)?
+#   Ohne Schnappschuss nein: Dann gibt es keine Freigabe, deren Prozesse das Ende beenden müsste.
+#   Fehlt nur die Marke oder die Startzeit von PID, ja.
+GRANT=-
+since_grant() {
+	local t
+	if [[ $GRANT == - ]]; then
+		GRANT=
+		if [[ -f $SNAP/start ]]; then
+			GRANT=$(head -c 24 "$SNAP/start" 2>/dev/null)
+			[[ $GRANT =~ ^[0-9]+$ ]] || GRANT=0
+		elif [[ -f $SNAP/units ]]; then
+			GRANT=0
+		fi
+	fi
+	[[ -n $GRANT ]] || return 1
+	t=$(start_ticks "$1") || return 0
+	((t >= GRANT))
+}
+
+# clean_claude PID   Läuft PID in jedem uid- und gid-Feld als lf-claude, nur mit Gruppen von
+#   lf-claude und ohne Capabilities (CapPrm, CapEff und CapAmb leer)? Was sich nicht lesen lässt,
+#   zählt nicht als sauber.
+CLAUDE_IDS=
+clean_claude() {
+	[[ -n $CLAUDE_IDS ]] || CLAUDE_IDS="$(id -u "$CLAUDE" 2>/dev/null) $(id -g "$CLAUDE" 2>/dev/null) $(id -G "$CLAUDE" 2>/dev/null)"
+	awk -v ids="$CLAUDE_IDS" '
+		BEGIN { n = split(ids, a, " "); u = a[1]; g = a[2]; for (i = 3; i <= n; i++) gs[a[i]] = 1; if (n < 3) bad = 1 }
+		$1 == "Uid:" { seen++; if ($2 != u || $3 != u || $4 != u || $5 != u) bad = 1 }
+		$1 == "Gid:" { seen++; if ($2 != g || $3 != g || $4 != g || $5 != g) bad = 1 }
+		$1 == "Groups:" { seen++; for (i = 2; i <= NF; i++) if (!($i in gs)) bad = 1 }
+		$1 == "CapPrm:" || $1 == "CapEff:" || $1 == "CapAmb:" { seen++; if ($2 !~ /^0+$/) bad = 1 }
+		END { exit !(seen == 6 && !bad) }' "/proc/$1/status" 2>/dev/null
+}
+
+# kept_job PID   Ist PID ein Job der Grundregel, den das Ende stehen lässt? Nur bash (BASH_EXE) mit
+#   /usr/local/bin/lf-lesen oder lf-aufgabe als Skript, root in jedem uid-Feld, ohne Variable aus
+#   unsafe_env, direkt von sudo (SUDO_EXE) gestartet, das lf-claude aufgerufen hat (reale uid),
+#   beide vor dem Freischalten gestartet, und nur, solange die Kette der Grundregel unverändert und
+#   die Grundregel nicht bis zum Neustart gesperrt ist (lock_kind): Sonst kann der Job geänderten
+#   Code ausführen (bash liest ein Skript stückweise, ein Programm lädt die Bibliotheken, die jetzt
+#   da sind). Die Sperre aus dem ersten Schritt des Endes (base_lock ende) zählt nicht: Sie ist eine
+#   Vorsicht, kein Fund. Ohne root (status als lf-claude oder Techniker) sind Programm und Umgebung
+#   nicht lesbar: Dann gilt base_job.
+kept_job() {
+	local pid=$1 r e p s
+	local -a a
+	if ! ((EUID == 0)); then
+		base_job "$pid"
+		return
+	fi
+	[[ ${CHAIN_OK:-} != 0 && $(lock_kind) != neustart ]] || return 1
+	read -r r e p s <<<"$(st "$pid")"
+	[[ $r == 0 && $e == 0 && $s != Z && $p =~ ^[0-9]+$ ]] || return 1
+	awk '$1 == "Uid:" {f = 1; if ($2 != 0 || $3 != 0 || $4 != 0 || $5 != 0) bad = 1} END {exit !f || bad}' "/proc/$pid/status" 2>/dev/null || return 1
+	a=()
+	{ mapfile -d '' -t a <"/proc/$pid/cmdline"; } 2>/dev/null
+	[[ ${a[1]:-} == /usr/local/bin/lf-lesen || ${a[1]:-} == /usr/local/bin/lf-aufgabe ]] || return 1
+	[[ /proc/$pid/exe -ef $BASH_EXE ]] || return 1
+	unsafe_env "$pid" && return 1
+	is_sudo "$p" || return 1
+	read -r r e _ _ <<<"$(st "$p")"
+	[[ $r == "$(id -u "$CLAUDE" 2>/dev/null)" ]] || return 1
+	! since_grant "$pid" && ! since_grant "$p"
+}
+
+# kept_pids   Die Prozesse, die das Ende als Jobs der Grundregel stehen lässt: jeden Job aus kept_job
+#   in den cgroups von Claude, die sudo darüber (sudo-rs mit Terminal: zwei) und alles, was vom Job
+#   abstammt, nach PPid (nicht nach Umgebung oder Befehlszeile).
+kept_pids() {
+	local pid p n
+	local -a jobs=()
+	while IFS= read -r pid; do kept_job "$pid" && jobs+=("$pid"); done < <(cg_pids | sort -un)
+	((${#jobs[@]})) || return 0
+	for pid in "${jobs[@]}"; do
+		p=$pid
+		for ((n = 0; n < 4; n++)); do
+			read -r _ _ p _ <<<"$(st "$p")"
+			[[ $p =~ ^[0-9]+$ ]] && ((p > 1)) && is_sudo "$p" || break
+			echo "$p"
+		done
+	done
+	{
+		printf 'J %s\n' "${jobs[@]}"
+		cat /proc/[0-9]*/stat 2>/dev/null
+	} | awk '$1 == "J" { q[++n] = $2; seen[$2] = 1; next }
+		{ s = $0; sub(/^[0-9]+ \(.*\) /, "", s); split(s, f, " "); kids[f[2]] = kids[f[2]] " " $1 }
+		END {
+			for (i = 1; i <= n; i++) {
+				print q[i]
+				m = split(kids[q[i]], c, " ")
+				for (k = 1; k <= m; k++) if (!(c[k] in seen)) { seen[c[k]] = 1; q[++n] = c[k] }
+			}
+		}'
+}
+
+# granted_pids   Laufende Prozesse, die lf-claude über sudo gestartet hat, als root oder als ein
+#   anderer Benutzer (sudo -u), außer den Jobs der Grundregel aus kept_pids und den Prozessen einer
+#   Einheit, die das Ende stehen lässt (in_held).
 granted_pids() {
 	local d pid cu r e p s
+	local -A kept=()
 	cu=$(id -u "$CLAUDE" 2>/dev/null) || return 0
+	while IFS= read -r pid; do kept[$pid]=1; done < <(kept_pids)
 	for d in /proc/[0-9]*; do
 		pid=${d##*/}
 		((pid == $$ || pid == PPID)) && continue
+		[[ -n ${kept[$pid]:-} ]] && continue
+		in_held "$pid" && continue
 		read -r r e p s <<<"$(st "$pid")"
 		[[ $e != "$cu" && $s != Z ]] || continue
 		kill -0 "$pid" 2>/dev/null || continue
@@ -389,8 +559,9 @@ cg_pids() {
 	return 0
 }
 
-# base_job PID   Gehört PID zu einem Job der Grundregel? PID oder ein Vorfahr ist bash mit
-#   /usr/local/bin/lf-lesen oder lf-aufgabe als Skript, direkt von sudo gestartet.
+# base_job PID   Gehört PID zu einem Job der Grundregel, so weit es ohne root zu sehen ist? PID oder
+#   ein Vorfahr ist bash mit /usr/local/bin/lf-lesen oder lf-aufgabe als Skript, direkt von sudo
+#   gestartet. Das Ende (root) prüft strenger (kept_job).
 base_job() {
 	local pid=$1 n=0 r e p s
 	local -a a
@@ -413,19 +584,30 @@ setuid_helper() {
 	[[ $(prog "$1") =~ ^/(opt|usr/lib)/[^/]+/chrome-sandbox$ ]]
 }
 
-# root_in_claude   Prozesse in den cgroups von Claude, die als root laufen. Nicht dazu zählen sudo
-#   selbst (es startet Claude als lf-claude und wartet nur), Jobs von lf-lesen und lf-aufgabe und
-#   chrome-sandbox.
+# root_in_claude   Prozesse in den cgroups von Claude, die das Ende beendet, außer den Jobs der
+#   Grundregel (kept_pids). Vor dem Freischalten gestartet: die als root, außer sudo selbst (es
+#   startet Claude als lf-claude und wartet nur) und chrome-sandbox. Während der Freigabe gestartet
+#   (since_grant): jeder, der nicht in jedem uid- und gid-Feld lf-claude ist, andere Gruppen oder
+#   Capabilities hat (clean_claude), auch sudo, chrome-sandbox und Jobs von lf-lesen und
+#   lf-aufgabe: root kann alles an einem Prozess fälschen, den es startet. Nicht dazu zählen die
+#   Prozesse einer Einheit, die das Ende stehen lässt (in_held).
 root_in_claude() {
 	local pid r e p s
+	local -A kept=()
+	while IFS= read -r pid; do kept[$pid]=1; done < <(kept_pids)
 	while IFS= read -r pid; do
+		[[ -n ${kept[$pid]:-} ]] && continue
+		in_held "$pid" && continue
 		read -r r e p s <<<"$(st "$pid")"
 		[[ $r =~ ^[0-9]+$ && $e =~ ^[0-9]+$ && $s != Z ]] || continue
-		((r == 0 || e == 0)) || continue
 		gone "$pid" && continue
+		if since_grant "$pid"; then
+			clean_claude "$pid" || echo "$pid"
+			continue
+		fi
+		((r == 0 || e == 0)) || continue
 		is_sudo "$pid" && continue
 		((r != 0)) && setuid_helper "$pid" && continue
-		base_job "$pid" && continue
 		echo "$pid"
 	done < <(cg_pids | sort -un)
 	return 0
@@ -506,7 +688,8 @@ unit_info() {
 		-p SupplementaryGroups,OnFailure,OnSuccess,SuccessAction,FailureAction,Requires,Requisite,Wants \
 		-p BindsTo,PartOf,Upholds,Slice,StandardInput,StandardOutput,StandardError,TTYPath,UMask \
 		-p Restart,RestartMode,RestartPreventExitStatus,RestartForceExitStatus,ExecReloadPost,PAMName \
-		-p RuntimeDirectory,StartLimitAction,JobTimeoutAction,NeedDaemonReload,Names "$1" 2>/dev/null)
+		-p RuntimeDirectory,StartLimitAction,JobTimeoutAction,NeedDaemonReload,Names,FreezerState \
+		-p ConsistsOf,BoundBy,RequiredBy,PropagatesStopTo,UpheldBy "$1" 2>/dev/null)
 	return 0
 }
 
@@ -594,13 +777,13 @@ descends() {
 }
 
 # chain_ok   Ist die Kette der Grundregel (CHAIN_DIRS, CHAIN_BINS) seit dem Freischalten unverändert
-#   und die Grundregel nicht gesperrt? Erst dann lässt kept_unit einen Dienst stehen (und führt für
-#   eine Rettung lf-aufgabe aus).
+#   und die Grundregel da und nicht bis zum Neustart gesperrt (base_rule_file)? Erst dann lässt
+#   kept_unit einen Dienst stehen (und führt für eine Rettung lf-aufgabe aus).
 CHAIN_OK=
 chain_ok() {
 	if [[ -z $CHAIN_OK ]]; then
 		CHAIN_OK=1
-		[[ -f $SNAP/chain && -z $(chain_changed) && ! -e $BASE_FILE.lf-gesperrt && (-e $BASE_FILE || -L $BASE_FILE) ]] || CHAIN_OK=0
+		[[ -f $SNAP/chain && -z $(chain_changed) ]] && base_rule_file >/dev/null || CHAIN_OK=0
 	fi
 	((CHAIN_OK))
 }
@@ -742,11 +925,13 @@ kept_unit() {
 #   einem Dienst, der bleibt. Nicht dazu zählen die eigenen Einheiten, die Dienste der Grundregel
 #   (kept_unit: ntfs-3g für nur lesend eingehängte Quellen, Rettungen von lf-aufgabe), die Sitzungen
 #   von Claude selbst (claude_scope), Konsolen (getty, serial-getty: ihre Credentials prüft
-#   creds_changed, ihre Einhängung mounts_changed) und Anmeldungen, Benutzerdienste und
-#   Laufzeitordner von Benutzern außer root (der Techniker an tty2 oder über SSH). root-Prozesse in
-#   den cgroups von Claude beendet stop_root_in_claude.
+#   creds_changed, ihre Einhängung mounts_changed) und Anmeldungen, Benutzer-Manager und
+#   Laufzeitordner von lf-claude (sie haben nur dessen Rechte) und vom Live-Benutzer (eine davon
+#   kann die Konsole des Technikers sein, an tty2 oder über SSH; Rückstand sind sie trotzdem:
+#   live_units, users_changed). Die von root und jedem anderen Benutzer zählen dazu. root-Prozesse
+#   in den cgroups von Claude beendet stop_root_in_claude.
 new_units() {
-	local u p
+	local u p n
 	local -A active=()
 	[[ -f $SNAP/units ]] || return 0
 	if [[ -f $SNAP/units-aktiv ]]; then
@@ -760,7 +945,10 @@ new_units() {
 		case ${ui[ActiveState]:-} in inactive | failed | "") continue ;; esac
 		case $u in
 		getty@*.service | serial-getty@*.service) continue ;;
-		user@[1-9]*.service | user-runtime-dir@[1-9]*.service) continue ;;
+		user@*.service | user-runtime-dir@*.service)
+			n=${u#*@}
+			own_user "${n%.service}" && continue
+			;;
 		esac
 		if [[ -n ${active[$u]:-} && ${ui[Transient]:-} != yes ]]; then
 			unit_changed || continue
@@ -770,16 +958,53 @@ new_units() {
 			continue
 		fi
 		[[ $u == *.scope && ${ui[ControlGroup]:-} == /lf.slice/lf-claude.slice/* ]] && continue
-		[[ $u == session-*.scope && ${ui[ControlGroup]:-} =~ ^/user\.slice/user-([0-9]+)\.slice/ && ${BASH_REMATCH[1]} != 0 ]] && continue
+		[[ $u == session-*.scope && ${ui[ControlGroup]:-} =~ ^/user\.slice/user-([0-9]+)\.slice/ ]] && own_user "${BASH_REMATCH[1]}" && continue
 		echo "$u"
 	done < <(comm -13 "$SNAP/units" <(units_now))
 	return 0
 }
 
-# stop_new_units   Hält jede Einheit aus new_units an, beendet ihre Prozesse und stoppt sie; einen
-#   fremden Prozess in einem Dienst, der bleibt, beendet es allein. Neue, die eine davon noch
-#   gestartet hat, folgen in der nächsten Runde. Jede beendete Einheit kommt nach STOPPED und bleibt
-#   bis zum Neustart ein Rückstand (stopped_residue): Sie lief während der Freigabe als root.
+# own_user UID   Ist UID lf-claude oder der Live-Benutzer? Deren Anmeldungen und Benutzerdienste lässt
+#   new_units laufen.
+own_user() {
+	[[ $1 =~ ^[0-9]+$ ]] || return 1
+	[[ $1 == "$(id -u "$CLAUDE" 2>/dev/null)" || $1 == "$(id -u "$LIVE_USER" 2>/dev/null)" ]]
+}
+
+# live_units   Anmeldungen (session-*.scope) und der Laufzeitordner (user-runtime-dir@UID.service) des
+#   Live-Benutzers, die seit dem Freischalten entstanden sind. new_units lässt sie laufen, Rückstand
+#   sind sie trotzdem: Er hat sudo ohne Kennwort, mit root kann Claude auch als er etwas starten.
+#   Seinen neuen Benutzer-Manager meldet users_changed.
+live_units() {
+	local u lu
+	[[ -f $SNAP/units ]] || return 0
+	lu=$(id -u "$LIVE_USER" 2>/dev/null) || return 0
+	while read -r u _; do
+		case $u in
+		"user-runtime-dir@$lu.service") echo "$u" ;;
+		session-*.scope)
+			unit_info "$u"
+			[[ ${ui[ControlGroup]:-} == /user.slice/user-"$lu".slice/* ]] && echo "$u"
+			;;
+		esac
+	done < <(comm -13 "$SNAP/units" <(units_now))
+	return 0
+}
+
+# stop_new_units   Hält zuerst jede Einheit aus new_units an, dann beendet es ihre Prozesse und stoppt
+#   sie; einen fremden Prozess in einem Dienst, der bleibt, beendet es allein. Neue, die eine davon
+#   noch gestartet hat, folgen in der nächsten Runde. Jede beendete Einheit kommt nach STOPPED und
+#   bleibt bis zum Neustart ein Rückstand (stopped_residue): Sie lief während der Freigabe als root.
+#   Was root während der Freigabe gestartet hat, führt nach dem Anhalten keinen Code mehr aus: Eine
+#   Einheit, bei deren Ende systemd noch etwas ausführte (stop_runs: ExecStop=, OnFailure=,
+#   FailureAction= …), deren Ende eine andere mitnähme oder wieder startete (stop_takes), beendet es
+#   nicht, auch nicht ihre Prozesse. Sie bleibt angehalten ("angehalten" in STOPPED und HELD, hold).
+#   Weil erst alle angehalten sind, führt auch eine, die das Beenden einer anderen mitnimmt, nichts
+#   mehr aus. Lässt sich so eine nicht anhalten (Timer, Sockets, Pfade, Automounts), bleibt sie
+#   laufen ("laeuft") (OFFNOW), und dieses Ende beendet keine Einheit mehr, die sich anhalten lässt,
+#   es hält sie nur an: Die eine, die weiterläuft, könnte sie sonst neu starten. Der Rückstand sagt
+#   dann ganz oben, sofort am Netzschalter auszuschalten (now_hint), denn Beenden > Ausschalten
+#   stoppte jede Einheit.
 #   systemd 259 stoppt und startet keine angehaltene Einheit ("Cannot perform operation on frozen
 #   unit") und taut keine auf, die nicht mehr läuft ("Unit is not active"). Eine, die nach dem KILL
 #   aus ist, bleibt angehalten, solange systemd sie geladen hält (etwa systemd-hostnamed über seinen
@@ -793,14 +1018,16 @@ new_units() {
 #   "angehalten" nach STOPPED und nach HELD, keine weitere Runde dieses Endes versucht sie noch
 #   einmal; new_units führt sie weiter.
 STOPPED=$SNAP/beendet
-declare -A HELD=()
+declare -A HELD=() HELD_CG=()
+OFFNOW=0
 stop_new_units() {
-	local i k n u p plain=0
-	local -a ls
+	local i n u p plain=0
+	local -a ls us
+	local -A why=() kind=()
 	[[ ! -s $MENV_RESET && -z $(menv_changed) ]] && plain=1
 	for ((i = 0; i < 5; i++)); do
 		mapfile -t ls < <(new_units)
-		n=0
+		n=0 us=() why=() kind=()
 		for u in "${ls[@]}"; do
 			if [[ $u == *" "* ]]; then
 				p=${u##* } u=${u% *}
@@ -809,13 +1036,45 @@ stop_new_units() {
 				n=$((n + 1))
 				continue
 			fi
-			[[ -n ${HELD[$u]:-} ]] && continue
-			n=$((n + 1))
+			[[ -n ${HELD[$u]:-} ]] || us+=("$u")
+		done
+		# Erst alle anhalten (außer Diensten aus dbus_stock, s. o.): Nimmt das Beenden einer Einheit
+		# eine andere mit, führt die dann nichts mehr aus.
+		for u in "${us[@]}"; do
 			unit_info "$u"
-			k=einheit
-			((plain)) && dbus_stock && [[ ${ui[Restart]:-} == no && -z ${ui[ExecStop]:-}${ui[ExecStopPost]:-} ]] && k=dbus
-			echo "$k $u" >>"$STOPPED"
-			[[ $k == dbus ]] || systemctl freeze "$u" 2>/dev/null
+			why[$u]=$(stop_runs "$u")
+			if [[ -n ${why[$u]} ]]; then
+				why[$u]="beim Beenden liefe: ${why[$u]}"
+			else
+				why[$u]=$(stop_takes "${us[@]}")
+				[[ -z ${why[$u]} ]] || why[$u]="das Beenden nähme mit: ${why[$u]}"
+			fi
+			kind[$u]=einheit
+			[[ -z ${why[$u]} ]] && ((plain)) && dbus_stock && [[ ${ui[Restart]:-} == no ]] && kind[$u]=dbus
+			[[ ${kind[$u]} == dbus ]] || systemctl freeze "$u" 2>/dev/null
+		done
+		for u in "${us[@]}"; do
+			[[ -n ${why[$u]} ]] || continue
+			unit_info "$u"
+			[[ ${ui[FreezerState]:-} == frozen ]] || OFFNOW=1
+		done
+		for u in "${us[@]}"; do
+			n=$((n + 1))
+			if [[ -n ${why[$u]} ]]; then
+				hold "$u" "${why[$u]}"
+				continue
+			fi
+			# Läuft eine weiter (OFFNOW), bleibt jede angehaltene angehalten: Die eine könnte sie sonst
+			# neu starten. Was sich nicht anhalten lässt und beim Beenden nichts ausführt, endet.
+			if ((OFFNOW)); then
+				[[ ${kind[$u]} == dbus ]] && systemctl freeze "$u" 2>/dev/null
+				unit_info "$u"
+				if [[ ${ui[FreezerState]:-} == frozen ]]; then
+					hold "$u" "eine Einheit aus der Freigabe ließ sich nicht anhalten"
+					continue
+				fi
+			fi
+			echo "${kind[$u]} $u" >>"$STOPPED"
 			systemctl kill -s KILL "$u" 2>/dev/null
 			systemctl stop "$u" 2>/dev/null
 			systemctl reset-failed "$u" 2>/dev/null
@@ -824,6 +1083,7 @@ stop_new_units() {
 			inactive | failed | "") note "beendet: Einheit $u" ;;
 			*)
 				HELD[$u]=1
+				[[ ${ui[ControlGroup]:-} == /?* ]] && HELD_CG[$u]=${ui[ControlGroup]}
 				echo "angehalten $u" >>"$STOPPED"
 				note "angehalten, nicht beendet: Einheit $u (${ui[ActiveState]})"
 				;;
@@ -832,6 +1092,82 @@ stop_new_units() {
 		((n)) || return 0
 	done
 	return 0
+}
+
+# stop_runs EINHEIT   Was systemd noch ausführte, wenn EINHEIT (ui von unit_info) endet oder beendet
+#   wird: Befehle beim Stoppen (ExecStop=, ExecStopPost=, bei einem Socket auch ExecStopPre=),
+#   Einheiten (OnFailure=, OnSuccess=) und Aktionen des Managers (FailureAction=, SuccessAction=,
+#   JobTimeoutAction=, StartLimitAction=, bis zu reboot, soft-reboot und kexec). Gibt die gesetzten
+#   aus, nichts, wenn keine.
+stop_runs() {
+	local p out=""
+	for p in ExecStop ExecStopPost OnFailure OnSuccess; do
+		[[ -n ${ui[$p]:-} ]] && out+="${out:+ }$p="
+	done
+	[[ $1 == *.socket && -n $(systemctl show -p ExecStopPre --value "$1" 2>/dev/null) ]] && out+="${out:+ }ExecStopPre="
+	for p in FailureAction SuccessAction JobTimeoutAction StartLimitAction; do
+		[[ -n ${ui[$p]:-} && ${ui[$p]} != none ]] && out+="${out:+ }$p=${ui[$p]}"
+	done
+	printf '%s' "$out"
+}
+
+# stop_takes EINHEIT…   Nähme das Beenden der Einheit (ui von unit_info) eine andere mit (ConsistsOf=
+#   für PartOf=, BoundBy= für BindsTo=, RequiredBy= für Requires=, PropagatesStopTo=), oder startete
+#   eine sie wieder (UpheldBy= für Upholds=), außer EINHEIT… und angehaltenen (HELD)? Deren Befehle
+#   beim Stoppen liefen sonst. Gibt die erste als EIGENSCHAFT=EINHEIT aus, nichts, wenn keine.
+stop_takes() {
+	local p o
+	local -a os
+	local -A mine=()
+	for o in "$@" "${!HELD[@]}"; do mine[$o]=1; done
+	for p in ConsistsOf BoundBy RequiredBy PropagatesStopTo UpheldBy; do
+		read -ra os <<<"${ui[$p]:-}"
+		for o in "${os[@]}"; do
+			[[ -n ${mine[$o]:-} ]] || { printf '%s=%s' "$p" "$o"; return 0; }
+		done
+	done
+	return 0
+}
+
+# hold EINHEIT GRUND   Beendet EINHEIT nicht (stop_new_units): Hat systemd sie angehalten
+#   (FreezerState=frozen), bleibt sie angehalten, sonst läuft sie weiter (OFFNOW). Ihre Prozesse
+#   beenden auch stop_root_in_claude und stop_granted nicht (in_held): Endete ihr letzter, endete die
+#   Einheit.
+hold() {
+	unit_info "$1"
+	HELD[$1]=1
+	[[ ${ui[ControlGroup]:-} == /?* ]] && HELD_CG[$1]=${ui[ControlGroup]}
+	if [[ ${ui[FreezerState]:-} == frozen ]]; then
+		echo "angehalten $1" >>"$STOPPED"
+		note "angehalten, nicht beendet: Einheit $1 ($2)"
+	else
+		OFFNOW=1
+		echo "laeuft $1" >>"$STOPPED"
+		note "nicht angehalten und nicht beendet: Einheit $1 ($2)"
+	fi
+	return 0
+}
+
+# held_file PFAD   Ist PFAD die Unit-Datei in TRANSIENT einer Einheit, die das Ende stehen lässt
+#   (HELD)? Die gehört nur zu dieser Einheit, und die steht selbst im Rückstand. Ein Dienst der
+#   Grundregel mit demselben Namen startet nicht, solange sie geladen ist.
+held_file() {
+	local u
+	[[ $1 == "$TRANSIENT"/* ]] || return 1
+	u=${1#"$TRANSIENT"/}
+	[[ -n ${HELD[$u]:-} ]]
+}
+
+# in_held PID   Liegt PID in der cgroup einer Einheit, die das Ende stehen lässt (HELD_CG)?
+in_held() {
+	local own c
+	((${#HELD_CG[@]})) || return 1
+	own=$(sed -n 's/^0:://p' "/proc/$1/cgroup" 2>/dev/null)
+	[[ -n $own ]] || return 1
+	for c in "${HELD_CG[@]}"; do
+		[[ $own == "$c" || $own == "$c"/* ]] && return 0
+	done
+	return 1
 }
 
 # at_now   Nummern der at-Aufträge (leer ohne at; im Rettungssystem ist at nicht installiert).
@@ -879,12 +1215,25 @@ disable_new_cron() {
 # sudo_files   "PFAD ÄNDERUNGSZEIT GRÖSSE" für /etc/sudoers und jede Datei in /etc/sudoers.d, die
 #   sudo liest (keine Namen mit Punkt oder Tilde am Ende), ohne die Regel der Freigabe, dazu Rechte
 #   und Besitzer von /etc/sudoers.d selbst. Es zählt die ctime: touch kann sie nicht zurückstellen.
+#   Die Datei der Grundregel steht nach Art, Besitzer, Gruppe, Größe und Inhalt da ("inhalt:"), auch
+#   gesperrt (base_locked): Sperren und wieder Freigeben ändern ihre ctime, und nach einer Sperre bis
+#   zum Neustart bleibt ein geänderter Inhalt Rückstand.
 sudo_files() {
+	local f s
 	{
 		scan find "${SUDOERS_D%/}" -maxdepth 0 -printf '%p d:%m:%U:%G 0\n' 2>/dev/null
 		scan find "$SUDOERS" "${SUDOERS_D%/}" -maxdepth 1 \( -type f -o -type l \) -printf '%p %C@ %s\n' 2>/dev/null
-	} | awk -v rule="$RULE" -v d="$SUDOERS_D" '{
+		f=$BASE_FILE
+		[[ -e $f || -L $f ]] || f=$(base_locked) || f=
+		if [[ -n $f ]] && s=$(scan stat -c '%f:%u:%g:%s' -- "$f" 2>/dev/null); then
+			if [[ -f $f && ! -L $f && ${s##*:} =~ ^[0-9]+$ ]] && ((${s##*:} <= 65536)); then
+				s+=":$(scan sha256sum <"$f" 2>/dev/null | cut -c1-64)"
+			fi
+			echo "$BASE_FILE inhalt:$s"
+		fi
+	} | awk -v rule="$RULE" -v base="$BASE_FILE" -v d="$SUDOERS_D" '{
 			if ($1 == rule) next
+			if ($1 == base && $2 !~ /^inhalt:/) next
 			if (index($1, d) == 1) { n = substr($1, length(d) + 1); if (n ~ /\./ || n ~ /~$/) next }
 			print
 		}' | sort
@@ -1070,23 +1419,39 @@ chain_changed() {
 	comm -3 "$SNAP/chain" <(chain_now) | sed -E 's/^\t//; s/^[^ ]+ [ *]//' | sort -u
 }
 
-# base_lock GRUND   Sperrt die Grundregel bis zum Neustart: Ihre Datei bekommt die Endung .lf-gesperrt,
-#   sudo liest sie nicht mehr (/etc liegt im RAM; Namen mit Punkt liest sudo nicht). Steht dort schon
-#   ein Ordner, kommt sie in einen neuen (.lf-gesperrt.XXXXXX). Danach lässt kept_unit keinen Dienst
-#   der Grundregel mehr stehen. Lässt sie sich nicht verschieben, steht das in LOCK_FAILED und
-#   zuerst im Rückstand.
+# base_lock GRUND [ende]   Sperrt die Grundregel: Ihre Datei bekommt die Endung .lf-gesperrt, sudo
+#   liest sie nicht mehr (/etc liegt im RAM; Namen mit Punkt liest sudo nicht). Steht dort schon ein
+#   Ordner, kommt sie in einen neuen (.lf-gesperrt.XXXXXX). Ohne "ende" bis zum Neustart: Danach
+#   lassen kept_unit und kept_job keinen Dienst und keinen Job der Grundregel mehr stehen. Mit
+#   "ende" (der erste Schritt von off), bis ein Ende ohne Rückstand abschließt (base_unlock); eine
+#   Sperre bis zum Neustart bleibt eine. Die Art steht mit der boot_id in LOCK_MARK (lock_kind).
+#   Lässt sie sich nicht verschieben, steht das in LOCK_FAILED und im Rückstand.
 LOCK_FAILED=$SNAP/grundregel-nicht-gesperrt
+LOCK_MARK=/run/lf/claude-grundregel-sperre
+BOOT_ID=/proc/sys/kernel/random/boot_id
 base_lock() {
-	local t
-	CHAIN_OK=0
-	[[ -e $BASE_FILE || -L $BASE_FILE ]] || return 0
-	if mv -f -T -- "$BASE_FILE" "$BASE_FILE.lf-gesperrt" 2>/dev/null ||
-		{ t=$(mktemp -d -- "$BASE_FILE.lf-gesperrt.XXXXXX" 2>/dev/null) && mv -- "$BASE_FILE" "$t/" 2>/dev/null; }; then
-		rm -f "$LOCK_FAILED"
-		note "gesperrt: Grundregel von $CLAUDE ($BASE_FILE) bis zum Neustart: $1"
+	local t k=neustart
+	if [[ ${2:-} == ende ]]; then
+		[[ $(lock_kind) == neustart ]] && return 0
+		k=ende
 	else
-		install -d "$SNAP" && : >"$LOCK_FAILED"
-		note "ließ sich nicht sperren: Grundregel von $CLAUDE ($BASE_FILE): $1"
+		CHAIN_OK=0
+	fi
+	if ! base_locked >/dev/null; then
+		[[ -e $BASE_FILE || -L $BASE_FILE ]] || return 0
+		if ! mv -f -T -- "$BASE_FILE" "$BASE_FILE.lf-gesperrt" 2>/dev/null &&
+			! { t=$(mktemp -d -- "$BASE_FILE.lf-gesperrt.XXXXXX" 2>/dev/null) && mv -- "$BASE_FILE" "$t/" 2>/dev/null; }; then
+			install -d "$SNAP" && : >"$LOCK_FAILED"
+			note "ließ sich nicht sperren: Grundregel von $CLAUDE ($BASE_FILE): $1"
+			return 0
+		fi
+		rm -f "$LOCK_FAILED"
+	fi
+	install -d /run/lf && printf '%s %s\n' "$k" "$(boot_id)" >"$LOCK_MARK"
+	if [[ $k == ende ]]; then
+		note "gesperrt: Grundregel von $CLAUDE ($BASE_FILE) während des Endes: $1"
+	else
+		note "gesperrt: Grundregel von $CLAUDE ($BASE_FILE) bis zum Neustart: $1"
 	fi
 	return 0
 }
@@ -1099,6 +1464,60 @@ base_locked() {
 	for f in "$BASE_FILE.lf-gesperrt" "$BASE_FILE.lf-gesperrt".*/"${BASE_FILE##*/}"; do
 		[[ (-e $f || -L $f) && ! -d $f ]] && { echo "$f"; return 0; }
 	done
+	return 1
+}
+
+# boot_id   Die boot_id des laufenden Kernels. Erst ein echter Neustart ändert sie, ein soft-reboot
+#   nicht.
+boot_id() {
+	local b=''
+	{ read -r b <"$BOOT_ID"; } 2>/dev/null
+	[[ $b =~ ^[0-9a-f-]{36}$ ]] && echo "$b"
+}
+
+# lock_kind   Wie die Grundregel gesperrt ist: "ende" (seit dem ersten Schritt eines Endes, bis eines
+#   ohne Rückstand abschließt), "neustart" (bis zum Neustart) oder nichts (nicht gesperrt). Fehlt die
+#   Marke oder gilt sie nicht für diesen Lauf des Kernels (boot_id), "neustart". Ein soft-reboot
+#   behält die boot_id und mit /etc und /run (im RAM) die Sperre: Er ist kein Neustart.
+lock_kind() {
+	local k='' b=''
+	base_locked >/dev/null || return 0
+	{ read -r k b _ <"$LOCK_MARK"; } 2>/dev/null
+	if [[ $k == ende && -n $b && $b == "$(boot_id)" ]]; then echo ende; else echo neustart; fi
+}
+
+# base_rule_file   Die Datei der Grundregel, auch während das Ende sie sperrt (lock_kind ende). Ohne
+#   Datei oder bis zum Neustart gesperrt: Rückgabe 1.
+base_rule_file() {
+	if [[ -e $BASE_FILE || -L $BASE_FILE ]]; then
+		echo "$BASE_FILE"
+	elif [[ $(lock_kind) == ende ]]; then
+		base_locked
+	else
+		return 1
+	fi
+}
+
+# base_unlock   Hebt die Sperre aus dem ersten Schritt des Endes auf (lock_kind ende): Die Datei der
+#   Grundregel kommt an ihren Platz zurück. off ruft es nur auf, wenn das Ende ohne Rückstand
+#   abschließt. Rückgabe 1, wenn die Grundregel gesperrt bleibt.
+base_unlock() {
+	local f
+	case $(lock_kind) in
+	"")
+		rm -f "$LOCK_MARK"
+		return 0
+		;;
+	neustart) return 1 ;;
+	esac
+	f=$(base_locked) || return 1
+	if mv -T -- "$f" "$BASE_FILE" 2>/dev/null; then
+		[[ $f == "$BASE_FILE.lf-gesperrt."*/* ]] && rmdir -- "${f%/*}" 2>/dev/null
+		rm -f "$LOCK_MARK"
+		note "wieder frei: Grundregel von $CLAUDE ($BASE_FILE), das Ende fand keinen Rückstand"
+		return 0
+	fi
+	note "ließ sich nicht wieder freigeben: Grundregel von $CLAUDE ($BASE_FILE)"
 	return 1
 }
 
@@ -1149,10 +1568,11 @@ base_unit_path() {
 # lock_lines   Die Zeilen aus residue (Standardeingabe), nach denen die Grundregel bis zum Neustart
 #   gesperrt bleibt: Was ein Werkzeug der Grundregel als root ausführt oder lädt, kann sich geändert
 #   haben. Das sind Werkzeuge der Kette, jede Datei und jeder Ordner unter /usr, /opt, /bin, /sbin
-#   und /lib (fs_new, auch eine abgebrochene Suche), LOCK_PATHS, sudo-Dateien und sudo-Regeln, jede
-#   neue oder geänderte Einhängung außer den Credentials einer Konsole (getty, serial-getty), Unit-
-#   Dateien und Drop-ins für Dienste der Grundregel, ein Kernel für kexec, der geladen blieb, und
-#   eine abgebrochene Prüfung.
+#   und /lib (fs_new, auch eine abgebrochene Suche), LOCK_PATHS (auch ganz /root), sudo-Dateien und
+#   sudo-Regeln, jede neue oder geänderte Einhängung außer den Credentials einer Konsole (getty,
+#   serial-getty), Unit-Dateien, Drop-ins und andere Dateien geladener Einheiten für Dienste der
+#   Grundregel (außer der eigenen Unit-Datei einer Einheit, die das Ende angehalten stehen lässt:
+#   held_file), ein Kernel für kexec, der geladen blieb, und eine abgebrochene Prüfung.
 lock_lines() {
 	local l p
 	while IFS= read -r l; do
@@ -1167,8 +1587,11 @@ lock_lines() {
 			p=${p% (*}
 			[[ $p == "$CRED_DIR"/getty@*.service || $p == "$CRED_DIR"/serial-getty@*.service ]] || echo "$l"
 			;;
+		"Datei einer geladenen Einheit geändert: "* | "Unit-Datei "* | "Unit-Ordner "*)
+			p=${l#*: }
+			base_unit_path "$p" && ! held_file "$p" && echo "$l"
+			;;
 		"Datei "* | "Ordner "*) lock_path "${l#*: }" && echo "$l" ;;
-		"Unit-Datei "* | "Unit-Ordner "*) base_unit_path "${l#*: }" && echo "$l" ;;
 		"Einheit mit geänderter Unit-Datei (NeedDaemonReload): "*) base_unit_name "${l#*: }" && echo "$l" ;;
 		"Kernel-Einstellung neu oder geändert: $WROOT/sys/kernel/kexec_loaded" | \
 			"Kernel-Einstellung neu oder geändert: $WROOT/sys/kernel/kexec_crash_loaded")
@@ -1243,6 +1666,50 @@ knobs_now() {
 knobs_changed() {
 	[[ -f $SNAP/knobs ]] || return 0
 	comm -3 "$SNAP/knobs" <(knobs_now) | sed -E 's/^\t//; s/=.*//' | sort -u
+}
+
+# kernel_now   "taint WERT" (TAINTED), "modul NAME GRÖSSE" je geladenem Modul (MODULES) und
+#   "bpf ART PFAD" je Eintrag im BPF-Dateisystem (BPF_FS), sortiert.
+kernel_now() {
+	{
+		echo "taint $(head -c 32 "$TAINTED" 2>/dev/null | tr -cd '0-9')"
+		awk '{print "modul", $1, $2}' "$MODULES" 2>/dev/null
+		scan find "$BPF_FS" -mindepth 1 -printf 'bpf %y %p\n' 2>/dev/null
+	} | sort
+}
+
+# module_ok NAME   Kommt das geladene Modul NAME aus einer Datei unter /lib/modules/KERNEL, die seit
+#   dem Freischalten unverändert ist (ctime), und hat es kein eigenes Taint (/sys/module/NAME/taint,
+#   etwa O für außerhalb des Kernels gebaut oder E ohne Signatur)? Ob der geladene Code der Datei
+#   entspricht, sieht lf nicht.
+module_ok() {
+	local k f
+	k=$(uname -r)
+	f=$(scan modinfo -k "$k" -n -- "$1" 2>/dev/null) || return 1
+	f=$(readlink -e -- "$f" 2>/dev/null) || return 1
+	[[ $f == "$WROOT"/usr/lib/modules/"$k"/* || $f == "$WROOT"/lib/modules/"$k"/* ]] || return 1
+	[[ -f $f && -z $(scan find "$f" -maxdepth 0 -cnewer "$SNAP/zeit" -print 2>/dev/null) ]] || return 1
+	[[ -z $(tr -d '\n' <"$WROOT/sys/module/$1/taint" 2>/dev/null) ]]
+}
+
+# kernel_changed   Je Zeile, was sich seit dem Freischalten am Kernel geändert hat: ein neues
+#   Taint-Bit, ein neuer Pin unter BPF_FS (ein BPF-Programm, das ohne Prozess weiterläuft) und ein
+#   Modul, das neu geladen ist oder eine andere Größe hat, ohne unveränderte Datei (module_ok).
+kernel_changed() {
+	local o t n
+	[[ -f $SNAP/kernel ]] || return 0
+	o=$(sed -n 's/^taint //p' "$SNAP/kernel")
+	t=$(head -c 32 "$TAINTED" 2>/dev/null | tr -cd '0-9')
+	if [[ $o =~ ^[0-9]+$ && $t =~ ^[0-9]+$ ]]; then
+		((t & ~o)) && echo "Kernel: neues Taint-Bit ($o, jetzt $t)"
+	elif [[ $t != "$o" ]]; then
+		echo "Kernel: Taint nicht vergleichbar (${o:-?}, jetzt ${t:-?})"
+	fi
+	comm -13 <(grep '^bpf ' "$SNAP/kernel") <(kernel_now | grep '^bpf ') | sed 's/^bpf [^ ]* /Kernel: BPF-Pin neu: /'
+	while read -r _ n _; do
+		module_ok "$n" || echo "Kernel: Modul ohne unveränderte Datei unter /lib/modules: $n"
+	done < <(comm -13 <(grep '^modul ' "$SNAP/kernel") <(kernel_now | grep '^modul '))
+	return 0
 }
 
 # mounts_now   Die Einhängungen im Mount-Namensraum von PID 1, je eine Zeile aus mountinfo, sortiert.
@@ -1404,6 +1871,238 @@ reload_new() {
 	comm -13 "$SNAP/reload" <(reload_units)
 }
 
+# USER_PATH   PATH für systemctl als Benutzer (user_systemctl).
+USER_PATH=/usr/bin:/bin
+# user_systemctl UID ARG…   systemctl --user beim Manager von UID, als dieser Benutzer und ohne seine
+#   Umgebung: Mit dem Manager eines anderen Benutzers verbindet sich systemctl in systemd 259 auch
+#   als root nicht ("Operation not permitted"). Nur lesende Aufrufe.
+user_systemctl() {
+	local u=$1 g
+	shift
+	g=$(id -g "$u" 2>/dev/null) || return 1
+	scan setpriv --reuid="$u" --regid="$g" --init-groups -- \
+		env -i PATH="$USER_PATH" XDG_RUNTIME_DIR="/run/user/$u" systemctl --user "$@"
+}
+
+# unit_file_list [UID]   Die Dateien, aus denen die geladenen Einheiten stammen (FragmentPath,
+#   SourcePath, DropInPaths), beim System-Manager oder, mit UID, beim Manager dieses Benutzers, ohne
+#   die eigenen Einheiten des Endes. Einen Pfad mit Leerzeichen gibt systemctl als [unprintable] aus.
+unit_file_list() {
+	local -a us
+	if (($#)); then
+		mapfile -t us < <(user_systemctl "$1" list-units --all --plain --no-legend --full 2>/dev/null | awk '$1 ~ /\./ {print $1}' | sort -u)
+		((${#us[@]})) || return 0
+		user_systemctl "$1" show -p FragmentPath -p SourcePath -p DropInPaths -- "${us[@]}" 2>/dev/null
+	else
+		mapfile -t us < <(systemctl list-units --all --plain --no-legend --full 2>/dev/null | awk '$1 ~ /\./ {print $1}' | sort -u)
+		((${#us[@]})) || return 0
+		systemctl show -p FragmentPath -p SourcePath -p DropInPaths -- "${us[@]}" 2>/dev/null
+	fi | awk -v own="$TRANSIENT/$UNIT." -v aus="$TRANSIENT/$UNIT-aus.service" '
+		/^(FragmentPath|SourcePath)=./ { sub(/^[^=]*=/, ""); if (index($0, own) != 1 && $0 != aus) print; next }
+		/^DropInPaths=./ { sub(/^[^=]*=/, ""); n = split($0, a, " "); for (i = 1; i <= n; i++) print a[i] }' | sort -u
+}
+
+# file_sums   Je Pfad von der Standardeingabe "MERKMAL PFAD", sortiert: die SHA256 des Inhalts, auf
+#   den PFAD über Verknüpfungen hinweg zeigt (auch außerhalb von UNIT_PATHS), sonst die Art (etwa
+#   "c" für /dev/null einer maskierten Einheit), über 1 MiB Größe und ctime, "fehlt" ohne Ziel und
+#   "unprüfbar" für einen Pfad, der nicht mit / beginnt ([unprintable]). Gelesen wird nur eine
+#   reguläre Datei, nie ein FIFO oder Gerät.
+file_sums() {
+	local y z c p s
+	local -a ps=() abs=() sums=()
+	local -A seen=()
+	mapfile -t ps
+	for p in "${ps[@]}"; do [[ $p == /* ]] && abs+=("$p"); done
+	{
+		for p in "${ps[@]}"; do [[ $p == /* ]] || echo "unprüfbar $p"; done
+		while ((${#abs[@]})) && IFS=' ' read -r -d '' y z c p; do
+			seen[$p]=1
+			if [[ $y == f && $z =~ ^[0-9]+$ ]] && ((z < 1048576)); then
+				if [[ $p == *\\* ]]; then
+					s=$(scan sha256sum <"$p" 2>/dev/null) && echo "${s:0:64} $p" || echo "nicht-lesbar $p"
+				else
+					sums+=("$p")
+				fi
+			elif [[ $y == f ]]; then
+				echo "f:$z:$c $p"
+			else
+				echo "$y $p"
+			fi
+		done < <(((${#abs[@]} == 0)) || scan find -L "${abs[@]}" -maxdepth 0 -printf '%y %s %C@ %p\0' 2>/dev/null)
+		((${#sums[@]} == 0)) || scan sha256sum -- "${sums[@]}" 2>/dev/null | sed -E 's/^([0-9a-f]{64})  /\1 /'
+		for p in "${abs[@]}"; do [[ -z ${seen[$p]:-} ]] && echo "fehlt $p"; done
+		true
+	} | sort
+}
+
+# unit_files_now [UID]   file_sums für unit_file_list.
+unit_files_now() {
+	unit_file_list "$@" | file_sums
+}
+
+# unit_files_changed SCHNAPPSCHUSS [UID]   "geändert PFAD" je Datei aus dem Schnappschuss von
+#   unit_files_now, deren Inhalt sich seit dem Freischalten geändert hat oder die fehlt, auch wenn
+#   ihre Einheit nicht mehr geladen ist, und auch, wenn sie schon beim Freischalten neu zu laden
+#   war (NeedDaemonReload). Eine vorübergehende Einheit, die systemd aufgeräumt hat, fehlt (TRANSIENT,
+#   bei einem Benutzer-Manager sein transient), das zählt nicht. "unprüfbar" für Pfade, die
+#   systemctl nicht ausgibt.
+unit_files_changed() {
+	local snapf=$1
+	shift
+	[[ -f $snapf ]] || return 0
+	{
+		unit_file_list "$@"
+		sed 's/^[^ ]* //' "$snapf"
+	} | sort -u | file_sums | awk -v snap="$snapf" -v tr="$TRANSIENT/" -v ur="$USER_RUN/" '
+		BEGIN { while ((getline l < snap) > 0) { p = l; sub(/^[^ ]* /, "", p); old[p] = l } }
+		{ p = $0; sub(/^[^ ]* /, "", p) }
+		$1 == "unprüfbar" { u = 1; next }
+		$1 == "fehlt" && (index(p, tr) == 1 || (index(p, ur) == 1 && p ~ /\/systemd\/transient\//)) { next }
+		(p in old) && old[p] != $0 { print "geändert " p }
+		END { if (u) print "unprüfbar" }'
+}
+
+# loaded_units_changed   unit_files_changed für den System-Manager, als Zeilen für residue. Die
+#   Unit-Datei eines Dienstes, den das Ende stehen lässt (kept_unit), schreibt systemd-run neu, wenn
+#   lf-aufgabe ihn unter demselben Namen neu startet: Die zählt nicht.
+loaded_units_changed() {
+	local k p n
+	while read -r k p; do
+		if [[ $k == unprüfbar ]]; then
+			echo "Datei einer geladenen Einheit nicht prüfbar (Leerzeichen im Pfad)"
+			continue
+		fi
+		if [[ $p == "$TRANSIENT"/* && ${p#"$TRANSIENT"/} != */* ]]; then
+			n=${p#"$TRANSIENT"/}
+			unit_info "$n"
+			[[ ${ui[ActiveState]:-} == active ]] && kept_unit "$n" && continue
+		fi
+		echo "Datei einer geladenen Einheit geändert: $p"
+	done < <(unit_files_changed "$SNAP/unitfiles")
+	return 0
+}
+
+# user_uids   Die Benutzer (uid), deren Manager (user@UID.service) läuft, außer lf-claude: Was in
+#   dessen Manager läuft, hat nur die Rechte von lf-claude.
+user_uids() {
+	local cu
+	cu=$(id -u "$CLAUDE" 2>/dev/null)
+	systemctl list-units --plain --no-legend --full --type=service 2>/dev/null |
+		awk -v cu="${cu:-x}" '$1 ~ /^user@[0-9]+\.service$/ { u = substr($1, 6); sub(/\.service$/, "", u); if (u != cu) print u }' | sort -un
+}
+
+# user_env UID   Die Umgebung des Managers von UID (show-environment), sortiert; Rückgabe 1 ohne Antwort.
+user_env() {
+	local e
+	e=$(user_systemctl "$1" show-environment 2>/dev/null) || return 1
+	[[ -z $e ]] || printf '%s\n' "$e" | sort
+}
+
+# user_units UID   Wie units_now beim Manager von UID: "EINHEIT INVOCATIONID", sortiert.
+user_units() {
+	local -a us
+	mapfile -t us < <(user_systemctl "$1" list-units --plain --no-legend --full --type="$UNIT_TYPES" 2>/dev/null |
+		awk '$1 ~ /\./ {print $1}' | sort -u)
+	((${#us[@]})) || return 0
+	user_systemctl "$1" show -p Id -p InvocationID -- "${us[@]}" 2>/dev/null |
+		awk '/^Id=/ {id = substr($0, 4)} /^InvocationID=/ {inv = substr($0, 14)}
+			/^$/ {if (id != "") print id, inv; id = inv = ""} END {if (id != "") print id, inv}' | sort -u
+}
+
+# users_snapshot   Je laufendem Benutzer-Manager (user_uids) Umgebung, Einheiten und Dateien der
+#   geladenen Einheiten in SNAP/benutzer-UID-*.
+users_snapshot() {
+	local u
+	rm -f "$SNAP"/benutzer-*
+	for u in $(user_uids); do
+		user_env "$u" >"$SNAP/benutzer-$u-umgebung" || echo "keine Antwort" >"$SNAP/benutzer-$u-umgebung"
+		user_units "$u" >"$SNAP/benutzer-$u-einheiten"
+		unit_files_now "$u" >"$SNAP/benutzer-$u-dateien"
+	done
+}
+
+# users_changed   Je Zeile, was sich an den Benutzer-Managern seit dem Freischalten geändert hat: ein
+#   neuer Manager (auch derselbe Benutzer neu gestartet), bei einem, der schon lief, eine neue oder
+#   neu gestartete Einheit, eine geänderte Variable in seiner Umgebung (systemctl --user
+#   set-environment) und eine geänderte Datei seiner geladenen Einheiten. Ein Manager, der beim
+#   Freischalten lief und jetzt nicht mehr, zählt nicht: Seine Prozesse sind beendet.
+users_changed() {
+	local u n f e
+	[[ -f $SNAP/units ]] || return 0
+	comm -13 "$SNAP/units" <(units_now) | awk -v cu="$(id -u "$CLAUDE" 2>/dev/null)" '
+		$1 ~ /^user@[0-9]+\.service$/ && $1 != "user@" cu ".service" { print "Benutzer-Manager neu: " $1 }'
+	for f in "$SNAP"/benutzer-*-umgebung; do
+		[[ -f $f ]] || continue
+		u=${f#"$SNAP"/benutzer-}
+		u=${u%-umgebung}
+		[[ $u =~ ^[0-9]+$ ]] || continue
+		user_uids | grep -qx "$u" || continue
+		n=$(id -nu "$u" 2>/dev/null) || n=$u
+		if ! e=$(user_env "$u"); then
+			echo "Benutzer-Manager antwortet nicht ($n)"
+			continue
+		fi
+		comm -3 "$f" <([[ -z $e ]] || printf '%s\n' "$e") | sed -E 's/^\t//; s/=.*//' | sort -u |
+			sed "s/^/Umgebung des Benutzer-Managers geändert ($n): /"
+		[[ -f $SNAP/benutzer-$u-einheiten ]] &&
+			comm -13 "$SNAP/benutzer-$u-einheiten" <(user_units "$u") | awk -v n="$n" '{print "Benutzer-Einheit neu oder neu gestartet (" n "): " $1}'
+		unit_files_changed "$SNAP/benutzer-$u-dateien" "$u" |
+			sed -e "s/^geändert /Datei einer geladenen Benutzer-Einheit geändert ($n): /" -e "s/^unprüfbar$/Datei einer geladenen Benutzer-Einheit nicht prüfbar ($n)/"
+	done
+	return 0
+}
+
+# user_paths_now   Wie unit_paths_now für USER_RUN/UID/systemd jedes Benutzers außer lf-claude, ohne
+#   USER_RUN/UID/systemd/units: Dort hält der Manager nur fest, unter welcher InvocationID eine
+#   Einheit läuft.
+user_paths_now() {
+	local d cu
+	local -a ds=()
+	cu=$(id -u "$CLAUDE" 2>/dev/null)
+	for d in "$USER_RUN"/*/systemd; do
+		[[ -d $d && ! -L $d && $d != "$USER_RUN/${cu:-x}/systemd" ]] && ds+=("$d")
+	done
+	((${#ds[@]})) || return 0
+	unit_paths_now "${ds[@]}" | awk -v r="$USER_RUN/" '{ p = $0; sub(/^[^ ]* [^ ]* /, "", p); q = substr(p, length(r) + 1) }
+		!(index(p, r) == 1 && q ~ /^[0-9]+\/systemd\/units(\/|$)/)'
+}
+
+# user_paths_changed   "Datei|Ordner neu|geändert: PFAD" je Eintrag aus user_paths_now, der seit dem
+#   Freischalten neu ist oder sich geändert hat (wie unit_paths_changed).
+user_paths_changed() {
+	[[ -f $SNAP/userpaths ]] || return 0
+	user_paths_now | paths_diff Datei Ordner "$SNAP/userpaths" neu
+}
+
+# live_procs   "PID (NAME)" je Prozess des Live-Benutzers (eine seiner uids), der während der
+#   Freigabe gestartet ist und noch läuft, wo auch immer, außer diesem Aufruf und seinen Vorfahren
+#   (das Ende, das der Techniker mit sudo startet). Der Live-Benutzer hat sudo ohne Kennwort: Jeder
+#   davon kann root sein.
+live_procs() {
+	local lu d pid k a b c f z u n=0
+	local -A own=()
+	lu=$(id -u "$LIVE_USER" 2>/dev/null) || return 0
+	pid=$$
+	while [[ $pid =~ ^[0-9]+$ ]] && ((pid > 1 && n++ < 64)); do
+		own[$pid]=1
+		read -r _ _ pid _ <<<"$(st "$pid")"
+	done
+	for d in /proc/[0-9]*; do
+		pid=${d##*/}
+		[[ -z ${own[$pid]:-} ]] || continue
+		u="" z=""
+		while read -r k a b c f; do
+			case $k in Uid:) u=" $a $b $c $f " ;; State:) z=$a ;; esac
+		done 2>/dev/null <"$d/status"
+		[[ $u == *" $lu "* && $z != Z ]] || continue
+		since_grant "$pid" || continue
+		k=
+		{ read -r k <"$d/comm"; } 2>/dev/null
+		echo "$pid (${k:0:32})"
+	done
+	return 0
+}
+
 # dbus_stock   Ist die Einheit (ui von unit_info) ein Dienst des Systems ohne Drop-ins, den jeder
 #   Benutzer über D-Bus starten kann (eine Datei unter /usr/share/dbus-1/system-services nennt ihn
 #   mit SystemdService=, auch unter einem anderen seiner Namen)? Das Ende beendet ihn, ohne dass er
@@ -1429,8 +2128,12 @@ stopped_residue() {
 	local -A held=()
 	[[ -s $STOPPED ]] || return 0
 	[[ ! -s $MENV_RESET && -z $(menv_changed) ]] && quiet=1
-	while read -r k u; do [[ $k == angehalten ]] && held[$u]=1; done <"$STOPPED"
+	while read -r k u; do [[ $k == angehalten || $k == laeuft ]] && held[$u]=1; done <"$STOPPED"
 	while read -r k u; do
+		if [[ $k == laeuft ]]; then
+			echo "Einheit läuft weiter, ließ sich nicht anhalten: $u"
+			continue
+		fi
 		if [[ $k == angehalten ]]; then
 			echo "Einheit angehalten, nicht beendet: $u"
 			continue
@@ -1488,6 +2191,67 @@ efi_hint() {
 	return 0
 }
 
+# hook_path PFAD   Liegt PFAD in HOOK_PATHS oder in UNIT_PATHS (außer TRANSIENT)?
+hook_path() {
+	local p
+	for p in "${HOOK_PATHS[@]}" "${UNIT_PATHS[@]}"; do
+		[[ $p == "$TRANSIENT" ]] && continue
+		[[ $1 == "$p" || $1 == "$p"/* ]] && return 0
+	done
+	return 1
+}
+
+# now_hint   Aus den Zeilen von residue (Standardeingabe): Läuft eine Einheit aus der Freigabe weiter,
+#   bei deren Ende systemd Code ausführte und die sich nicht anhalten ließ (stop_new_units), ein
+#   Hinweis, sofort am Netzschalter auszuschalten. Beenden > Ausschalten stoppte sie: systemd beendet
+#   dabei jede Einheit. Steht im Rückstand ganz oben.
+now_hint() {
+	local l items="" k=0
+	while IFS= read -r l; do
+		[[ $l == "Einheit läuft weiter, ließ sich nicht anhalten: "* ]] || continue
+		((k++ < 3)) && items+="${items:+, }${l#*: }"
+	done
+	((k > 3)) && items+=", …"
+	[[ -z $items ]] || echo "Sofort ausschalten: Netzschalter gedrückt halten, nicht Beenden > Ausschalten (läuft weiter, beim Beenden liefe Code aus der Freigabe: $items)"
+	return 0
+}
+
+# off_hint   Aus den Zeilen von residue (Standardeingabe) ein Hinweis für den Techniker: Hat sich
+#   geändert, was beim Weiterarbeiten von selbst als root oder als Live-Benutzer läuft (hook_path,
+#   Dateien geladener Einheiten, Benutzer-Manager), läuft ein Prozess des Live-Benutzers aus der
+#   Freigabe (er hat sudo ohne Kennwort) oder hat sich etwas am Kernel geändert (Einstellungen,
+#   Module, Taint, BPF), soll er ausschalten, bevor er weiterarbeitet: So ein Weg wartet auf das
+#   nächste apt, die nächste Anmeldung, das nächste Gerät oder den nächsten Absturz, nicht auf den
+#   Neustart. Steht im Rückstand gleich nach efi_hint (status zeigt die erste Zeile), außer now_hint
+#   gibt einen Hinweis: Der sagt, am Netzschalter auszuschalten, nicht über Beenden.
+off_hint() {
+	local l p items="" k=0
+	while IFS= read -r l; do
+		p=
+		case $l in
+		"Datei einer geladenen Einheit geändert: "*)
+			p=${l#*: }
+			[[ $p == "$TRANSIENT"/* ]] && p=
+			;;
+		"Prozesse von $LIVE_USER seit dem Freischalten: "*) p="Prozesse von $LIVE_USER" ;;
+		"Anmeldung oder Laufzeitordner von $LIVE_USER seit dem Freischalten: "*) p="Anmeldung von $LIVE_USER" ;;
+		"Benutzer-"* | "Umgebung des Benutzer-Managers "* | "Datei einer geladenen Benutzer-Einheit "*) p=Benutzer-Manager ;;
+		"Datei "* | "Ordner "* | "Unit-Datei "* | "Unit-Ordner "*)
+			p=${l#*: }
+			hook_path "$p" || p=
+			;;
+		"Einheit mit geänderter Unit-Datei (NeedDaemonReload): "*) p=${l#*: } ;;
+		"Kernel-Einstellung neu oder geändert: "*) p=${l#*: } p=${p##*/} ;;
+		"Kernel: "*) p=Kernel ;;
+		esac
+		[[ -n $p && ", $items, " != *", $p, "* ]] || continue
+		((k++ < 3)) && items+="${items:+, }$p"
+	done
+	((k > 3)) && items+=", …"
+	[[ -z $items ]] || echo "Vor dem Weiterarbeiten ausschalten (Beenden > Ausschalten): geändert, was von selbst als root oder $LIVE_USER läuft ($items)"
+	return 0
+}
+
 # persist_mounted   Ist der Speicher im Mount-Namensraum von PID 1 eingehängt?
 persist_mounted() {
 	awk -v p="$PERSIST" '$5 == p {f = 1} END {exit !f}' /proc/1/mountinfo 2>/dev/null
@@ -1518,9 +2282,12 @@ persist_changed() {
 
 # snapshot   Hält fest, was es beim Freischalten schon gab. Neu ist, was danach dazukommt.
 snapshot() {
+	local f
 	install -d -m 0755 "$SNAP"
 	# Bezug für die ctime in fs_new: Die Datei entsteht jetzt.
 	rm -f "$SNAP/zeit" && : >"$SNAP/zeit"
+	# Bezug für since_grant: Ein Prozess, der danach startet, ist während der Freigabe gestartet.
+	uptime_ticks >"$SNAP/start"
 	# Beendete Einheiten eines früheren Endes: Ohne Rückstand stehen dort nur Dienste aus dbus_stock.
 	rm -f "$STOPPED"
 	units_now >"$SNAP/units"
@@ -1531,10 +2298,14 @@ snapshot() {
 	menv >"$SNAP/menv" || : >"$SNAP/menv"
 	files_now >"$SNAP/files"
 	unit_paths_now >"$SNAP/unitpaths"
+	unit_files_now >"$SNAP/unitfiles"
+	users_snapshot
+	user_paths_now >"$SNAP/userpaths"
 	reload_units >"$SNAP/reload"
 	chain_now >"$SNAP/chain"
 	# Vor den Einhängungen: binfmt_misc ist oft eine Automount-Stelle, die erst das Lesen einhängt.
 	knobs_now >"$SNAP/knobs"
+	kernel_now >"$SNAP/kernel"
 	mounts_now >"$SNAP/mounts"
 	creds_now >"$SNAP/creds"
 	efivars_now >"$SNAP/efivars"
@@ -1543,7 +2314,9 @@ snapshot() {
 	chmod 0644 "$SNAP"/*
 	# Nur für root: Eine Summe über einen kurzen geheimen Wert ließe sich durchprobieren, und die
 	# Namen auf dem Speicher gehören dem Techniker.
-	chmod 0600 "$SNAP/creds" "$SNAP/unitpaths" "$SNAP/efivars" "$SNAP/persist"
+	chmod 0600 "$SNAP/creds" "$SNAP/unitpaths" "$SNAP/unitfiles" "$SNAP/efivars" "$SNAP/persist" "$SNAP/userpaths"
+	for f in "$SNAP"/benutzer-*; do [[ -f $f ]] && chmod 0600 "$f"; done
+	return 0
 }
 
 # quick_residue   Je Zeile ein Weg zu root, den lf-claude ohne die Regel noch hat, soweit ihn jeder
@@ -1574,35 +2347,75 @@ quick_residue() {
 #   Wer mit der Freigabe root war, kann sich weitere Wege eingerichtet haben. residue prüft die
 #   naheliegenden, nicht alle: Sicher ist nur ein Neustart. Dazu gehören Wege ohne laufenden
 #   Prozess: geänderte Werkzeuge der Grundregel, Dateien aus WATCH, Unit-Dateien und Drop-ins,
-#   setuid-Dateien und /usr, Kernel-Einstellungen (auch ein für kexec geladener Kernel), ein System
-#   für soft-reboot, Einhängungen, Credentials von Diensten, EFI-Variablen, der Speicher LF-DATA und
-#   die Umgebung des Managers, auch eine schon zurückgesetzte, dazu jede Einheit, die das Ende
-#   beendet hat. Zuerst steht, was der Techniker vor dem nächsten Start tun muss (efi_hint), dann
-#   eine Grundregel, die sich nicht sperren ließ.
+#   die Dateien jeder geladenen Einheit, setuid-Dateien und /usr, Kernel-Einstellungen (auch ein für
+#   kexec geladener Kernel), Module, Taint und BPF, ein System für soft-reboot, Einhängungen,
+#   Credentials von Diensten, EFI-Variablen, der Speicher LF-DATA und die Umgebung des Managers, auch
+#   eine schon zurückgesetzte, die Benutzer-Manager, Prozesse des Live-Benutzers aus der Freigabe und
+#   jede Einheit, die das Ende beendet hat. Zuerst steht, was der Techniker vor dem nächsten Start
+#   tun muss (efi_hint): Ausschalten setzt EFI-Variablen nicht zurück, den Rückstand aber schon (er
+#   liegt im RAM). Dann, ob er vor dem Weiterarbeiten ausschalten soll (off_hint), dann eine
+#   Grundregel, die sich nicht sperren ließ. Rückgabe 1, wenn residue_lines abbricht.
 residue() {
-	local rules procs c e l
+	local e r n f=""
 	e=$(efivars_changed)
-	[[ -z $e ]] || efi_hint <<<"$e"
+	# "ENDE" am Schluss: Fehlt es, ist residue_lines nicht bis zum Ende gekommen (end_residue).
+	r=$(residue_lines "$e" && echo ENDE)
+	n=$(now_hint <<<"$r")
+	[[ -z $e ]] || f=$(efi_hint <<<"$e")
+	if [[ -n $n ]]; then
+		# Sofort ausschalten geht vor, ein Hinweis zu EFI kommt in dieselbe Zeile: status zeigt die erste.
+		echo "$n${f:+. Danach: $f}"
+	else
+		[[ -z $f ]] || echo "$f"
+		off_hint <<<"$r"
+	fi
+	if [[ $r == ENDE || $r == *$'\n'ENDE ]]; then
+		r=${r%ENDE}
+		r=${r%$'\n'}
+		[[ -z $r ]] || printf '%s\n' "$r"
+		return 0
+	fi
+	[[ -z $r ]] || printf '%s\n' "$r"
+	return 1
+}
+
+# residue_lines EFI   Die Zeilen von residue ohne die Hinweise, EFI: efivars_changed.
+residue_lines() {
+	local rules procs c l e=$1
 	[[ -e $LOCK_FAILED ]] && echo "Grundregel ließ sich nicht sperren: $BASE_FILE"
 	rules=$(sudo -l -U "$CLAUDE" 2>&1 | sed -nE 's/^[[:space:]]+(\(.*)$/\1/p')
-	if l=$(base_locked); then
-		echo "Grundregel gesperrt bis zum Neustart: $l"
+	case $(lock_kind) in
+	neustart)
+		echo "Grundregel gesperrt bis zum Neustart: $(base_locked)"
 		[[ -z $rules ]] || echo "sudo: ${rules//$'\n'/, }"
-	else
-		[[ $rules == "$BASE_RULE" ]] || echo "sudo: ${rules//$'\n'/, }"
-	fi
+		;;
+	ende)
+		# Gesperrt seit dem ersten Schritt dieses Endes (oder eines früheren mit Rückstand): Dann darf
+		# lf-claude nichts mit sudo. Ob es dabei bleibt, entscheidet off.
+		[[ -z $rules ]] || echo "sudo: ${rules//$'\n'/, }"
+		;;
+	*) [[ $rules == "$BASE_RULE" ]] || echo "sudo: ${rules//$'\n'/, }" ;;
+	esac
 	quick_residue
 	procs=$(granted_pids | tr '\n' ' ')
 	[[ -z $procs ]] || echo "Prozesse: $procs"
+	procs=$(live_procs | head -n 10 | tr '\n' ' ')
+	[[ -z $procs ]] || echo "Prozesse von $LIVE_USER seit dem Freischalten: ${procs% }"
+	c=$(live_units | tr '\n' ' ')
+	[[ -z $c ]] || echo "Anmeldung oder Laufzeitordner von $LIVE_USER seit dem Freischalten: ${c% }"
 	c=$(cron_new | tr '\n' ' ')
 	[[ -z $c ]] || echo "cron: $c"
 	chain_changed | sed 's/^/Werkzeug neu oder geändert: /'
 	files_changed
 	unit_paths_changed
+	loaded_units_changed
 	reload_new | sed 's/^/Einheit mit geänderter Unit-Datei (NeedDaemonReload): /'
 	stopped_residue
+	users_changed
+	user_paths_changed
 	fs_new
 	knobs_changed | sed 's/^/Kernel-Einstellung neu oder geändert: /'
+	kernel_changed
 	nextroot_now
 	mounts_changed
 	creds_changed
@@ -1696,9 +2509,20 @@ confirm() {
 }
 
 off() {
-	local r l had=0
+	local r l old had=0
 	# Gab es eine Freigabe? Dann empfiehlt status danach einen Neustart (LAST).
 	[[ -e $RULE || -e $UNTIL || (-e $SNAP/units && ! -e $LAST) ]] && had=1
+	# Als Erstes, vor allem Anhalten und Beenden: die Grundregel sperren (base_lock ende) und als
+	# erste Zeile des Rückstands festhalten, dass die Prüfung nicht abgeschlossen ist. Bricht das Ende
+	# ab (KILL, soft-reboot, Stromausfall), bleibt beides. Erst ein Ende, das abschließt, ersetzt die
+	# Zeile, und nur eines ohne Rückstand gibt die Grundregel wieder frei (base_unlock).
+	base_lock "Ende der Freigabe" ende
+	install -d /run/lf
+	old=$(awk -v p="$END_OPEN" 'index($0, p) != 1' "$RESIDUE" 2>/dev/null)
+	{
+		echo "$END_OPEN, Ende seit $(date +%H:%M)"
+		[[ -z $old ]] || printf '%s\n' "$old"
+	} >"$RESIDUE.neu" && chmod 0644 "$RESIDUE.neu" && mv -f -- "$RESIDUE.neu" "$RESIDUE"
 	trap 'cg_freeze 0' EXIT
 	# Läuft das Ende in dem Dienst, den "aus" aus der cgroup von Claude eben angelegt hat: dessen
 	# Unit-Datei in den Schnappschuss, wie bei Timer und Dienst von "an".
@@ -1731,14 +2555,23 @@ off() {
 	trace "Ende der Freigabe: beendet, prüfe Rückstand"
 	# Prüfen, bevor Claude weiterläuft: Sonst liefe zwischen Auftauen und Sperren noch ein Werkzeug
 	# der Grundregel, das sich geändert haben kann. Gibt es eine Zeile aus lock_lines, bleibt die
-	# Grundregel bis zum Neustart gesperrt, und ohne sie bleibt auch kein Dienst der Grundregel
-	# stehen (kept_unit): noch eine Runde stop_new_units, dann neu prüfen.
+	# Grundregel bis zum Neustart gesperrt (die Meldung nennt jeden Grund, auch jede Einhängung), und
+	# ohne sie bleibt auch kein Dienst und kein Job der Grundregel stehen (kept_unit, kept_job): noch
+	# eine Runde stop_new_units, stop_root_in_claude und stop_granted, dann neu prüfen. Sonst bleibt
+	# sie mit Rückstand gesperrt, bis ein Ende ohne Rückstand abschließt, ohne ist sie wieder frei.
 	r=$(end_residue)
 	l=$(lock_lines <<<"$r")
-	if [[ -n $l && (-e $BASE_FILE || -L $BASE_FILE) ]]; then
-		base_lock "${l%%$'\n'*}"
+	if [[ -n $l ]] && base_rule_file >/dev/null; then
+		base_lock "${l//$'\n'/; }"
 		stop_new_units
+		stop_root_in_claude
+		stop_granted
 		r=$(end_residue)
+	fi
+	if [[ -z $r ]] && ! base_unlock; then
+		r="Grundregel ließ sich nicht wieder freigeben: $(base_locked)"
+	elif [[ -n $r && $(lock_kind) == ende ]]; then
+		r+=$'\n'"Grundregel gesperrt, bis ein Ende ohne Rückstand abschließt: $(base_locked)"
 	fi
 	trace "Ende der Freigabe: Rückstand geprüft"
 	cg_freeze 0
@@ -1759,7 +2592,8 @@ off() {
 		# Grundregel). Bei einem Rückstand bleibt er, das nächste Ende prüft weiter dagegen.
 		rm -f "$SNAP/units" "$SNAP/units-aktiv" "$SNAP/files" "$SNAP/unitpaths" "$SNAP/reload" "$SNAP/chain" \
 			"$SNAP/knobs" "$SNAP/mounts" "$SNAP/creds" "$SNAP/efivars" "$SNAP/persist" "$SNAP/persist-zustand" \
-			"$SNAP/menv" "$SNAP/zeit" "$STOPPED"
+			"$SNAP/menv" "$SNAP/zeit" "$SNAP/start" "$SNAP/unitfiles" "$SNAP/userpaths" "$SNAP/kernel" \
+			"$SNAP"/benutzer-* "$STOPPED"
 	fi
 	if ((had)); then
 		install -d /run/lf
