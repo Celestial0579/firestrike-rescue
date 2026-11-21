@@ -19,8 +19,9 @@
 # Ob ein Aufruf von lf-claude kommt, zeigen SUDO_USER und SUDO_UID, alle Vorfahren des Aufrufs
 # und die cgroup: Claude läuft in einer eigenen (lf-claude.slice, claude_scope in claude.sh), und
 # ein Prozess behält sie, auch wenn er sich abkoppelt. Am Ende (aus, Ablauf) sperrt lf-freigabe
-# als Erstes die Grundregel und hält im Rückstand fest, dass seine Prüfung nicht abgeschlossen ist:
-# Bricht das Ende ab, bleibt beides. Dann hält es die cgroup von Claude an und nimmt sofort die
+# als Erstes die Grundregel und hält im Rückstand fest, dass seine Prüfung nicht abgeschlossen ist,
+# mit dem Hinweis, am Netzschalter auszuschalten: Bricht das Ende ab, bleibt beides, und was aus
+# der Freigabe noch läuft, ist offen. Dann hält es die cgroup von Claude an und nimmt sofort die
 # Regel zurück. Eine neue /etc/ld.so.preload und ein /run/nextroot (soft-reboot) sperrt es, einen
 # Kernel für kexec entlädt es, und hat sich an lf-aufgabe, lf-lesen oder den Programmen darunter
 # etwas geändert, sperrt es die Grundregel bis zum Neustart. Dann hält es jede Einheit an, die
@@ -38,14 +39,17 @@
 # Taint und BPF-Pins, Einhängungen, EFI-Variablen, der Speicher LF-DATA, eine geänderte Umgebung
 # des Managers, Prozesse des Technikers aus der Freigabe); solange es etwas findet, sagt status
 # "an: Rückstand …". Läuft eine Einheit aus der Freigabe weiter, die sich nicht anhalten ließ und
-# bei deren Ende systemd Code ausführte, steht ganz oben, sofort am Netzschalter auszuschalten. Hat
-# sich etwas geändert, das von selbst als root oder als Techniker läuft (Hooks, sein Home, der
-# Kernel), steht oben der Hinweis, vor dem Weiterarbeiten auszuschalten. Mit Rückstand bleibt die
-# Grundregel gesperrt, bis ein Ende ohne Rückstand abschließt, und kann sich geändert haben, was
-# sie als root ausführt oder lädt (lock_lines), bis zum Neustart. Ob die Freigabe gilt, entscheidet
-# die Regel selbst, nicht die Uhr;
-# das Ende kommt aus dem monotonen Timer. Keine Prüfung findet jeden Weg, den sich root einrichten
-# kann: Sicher endet eine Freigabe nur mit einem Neustart, am sichersten mit Ausschalten
+# bei deren Ende systemd Code ausführte, steht ganz oben, sofort am Netzschalter auszuschalten.
+# Führte Beenden > Ausschalten oder Neustart etwas aus der Freigabe als root oder als Techniker aus
+# (eine angehaltene Einheit, Dateien geladener Einheiten, /usr, Hooks von finalrd, die
+# Benutzer-Manager, Kernel, ein Weg zu root, den Claude beim Beenden nutzen könnte), steht oben, vor
+# dem Weiterarbeiten am Netzschalter auszuschalten; hat sich nur etwas geändert, das beim
+# Weiterarbeiten von selbst läuft (Hooks, sein Home), über Beenden > Ausschalten. Mit Rückstand
+# bleibt die Grundregel gesperrt, bis ein Ende ohne Rückstand abschließt, und kann sich geändert
+# haben, was sie als root ausführt oder lädt (lock_lines), bis zum Neustart. Ob die Freigabe gilt,
+# entscheidet die Regel selbst, nicht die Uhr; das Ende kommt aus dem monotonen Timer. Keine
+# Prüfung findet jeden Weg, den sich root einrichten kann: Sicher endet eine Freigabe nur mit einem
+# Neustart, am sichersten mit Ausschalten
 # (GHSA-799j-44qx-x7xj). Bis dahin sagt status nach jeder Freigabe "aus, Neustart empfohlen".
 set -u
 PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
@@ -131,7 +135,9 @@ USER_RUN=$WROOT/run/user
 # selbst starten, und was die Shells des Technikers lesen), ganz /root, was systemd, udev, modprobe,
 # systemd-modules-load, sysctl, tmpfiles, binfmt, polkit, NetworkManager und chrony unter /run lesen,
 # /run/initramfs (systemd-shutdown führt beim Ausschalten /run/initramfs/shutdown als root aus),
-# /run/lf-boot.env (disks.sh liest daraus, welche Disks zum Live-Medium gehören), die Ablagen, aus
+# /run/finalrd (finalrd.service führt beim Ausschalten und Neustart jedes *.finalrd darin als root
+# aus, wie die unter /etc/finalrd), /run/lf-boot.env (disks.sh liest daraus, welche Disks zum
+# Live-Medium gehören), die Ablagen, aus
 # denen Dienste beim Start Credentials laden (so lesen getty und login agetty.autologin und
 # login.noauth: Anmelden ohne Kennwort), cron der Benutzer, die Skripte von dpkg (sie laufen bei apt
 # als root), linger, DOTFILES in jedem Home unter /home und beim Live-Benutzer alles, was mit einem
@@ -145,7 +151,7 @@ WATCH=("$WROOT"/etc "$WROOT"/root "$WROOT"/run/systemd/*.conf.d "$WROOT"/run/sys
 	"$WROOT"/run/systemd/network "$WROOT"/run/environment.d "$WROOT"/run/modprobe.d "$WROOT"/run/modules-load.d
 	"$WROOT"/run/udev/rules.d "$WROOT"/run/sysctl.d "$WROOT"/run/tmpfiles.d "$WROOT"/run/binfmt.d
 	"$WROOT"/run/polkit-1/rules.d "$WROOT"/run/NetworkManager/conf.d "$WROOT"/run/NetworkManager/system-connections
-	"$WROOT"/run/chrony-dhcp "$WROOT"/run/initramfs "$WROOT"/run/lf-boot.env
+	"$WROOT"/run/chrony-dhcp "$WROOT"/run/initramfs "$WROOT"/run/finalrd "$WROOT"/run/lf-boot.env
 	"$WROOT"/run/credstore "$WROOT"/run/credstore.encrypted "$WROOT"/run/credentials/{@system,@encrypted}
 	"$WROOT"/var/spool/cron "$WROOT"/var/lib/dpkg/info "$WROOT"/var/lib/systemd/linger)
 for h in "$WROOT"/home/*; do
@@ -169,19 +175,40 @@ LOCK_PATHS=("$WROOT"/etc/ld.so.conf "$WROOT"/etc/ld.so.conf.d "$WROOT"/etc/ld.so
 	"$WROOT"/etc/ld.so.preload.lf-gesperrt "$WROOT"/etc/nsswitch.conf "$WROOT"/etc/pam.d "$WROOT"/etc/security
 	"$WROOT"/etc/environment "$WROOT"/etc/default/locale "$WROOT"/etc/sudo.conf "$WROOT"/etc/sudoers-rs
 	"$WROOT"/root "$WROOT"/etc/tmux.conf "$WROOT"/etc/mc "$WROOT"/run/lf-boot.env)
-# Was beim Weiterarbeiten von selbst als root oder als Live-Benutzer läuft: Hooks von apt, dpkg,
-# NetworkManager, udev, modprobe, smartd, logrotate, cron und update-motd, Generatoren von systemd,
-# systemd-shutdown (/run/initramfs), die Profile der Shells, das Home des Live-Benutzers und die
-# Ordner der Benutzer-Manager. Hat sich dort etwas geändert, steht zuerst im Rückstand, dass der
-# Techniker vor dem Weiterarbeiten ausschalten soll (off_hint), ebenso nach einer Änderung am Kernel.
-HOOK_PATHS=("$WROOT"/etc/update-motd.d "$WROOT"/etc/NetworkManager/dispatcher.d "$WROOT"/etc/smartd.conf
-	"$WROOT"/etc/smartmontools "$WROOT"/etc/logrotate.conf "$WROOT"/etc/logrotate.d "$WROOT"/etc/apt "$WROOT"/etc/dpkg
-	"$WROOT"/var/lib/dpkg/info "$WROOT"/etc/crontab "$WROOT"/etc/cron.d "$WROOT"/etc/cron.hourly "$WROOT"/etc/cron.daily
-	"$WROOT"/etc/cron.weekly "$WROOT"/etc/cron.monthly "$WROOT"/var/spool/cron "$WROOT"/etc/udev "$WROOT"/run/udev/rules.d
-	"$WROOT"/etc/modprobe.d "$WROOT"/run/modprobe.d "$WROOT"/etc/systemd/system-generators "$WROOT"/etc/systemd/user-generators
-	"$WROOT"/run/systemd/system-generators "$WROOT"/run/systemd/user-generators "$WROOT"/run/initramfs
-	"$WROOT"/etc/profile "$WROOT"/etc/profile.d "$WROOT"/etc/bash.bashrc "$WROOT"/etc/bash_completion.d "$WROOT"/etc/inputrc
-	"$WROOT"/home/"$LIVE_USER" "$USER_RUN")
+# Was ein geordnetes Ausschalten oder ein Neustart (Beenden > Ausschalten oder Neustart) außer den
+# Einheiten selbst und /usr als root oder als Live-Benutzer ausführt: die Skripte von NetworkManager
+# (pre-down, down), Regeln von udev und Einstellungen von modprobe (Geräteereignisse und Module beim
+# Herunterfahren), /run/initramfs (systemd-shutdown führt /run/initramfs/shutdown als root aus), die
+# Hooks von finalrd (finalrd.service führt beim Stoppen jedes *.finalrd unter /etc/finalrd und
+# /run/finalrd als root aus), die Einstellungen von LVM (lvm2-monitor und blk-availability rufen
+# beim Stoppen lvm auf, und lvm.conf nennt Programme, die lvm startet), die Alternativen (sudo, awk
+# und andere Programme unter /usr zeigen nach /etc/alternatives) und die Ordner der Benutzer-Manager
+# (sie beenden ihre Einheiten), dazu was sudo als root lädt und liest (Beenden ruft es auf): Lader,
+# NSS, PAM, die Umgebung von pam_env und sudo selbst. Hat sich dort etwas geändert, steht zuerst im
+# Rückstand, dass der Techniker vor dem Weiterarbeiten am Netzschalter ausschalten soll
+# (switch_hint).
+SHUTDOWN_PATHS=("$WROOT"/etc/NetworkManager/dispatcher.d "$WROOT"/etc/udev "$WROOT"/run/udev/rules.d
+	"$WROOT"/etc/modprobe.d "$WROOT"/run/modprobe.d "$WROOT"/run/initramfs "$WROOT"/etc/finalrd "$WROOT"/run/finalrd
+	"$WROOT"/etc/lvm "$WROOT"/etc/alternatives "$USER_RUN" "$WROOT"/etc/ld.so.conf
+	"$WROOT"/etc/ld.so.conf.d "$WROOT"/etc/ld.so.cache "$WROOT"/etc/ld.so.preload "$WROOT"/etc/nsswitch.conf
+	"$WROOT"/etc/pam.d "$WROOT"/etc/security "$WROOT"/etc/environment "$WROOT"/etc/default/locale
+	"$WROOT"/etc/sudo.conf "$WROOT"/etc/sudoers-rs)
+# Was beim Weiterarbeiten von selbst als root oder als Live-Benutzer läuft, nicht aber beim
+# Ausschalten: Hooks von apt, dpkg, smartd, mdadm (PROGRAM für mdmonitor), logrotate, cron und
+# update-motd, Generatoren von systemd, was Dienste beim Start lesen, die von selbst starten (die
+# EnvironmentFile= von ssh, sshd@ für jede Verbindung, chrony, rpcbind, smartmontools und
+# mdmonitor-oneshot unter /etc/default und /etc/rpcbind.conf, die Einstellungen von sshd; keiner
+# dieser Dienste hat ExecStop=), die Profile der Shells und das Home des Live-Benutzers. Hat sich
+# dort etwas geändert, steht zuerst im Rückstand, dass der Techniker vor dem Weiterarbeiten
+# ausschalten soll, über Beenden > Ausschalten (switch_hint).
+HOOK_PATHS=("$WROOT"/etc/update-motd.d "$WROOT"/etc/smartd.conf "$WROOT"/etc/smartmontools "$WROOT"/etc/mdadm
+	"$WROOT"/etc/default "$WROOT"/etc/rpcbind.conf "$WROOT"/etc/ssh "$WROOT"/etc/logrotate.conf
+	"$WROOT"/etc/logrotate.d "$WROOT"/etc/apt "$WROOT"/etc/dpkg "$WROOT"/var/lib/dpkg/info "$WROOT"/etc/crontab
+	"$WROOT"/etc/cron.d "$WROOT"/etc/cron.hourly "$WROOT"/etc/cron.daily "$WROOT"/etc/cron.weekly "$WROOT"/etc/cron.monthly
+	"$WROOT"/var/spool/cron "$WROOT"/etc/systemd/system-generators "$WROOT"/etc/systemd/user-generators
+	"$WROOT"/run/systemd/system-generators "$WROOT"/run/systemd/user-generators "$WROOT"/etc/profile
+	"$WROOT"/etc/profile.d "$WROOT"/etc/bash.bashrc "$WROOT"/etc/bash.bash_logout "$WROOT"/etc/bash_completion.d
+	"$WROOT"/etc/inputrc "$WROOT"/home/"$LIVE_USER")
 # EFI-Variablen: Startreihenfolge und Starteinträge, MOK für shim, Herstellervariablen. Was root dort
 # ändert, wirkt beim nächsten Start, auch nach Ausschalten. Das Ende vergleicht Namen und SHA256
 # jeder Variablen (efivars_changed) und schreibt nie etwas zurück.
@@ -753,10 +780,10 @@ unsafe_env() {
 #   wie sie bei seinem Start war: Hat root während der Freigabe etwa einen eigenen Ordner vorn in
 #   PATH gesetzt (systemctl set-environment), setzt das Ende zwar den Manager zurück
 #   (menv_restore), der Dienst liefe aber mit den Programmen von root weiter. Ohne Schnappschuss
-#   oder lesbare Umgebung: nein.
+#   oder lesbare Umgebung (ohne root: snapshot): nein.
 env_from_snapshot() {
 	local bad
-	[[ -s $SNAP/menv ]] || return 1
+	[[ -s $SNAP/menv && -r $SNAP/menv ]] || return 1
 	bad=$(jq -Rrs --slurpfile s "$SNAP/menv" --arg w "MEMORY_PRESSURE_WATCH=/sys/fs/cgroup$2/memory.pressure" '
 		def systemd: (split("=")[0]) as $n | if $n == "MEMORY_PRESSURE_WATCH" then . == $w
 			else ($n | IN("INVOCATION_ID", "JOURNAL_STREAM", "SYSTEMD_EXEC_PID", "MEMORY_PRESSURE_WRITE")) or . == "USER=root" end;
@@ -1003,8 +1030,9 @@ live_units() {
 #   mehr aus. Lässt sich so eine nicht anhalten (Timer, Sockets, Pfade, Automounts), bleibt sie
 #   laufen ("laeuft") (OFFNOW), und dieses Ende beendet keine Einheit mehr, die sich anhalten lässt,
 #   es hält sie nur an: Die eine, die weiterläuft, könnte sie sonst neu starten. Der Rückstand sagt
-#   dann ganz oben, sofort am Netzschalter auszuschalten (now_hint), denn Beenden > Ausschalten
-#   stoppte jede Einheit.
+#   dann ganz oben, sofort am Netzschalter auszuschalten (switch_hint), denn Beenden > Ausschalten
+#   oder Neustart stoppte jede Einheit. Auch bei einer angehaltenen sagt er, am Netzschalter
+#   auszuschalten, nur nicht sofort: Ob systemd sie beim Herunterfahren auftaut, ist nicht geprüft.
 #   systemd 259 stoppt und startet keine angehaltene Einheit ("Cannot perform operation on frozen
 #   unit") und taut keine auf, die nicht mehr läuft ("Unit is not active"). Eine, die nach dem KILL
 #   aus ist, bleibt angehalten, solange systemd sie geladen hält (etwa systemd-hostnamed über seinen
@@ -1283,7 +1311,7 @@ menv_restore() {
 	if ((${#gone[@]})); then systemctl unset-environment -- "${gone[@]}" 2>/dev/null || ok=0; fi
 	if ((${#back[@]})); then systemctl set-environment -- "${back[@]}" 2>/dev/null || ok=0; fi
 	names=$({ printf '%s\n' "${gone[@]}"; printf '%s\n' "${back[@]%%=*}"; } | sed '/^$/d' | sort -u | tr '\n' ' ')
-	tr ' ' '\n' <<<"$names" | sed '/^$/d' >>"$MENV_RESET"
+	(umask 077 && tr ' ' '\n' <<<"$names" | sed '/^$/d' >>"$MENV_RESET")
 	if ((ok)); then
 		note "Manager-Umgebung zurückgesetzt: $names"
 	else
@@ -2191,64 +2219,120 @@ efi_hint() {
 	return 0
 }
 
-# hook_path PFAD   Liegt PFAD in HOOK_PATHS oder in UNIT_PATHS (außer TRANSIENT)?
-hook_path() {
-	local p
-	for p in "${HOOK_PATHS[@]}" "${UNIT_PATHS[@]}"; do
-		[[ $p == "$TRANSIENT" ]] && continue
-		[[ $1 == "$p" || $1 == "$p"/* ]] && return 0
+# in_paths PFAD LISTE…   Liegt PFAD in einem Eintrag der LISTE (oder ist er einer)?
+in_paths() {
+	local p q=$1
+	shift
+	for p in "$@"; do
+		[[ $q == "$p" || $q == "$p"/* ]] && return 0
 	done
 	return 1
 }
 
-# now_hint   Aus den Zeilen von residue (Standardeingabe): Läuft eine Einheit aus der Freigabe weiter,
-#   bei deren Ende systemd Code ausführte und die sich nicht anhalten ließ (stop_new_units), ein
-#   Hinweis, sofort am Netzschalter auszuschalten. Beenden > Ausschalten stoppte sie: systemd beendet
-#   dabei jede Einheit. Steht im Rückstand ganz oben.
-now_hint() {
-	local l items="" k=0
-	while IFS= read -r l; do
-		[[ $l == "Einheit läuft weiter, ließ sich nicht anhalten: "* ]] || continue
-		((k++ < 3)) && items+="${items:+, }${l#*: }"
-	done
-	((k > 3)) && items+=", …"
-	[[ -z $items ]] || echo "Sofort ausschalten: Netzschalter gedrückt halten, nicht Beenden > Ausschalten (läuft weiter, beim Beenden liefe Code aus der Freigabe: $items)"
+# data_mount ORT   Liegt eine Einhängung an ORT dort, wo beim Ausschalten nichts ausgeführt wird: Disks
+#   und Abbilder unter /mnt und /media, der Speicher LF-DATA (persist_changed) und die Credentials
+#   eines Dienstes (creds_changed)?
+data_mount() {
+	in_paths "$1" "$WROOT"/mnt "$WROOT"/media "$WROOT"/run/media "$PERSIST" "$CRED_DIR"
+}
+
+# hint_item ZEILE   Ordnet eine Zeile von residue einem Hinweis zu (switch_hint), in HC die Art, in HN
+#   der Name dafür:
+#   - jetzt: Eine Einheit aus der Freigabe läuft weiter, ließ sich nicht anhalten, und bei ihrem Ende
+#     führte systemd Code aus (stop_new_units).
+#   - netz: Beenden > Ausschalten oder Neustart führte es als root oder als Live-Benutzer aus: eine
+#     angehaltene Einheit (ob systemd sie dabei auftaut, ist nicht geprüft), Dateien geladener
+#     Einheiten, Unit-Dateien und Drop-ins, auch unter TRANSIENT (dort liest systemd sie wie unter
+#     /run/systemd/system; die einer angehaltenen Einheit heißt wie sie), alles unter /usr und /opt,
+#     SHUTDOWN_PATHS, sudo-Dateien und -Regeln (Beenden ruft sudo auf), Prozesse und Einheiten aus der
+#     Freigabe (sie bekommen beim Beenden TERM), Anmeldungen und Prozesse des Live-Benutzers aus der
+#     Freigabe (er hat sudo ohne Kennwort), die Benutzer-Manager, der Kernel (Einstellungen wie
+#     core_pattern, uevent_helper, modprobe, binfmt_misc und kexec, Module, Taint, BPF), die Umgebung
+#     des Managers, auch eine schon zurückgesetzte (Dienste können sie geerbt haben und bekommen beim
+#     Beenden TERM), ein System für soft-reboot, eine Einhängung außerhalb von data_mount (sie kann
+#     jede dieser Dateien verdecken) und eine Grundregel, die sich nicht sperren ließ (ihre Jobs laufen
+#     weiter, auch wenn sich geändert hat, was sie laden). Eine abgebrochene Prüfung zählt dazu.
+#   Was erst jemand nutzen muss (setuid-Dateien, Konten, polkit, SSH-Schlüssel), zählt nicht: Das
+#   ginge beim Weiterarbeiten jederzeit, nicht erst beim Beenden.
+#   - aus: Es läuft beim Weiterarbeiten von selbst so, aber nicht beim Ausschalten (HOOK_PATHS).
+hint_item() {
+	local l=$1 p
+	HC='' HN=''
+	case $l in
+	"Einheit läuft weiter, ließ sich nicht anhalten: "*) HC=jetzt HN=${l#*: } ;;
+	"Einheit angehalten, nicht beendet: "* | "Einheit mit geänderter Unit-Datei (NeedDaemonReload): "* | \
+		"Systemdatei neu oder geändert: "* | "Systemordner neu oder geändert: "*)
+		HC=netz HN=${l#*: }
+		;;
+	"Datei einer geladenen Einheit geändert: "* | "Unit-Datei "* | "Unit-Ordner "*)
+		p=${l#*: }
+		HC=netz HN=${p#"$TRANSIENT"/}
+		;;
+	"Datei einer geladenen Einheit nicht prüfbar"*) HC=netz HN="Datei einer geladenen Einheit" ;;
+	"Suche nach setuid und in /usr abgebrochen"*) HC=netz HN=/usr ;;
+	"Prüfung des Rückstands abgebrochen") HC=netz HN="Prüfung abgebrochen" ;;
+	"sudo: "* | "sudo-Datei neu oder geändert: "*) HC=netz HN=sudo ;;
+	"Prozesse: "* | "root-Prozesse bei Claude: "* | "fremde Prozesse in Diensten: "*) HC=netz HN="Prozesse aus der Freigabe" ;;
+	"Einheiten: "*) HC=netz HN="Einheiten aus der Freigabe" ;;
+	"Prozesse von $LIVE_USER seit dem Freischalten: "*) HC=netz HN="Prozesse von $LIVE_USER" ;;
+	"Anmeldung oder Laufzeitordner von $LIVE_USER seit dem Freischalten: "*) HC=netz HN="Anmeldung von $LIVE_USER" ;;
+	"Benutzer-"* | "Umgebung des Benutzer-Managers "* | "Datei einer geladenen Benutzer-Einheit "*) HC=netz HN=Benutzer-Manager ;;
+	"Kernel-Einstellung neu oder geändert: "*) p=${l#*: } && HC=netz HN=${p##*/} ;;
+	"Kernel: "*) HC=netz HN=Kernel ;;
+	"Manager-Umgebung: "* | "Manager-Umgebung während der Freigabe geändert"*) HC=netz HN=Manager-Umgebung ;;
+	"Grundregel ließ sich nicht sperren: "*) HC=netz HN="Jobs der Grundregel" ;;
+	"System für soft-reboot: $NEXTROOT") HC=netz HN=$NEXTROOT ;;
+	"Einhängung neu oder geändert: "*)
+		p=${l#*: }
+		p=${p% (*}
+		data_mount "$p" || HC=netz HN=$p
+		;;
+	"Datei "* | "Ordner "*)
+		p=${l#*: }
+		if in_paths "$p" "${SHUTDOWN_PATHS[@]}"; then
+			HC=netz HN=$p
+		elif in_paths "$p" "${HOOK_PATHS[@]}"; then
+			HC=aus HN=$p
+		fi
+		;;
+	esac
 	return 0
 }
 
-# off_hint   Aus den Zeilen von residue (Standardeingabe) ein Hinweis für den Techniker: Hat sich
-#   geändert, was beim Weiterarbeiten von selbst als root oder als Live-Benutzer läuft (hook_path,
-#   Dateien geladener Einheiten, Benutzer-Manager), läuft ein Prozess des Live-Benutzers aus der
-#   Freigabe (er hat sudo ohne Kennwort) oder hat sich etwas am Kernel geändert (Einstellungen,
-#   Module, Taint, BPF), soll er ausschalten, bevor er weiterarbeitet: So ein Weg wartet auf das
-#   nächste apt, die nächste Anmeldung, das nächste Gerät oder den nächsten Absturz, nicht auf den
-#   Neustart. Steht im Rückstand gleich nach efi_hint (status zeigt die erste Zeile), außer now_hint
-#   gibt einen Hinweis: Der sagt, am Netzschalter auszuschalten, nicht über Beenden.
-off_hint() {
-	local l p items="" k=0
+# hint_add LISTE ZÄHLER NAME   Hängt NAME einmal an LISTE an, höchstens drei Namen (switch_hint).
+hint_add() {
+	local -n list=$1 count=$2
+	[[ ", $list, " == *", $3, "* ]] && return 0
+	if ((count++ < 3)); then list+="${list:+, }$3"; fi
+	return 0
+}
+
+# switch_hint   Aus den Zeilen von residue (Standardeingabe) der Hinweis, wie der Techniker ausschalten
+#   soll (hint_item), oder nichts. Läuft eine Einheit weiter (jetzt): sofort am Netzschalter, nicht
+#   über Beenden, das sie stoppte. Führte Beenden etwas aus der Freigabe aus (netz): vor dem
+#   Weiterarbeiten am Netzschalter. Läuft nur beim Weiterarbeiten etwas von selbst (aus): vor dem
+#   Weiterarbeiten über Beenden > Ausschalten. So ein Weg wartet auf das nächste apt, die nächste
+#   Anmeldung oder den nächsten Lauf von cron, nicht auf den Neustart. Es gilt der stärkste Hinweis.
+switch_hint() {
+	local l j="" n="" a="" kj=0 kn=0 ka=0
 	while IFS= read -r l; do
-		p=
-		case $l in
-		"Datei einer geladenen Einheit geändert: "*)
-			p=${l#*: }
-			[[ $p == "$TRANSIENT"/* ]] && p=
-			;;
-		"Prozesse von $LIVE_USER seit dem Freischalten: "*) p="Prozesse von $LIVE_USER" ;;
-		"Anmeldung oder Laufzeitordner von $LIVE_USER seit dem Freischalten: "*) p="Anmeldung von $LIVE_USER" ;;
-		"Benutzer-"* | "Umgebung des Benutzer-Managers "* | "Datei einer geladenen Benutzer-Einheit "*) p=Benutzer-Manager ;;
-		"Datei "* | "Ordner "* | "Unit-Datei "* | "Unit-Ordner "*)
-			p=${l#*: }
-			hook_path "$p" || p=
-			;;
-		"Einheit mit geänderter Unit-Datei (NeedDaemonReload): "*) p=${l#*: } ;;
-		"Kernel-Einstellung neu oder geändert: "*) p=${l#*: } p=${p##*/} ;;
-		"Kernel: "*) p=Kernel ;;
+		hint_item "$l"
+		case $HC in
+		jetzt) hint_add j kj "$HN" ;;
+		netz) hint_add n kn "$HN" ;;
+		aus) hint_add a ka "$HN" ;;
 		esac
-		[[ -n $p && ", $items, " != *", $p, "* ]] || continue
-		((k++ < 3)) && items+="${items:+, }$p"
 	done
-	((k > 3)) && items+=", …"
-	[[ -z $items ]] || echo "Vor dem Weiterarbeiten ausschalten (Beenden > Ausschalten): geändert, was von selbst als root oder $LIVE_USER läuft ($items)"
+	if [[ -n $j ]]; then
+		((kj > 3)) && j+=", …"
+		echo "Sofort ausschalten: Netzschalter gedrückt halten, nicht Beenden > Ausschalten oder Neustart (läuft weiter, beim Beenden liefe Code aus der Freigabe: $j)"
+	elif [[ -n $n ]]; then
+		((kn > 3)) && n+=", …"
+		echo "Vor dem Weiterarbeiten ausschalten: Netzschalter gedrückt halten, nicht Beenden > Ausschalten oder Neustart (beim Beenden liefe als root oder $LIVE_USER Code aus der Freigabe: $n)"
+	elif [[ -n $a ]]; then
+		((ka > 3)) && a+=", …"
+		echo "Vor dem Weiterarbeiten ausschalten (Beenden > Ausschalten): geändert, was von selbst als root oder $LIVE_USER läuft ($a)"
+	fi
 	return 0
 }
 
@@ -2282,7 +2366,11 @@ persist_changed() {
 
 # snapshot   Hält fest, was es beim Freischalten schon gab. Neu ist, was danach dazukommt.
 snapshot() {
-	local f
+	local m
+	m=$(umask)
+	# Jede Datei entsteht nur für root lesbar (umask), lesbar für jeden wird danach nur, was status
+	# auch als lf-claude und als Techniker liest.
+	umask 077
 	install -d -m 0755 "$SNAP"
 	# Bezug für die ctime in fs_new: Die Datei entsteht jetzt.
 	rm -f "$SNAP/zeit" && : >"$SNAP/zeit"
@@ -2311,11 +2399,13 @@ snapshot() {
 	efivars_now >"$SNAP/efivars"
 	if persist_mounted; then echo offen; else echo zu; fi >"$SNAP/persist-zustand"
 	persist_now >"$SNAP/persist"
-	chmod 0644 "$SNAP"/*
-	# Nur für root: Eine Summe über einen kurzen geheimen Wert ließe sich durchprobieren, und die
-	# Namen auf dem Speicher gehören dem Techniker.
-	chmod 0600 "$SNAP/creds" "$SNAP/unitpaths" "$SNAP/unitfiles" "$SNAP/efivars" "$SNAP/persist" "$SNAP/userpaths"
-	for f in "$SNAP"/benutzer-*; do [[ -f $f ]] && chmod 0600 "$f"; done
+	chmod 0600 "$SNAP"/*
+	# Für jeden lesbar nur, was status ohne root braucht (quick_residue, kept_unit): die Einheiten,
+	# die sudo-Dateien, der Beginn der Freigabe und die Kette der Grundregel. Der Rest bleibt bei
+	# root: Namen unter /root, im Home des Technikers und auf dem Speicher, die Umgebung des
+	# Managers, Summen über Credentials (eine über einen kurzen geheimen Wert ließe sich durchprobieren).
+	chmod 0644 "$SNAP/units" "$SNAP/units-aktiv" "$SNAP/sudoers" "$SNAP/start" "$SNAP/chain"
+	umask "$m"
 	return 0
 }
 
@@ -2351,23 +2441,24 @@ quick_residue() {
 #   kexec geladener Kernel), Module, Taint und BPF, ein System für soft-reboot, Einhängungen,
 #   Credentials von Diensten, EFI-Variablen, der Speicher LF-DATA und die Umgebung des Managers, auch
 #   eine schon zurückgesetzte, die Benutzer-Manager, Prozesse des Live-Benutzers aus der Freigabe und
-#   jede Einheit, die das Ende beendet hat. Zuerst steht, was der Techniker vor dem nächsten Start
-#   tun muss (efi_hint): Ausschalten setzt EFI-Variablen nicht zurück, den Rückstand aber schon (er
-#   liegt im RAM). Dann, ob er vor dem Weiterarbeiten ausschalten soll (off_hint), dann eine
-#   Grundregel, die sich nicht sperren ließ. Rückgabe 1, wenn residue_lines abbricht.
+#   jede Einheit, die das Ende beendet hat. Zuerst steht, wie der Techniker ausschalten soll
+#   (switch_hint), und was er vor dem nächsten Start tun muss (efi_hint): Ausschalten setzt
+#   EFI-Variablen nicht zurück, den Rückstand aber schon (er liegt im RAM). Sagt der erste Hinweis,
+#   am Netzschalter auszuschalten, kommt der zu EFI in dieselbe Zeile (status zeigt die erste), sonst
+#   steht er davor. Dann eine Grundregel, die sich nicht sperren ließ. Rückgabe 1, wenn residue_lines
+#   abbricht.
 residue() {
-	local e r n f=""
+	local e r h f=""
 	e=$(efivars_changed)
 	# "ENDE" am Schluss: Fehlt es, ist residue_lines nicht bis zum Ende gekommen (end_residue).
 	r=$(residue_lines "$e" && echo ENDE)
-	n=$(now_hint <<<"$r")
+	h=$(switch_hint <<<"$r")
 	[[ -z $e ]] || f=$(efi_hint <<<"$e")
-	if [[ -n $n ]]; then
-		# Sofort ausschalten geht vor, ein Hinweis zu EFI kommt in dieselbe Zeile: status zeigt die erste.
-		echo "$n${f:+. Danach: $f}"
+	if [[ $h == *"Netzschalter gedrückt halten"* ]]; then
+		echo "$h${f:+. Danach: $f}"
 	else
 		[[ -z $f ]] || echo "$f"
-		off_hint <<<"$r"
+		[[ -z $h ]] || echo "$h"
 	fi
 	if [[ $r == ENDE || $r == *$'\n'ENDE ]]; then
 		r=${r%ENDE}
@@ -2430,7 +2521,8 @@ residue_lines() {
 }
 
 # end_residue   residue, für das Ende einer Freigabe: Bricht eine Prüfung ab (set -u, ein Fehler
-#   in einer Unterschale), kommt "Prüfung des Rückstands abgebrochen" dazu.
+#   in einer Unterschale), kommt "Prüfung des Rückstands abgebrochen" dazu, und steht oben noch
+#   kein Hinweis aufs Ausschalten am Netzschalter, kommt der davor: Was noch läuft, ist dann offen.
 end_residue() {
 	local r
 	# "ENDE" am Schluss: Fehlt es, ist residue nicht bis zum Ende gekommen.
@@ -2440,6 +2532,7 @@ end_residue() {
 		r=${r%$'\n'}
 	else
 		r+=${r:+$'\n'}"Prüfung des Rückstands abgebrochen"
+		[[ ${r%%$'\n'*} == *"Netzschalter gedrückt halten"* ]] || r="$(switch_hint <<<"Prüfung des Rückstands abgebrochen")"$'\n'"$r"
 	fi
 	printf '%s' "$r"
 }
@@ -2514,13 +2607,15 @@ off() {
 	[[ -e $RULE || -e $UNTIL || (-e $SNAP/units && ! -e $LAST) ]] && had=1
 	# Als Erstes, vor allem Anhalten und Beenden: die Grundregel sperren (base_lock ende) und als
 	# erste Zeile des Rückstands festhalten, dass die Prüfung nicht abgeschlossen ist. Bricht das Ende
-	# ab (KILL, soft-reboot, Stromausfall), bleibt beides. Erst ein Ende, das abschließt, ersetzt die
-	# Zeile, und nur eines ohne Rückstand gibt die Grundregel wieder frei (base_unlock).
+	# ab (KILL, soft-reboot, Stromausfall), bleibt beides, und was aus der Freigabe noch läuft, ist
+	# offen: Die Zeile sagt darum auch, am Netzschalter auszuschalten (wie switch_hint). Erst ein Ende,
+	# das abschließt, ersetzt die Zeile, und nur eines ohne Rückstand gibt die Grundregel wieder frei
+	# (base_unlock).
 	base_lock "Ende der Freigabe" ende
 	install -d /run/lf
 	old=$(awk -v p="$END_OPEN" 'index($0, p) != 1' "$RESIDUE" 2>/dev/null)
 	{
-		echo "$END_OPEN, Ende seit $(date +%H:%M)"
+		echo "$END_OPEN, Ende seit $(date +%H:%M). Vor dem Weiterarbeiten ausschalten: Netzschalter gedrückt halten, nicht Beenden > Ausschalten oder Neustart"
 		[[ -z $old ]] || printf '%s\n' "$old"
 	} >"$RESIDUE.neu" && chmod 0644 "$RESIDUE.neu" && mv -f -- "$RESIDUE.neu" "$RESIDUE"
 	trap 'cg_freeze 0' EXIT
@@ -2566,6 +2661,15 @@ off() {
 		stop_new_units
 		stop_root_in_claude
 		stop_granted
+		r=$(end_residue)
+	fi
+	# Mit Rückstand bleibt sie gesperrt. Hat etwas die Sperre aus dem ersten Schritt aufgehoben (etwa
+	# eine Einheit aus der Freigabe außerhalb der cgroup von Claude, bevor stop_new_units sie
+	# erreichte, die Datei zurückgeschoben) oder ließ sie sich nicht sperren: noch einmal, dann neu
+	# prüfen. Lässt sie sich wieder nicht sperren, steht das im Rückstand und im Hinweis aufs
+	# Ausschalten (residue_lines).
+	if [[ -n $r && -z $(lock_kind) ]]; then
+		base_lock "Rückstand am Ende" ende
 		r=$(end_residue)
 	fi
 	if [[ -z $r ]] && ! base_unlock; then

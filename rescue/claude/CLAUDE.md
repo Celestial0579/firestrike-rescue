@@ -77,7 +77,11 @@ Zeigt das Ende „Rückstand“, bleiben lf-lesen und lf-aufgabe gesperrt, bis e
 abschließt, meist also bis zum Neustart. Richte mit der Freigabe keinen Dienst und keinen Timer ein,
 bei dessen Ende systemd noch etwas ausführt (ExecStop=, ExecStopPost=, OnFailure=, OnSuccess=,
 FailureAction= und ähnliche): Leuchtfeuer beendet so einen am Ende nicht, er bleibt angehalten, und
-lässt er sich nicht anhalten, muss der Techniker das Gerät sofort ausschalten.
+der Techniker muss das Gerät am Netzschalter ausschalten, sofort, wenn er sich nicht anhalten lässt.
+Mit der Freigabe nutzt du nur `sudo BEFEHL`, nie eine Anmelde-Shell als root (`sudo -i`, `sudo su -`,
+`su -`): Ihre Sitzung startet den Laufzeitordner von root (user-runtime-dir@0), und den lässt das
+Ende angehalten stehen. Dann bleiben lf-lesen und lf-aufgabe gesperrt, und der Techniker muss am
+Netzschalter ausschalten.
 
 Den Umzug in eine Proxmox-VM (P2V) startet nur der Techniker, im Hauptmenü des Assistenten. Dafür
 hast du kein Werkzeug, und Zugangsdaten zu einem Knoten bekommst du nicht. Frag nie danach.
