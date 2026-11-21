@@ -111,10 +111,10 @@ mkdir -p "$TR" "$W/etc/systemd/system" "$W/run/systemd/system" "$W/run/systemd/g
 printf '[Unit]\nDescription=Platzhalter\n' >"$W/run/systemd/generator/boot.mount"
 # Unit-Dateien unter /usr und ein Dienst, den jeder über D-Bus startet (wie systemd-hostnamed, Q6).
 mkdir -p "$W/usr/lib/systemd/system" "$W/usr/share/dbus-1/system-services"
-for u in debug-shell.service systemd-hostnamed.service systemd-timedated.service serial-getty@.service user@.service user-runtime-dir@.service; do
+for u in debug-shell.service systemd-hostnamed.service systemd-timedated.service systemd-localed.service systemd-machined.service serial-getty@.service user@.service user-runtime-dir@.service; do
 	printf '[Unit]\nDescription=%s\n' "$u" >"$W/usr/lib/systemd/system/$u"
 done
-for n in hostname1:hostnamed timedate1:timedated; do
+for n in hostname1:hostnamed timedate1:timedated locale1:localed machine1:machined; do
 	printf '[D-BUS Service]\nName=org.freedesktop.%s\nExec=/bin/false\nUser=root\nSystemdService=dbus-org.freedesktop.%s.service\n' "${n%%:*}" "${n%%:*}" \
 		>"$W/usr/share/dbus-1/system-services/org.freedesktop.${n%%:*}.service"
 done
@@ -212,7 +212,15 @@ show)
 		while IFS= read -r l; do [[ \$want == *" \${l%%=*} "* ]] && printf '%s\n' "\$l"; done <"$T/unit/\$u" 2>/dev/null
 	fi
 	;;
+# Angehalten (freeze) stoppt systemd 259 keine Einheit. Eine mit Prozessen ist nach kill -s KILL
+# schon weg; eine ohne (Datei prozesslos-NAME, etwa user-runtime-dir@0) bleibt aktiv.
+freeze) touch "$T/frozen-\$u" ;;
+thaw) rm -f "$T/frozen-\$u" ;;
 stop)
+	if [[ -e "$T/frozen-\$u" && -e "$T/prozesslos-\$u" ]]; then
+		echo "Cannot stop frozen unit \$u" >&2
+		exit 1
+	fi
 	if [[ -f "$T/unit/\$u" ]]; then
 		sed -i 's/^ActiveState=.*/ActiveState=inactive/' "$T/unit/\$u"
 		# Danach räumt systemd die Einheit weg (nicht mehr geladen), eine aus /run/systemd/transient
@@ -344,9 +352,14 @@ unit() {
 # spawn   Startet sleep losgelöst (nicht als Kind dieses Tests) und gibt die PID aus.
 spawn() { (sleep 300 >/dev/null 2>&1 &
 	echo $!); }
-# spawn_noterm   Wie spawn, aber sleep übergeht TERM (wie ein Prozess in einer angehaltenen cgroup).
-spawn_noterm() { (bash -c 'trap "" TERM; exec sleep 300' >/dev/null 2>&1 &
-	echo $!); }
+# spawn_stopped   Wie spawn, aber mit SIGSTOP angehalten: TERM bleibt anhängig wie bei einem Prozess
+#   in einer angehaltenen cgroup, nur KILL beendet ihn. Der Prozess selbst tut nichts dagegen.
+spawn_stopped() {
+	local p
+	p=$(spawn)
+	kill -STOP "$p"
+	echo "$p"
+}
 # line TEXT   Zeile, in der TEXT zum ersten Mal im Protokoll steht.
 line() { grep -n -m1 -F -- "$1" "$LOG" | cut -d: -f1; }
 
@@ -367,6 +380,7 @@ reboot_sim() {
 		rm -rf "$d"
 	done
 	rm -rf "$SNAP" "$R" "$W/run/nextroot" "$W/run/nextroot.lf-gesperrt."*
+	rm -f "$T"/frozen-* "$T"/prozesslos-*
 }
 
 echo "status:"
@@ -789,7 +803,7 @@ fake "$Q7" 1001 0 1 "" "/opt/claude/chrome-sandbox --type=zygote" /opt/claude/ch
 fake "$Q8" 0 0 1 "" "sleep 300"
 # mit der Freigabe als ein anderer Benutzer gestartet, in der angehaltenen cgroup: TERM käme
 # erst nach dem Auftauen an
-Q10=$(spawn_noterm)
+Q10=$(spawn_stopped)
 fake "$Q10" 1000 1000 1 "SUDO_USER=lf-claude|SUDO_COMMAND=/usr/bin/sleep 300" "sleep 300"
 printf '%s\n' "$Q1" "$Q2" "$Q3" "$Q4" "$Q5" "$Q6" "$Q7" "$Q10" >"$CG/cli.scope/cgroup.procs"
 echo "$Q8" >"$CGU/cgroup.procs"
@@ -1069,6 +1083,15 @@ unit vorher.service no /system.slice/vorher.service "$US/vorher.service"
 unit debug-shell.service no /system.slice/debug-shell.service "$US/debug-shell.service"
 unit systemd-hostnamed.service no /system.slice/systemd-hostnamed.service "$US/systemd-hostnamed.service"
 prop systemd-hostnamed.service Names "systemd-hostnamed.service dbus-org.freedesktop.hostname1.service"
+prop systemd-hostnamed.service Restart no
+# Derselbe Fall mit Restart= (eine Abweichung vom Dienst des Systems, die nur Platzhalter ist).
+unit systemd-localed.service no /system.slice/systemd-localed.service "$US/systemd-localed.service"
+prop systemd-localed.service Names "systemd-localed.service dbus-org.freedesktop.locale1.service"
+prop systemd-localed.service Restart on-failure
+unit systemd-machined.service no /system.slice/systemd-machined.service "$US/systemd-machined.service"
+prop systemd-machined.service Names "systemd-machined.service dbus-org.freedesktop.machine1.service"
+prop systemd-machined.service Restart no
+prop systemd-machined.service ExecStopPost "{ path=/bin/true ; argv[]=/bin/true ; ignore_errors=no }"
 mkdir -p "$W/run/systemd/system/systemd-timedated.service.d"
 printf '[Unit]\nDescription=Platzhalter\n' >"$W/run/systemd/system/systemd-timedated.service.d/q6.conf"
 unit systemd-timedated.service no /system.slice/systemd-timedated.service "$US/systemd-timedated.service" "" "$W/run/systemd/system/systemd-timedated.service.d/q6.conf"
@@ -1084,15 +1107,33 @@ unit session-8.scope yes /user.slice/user-0.slice/session-8.scope
 # Ohne eigene Prozesse: eine Einhängung (die prüft mounts_changed) und ein Ziel.
 unit mnt-q6.mount no "" "$W/run/systemd/generator/boot.mount"
 unit q6.target no "" ""
+# Ein Dienst ohne Prozess (oneshot mit RemainAfterExit), den systemd angehalten nicht stoppt.
+unit q6-ohne-prozess.service yes /system.slice/q6-ohne-prozess.service
+touch "$T/prozesslos-q6-ohne-prozess.service"
 bash "$F" aus >"$T/out" 2>&1
 check "debug-shell.service (eine Shell als root an tty9), während der Freigabe gestartet: gestoppt und Rückstand (Q6)" 'grep -qx "stop debug-shell.service" "$T/systemctl.log" && grep -qxF "Einheit beendet: debug-shell.service" "$R"'
 check "ein Dienst des Systems, den jeder über D-Bus startet (systemd-hostnamed): gestoppt, ohne Rückstand" 'grep -qx "stop systemd-hostnamed.service" "$T/systemctl.log" && ! grep -qF "systemd-hostnamed" "$R"'
+check "derselbe Dienst ist nicht angehalten (systemd 259 startete ihn sonst bis zum Neustart nicht mehr)" '! grep -qx "freeze systemd-hostnamed.service" "$T/systemctl.log" && grep -qx "kill -s KILL systemd-hostnamed.service" "$T/systemctl.log"'
+check "ein solcher Dienst mit Restart= oder ExecStopPost=: angehalten, gestoppt und Rückstand" '(for u in systemd-localed.service systemd-machined.service; do grep -qx "freeze $u" "$T/systemctl.log" && grep -qx "stop $u" "$T/systemctl.log" && grep -qxF "Einheit beendet: $u" "$R" || exit 1; done)'
 check "derselbe Dienst mit einem Drop-in (systemd-timedated): gestoppt und Rückstand, das Drop-in auch" 'grep -qx "stop systemd-timedated.service" "$T/systemctl.log" && grep -qxF "Einheit beendet: systemd-timedated.service" "$R" && grep -qxF "Unit-Datei neu: $W/run/systemd/system/systemd-timedated.service.d/q6.conf" "$R"'
 check "Konsolen, Benutzerdienst, Laufzeitordner und Anmeldung des Technikers bleiben; die von root nicht" '! grep -qE "^(stop|freeze|kill -s KILL) (serial-getty@ttyS0.service|user@1000.service|user-runtime-dir@1000.service|session-7.scope)$" "$T/systemctl.log" && grep -qx "stop user@0.service" "$T/systemctl.log" && grep -qx "stop user-runtime-dir@0.service" "$T/systemctl.log" && grep -qx "stop session-8.scope" "$T/systemctl.log" && grep -qxF "Einheit beendet: user@0.service" "$R"'
 check "lief schon beim Freischalten, nur neu gestartet, Unit-Datei unverändert: bleibt" '! grep -qx "stop vorher.service" "$T/systemctl.log"'
 check "Einheiten ohne eigene Prozesse (Einhängung, Ziel): nicht gestoppt" '! grep -qE "^stop (mnt-q6.mount|q6.target)$" "$T/systemctl.log"'
 check "beendete Dienste des Systems sperren die Grundregel nicht" '[[ -f $T/sudoers.d/lf-claude && ! -e $T/sudoers.d/lf-claude.lf-gesperrt ]]'
+check "ein Dienst ohne Prozess, den systemd angehalten nicht stoppt: bleibt angehalten, ein Versuch je Freigabe, Rückstand ohne beendet" '[[ $(grep -cx "stop q6-ohne-prozess.service" "$T/systemctl.log") == 1 && -e $T/frozen-q6-ohne-prozess.service ]] && ! grep -qx "thaw q6-ohne-prozess.service" "$T/systemctl.log" && grep -qxF "Einheit angehalten, nicht beendet: q6-ohne-prozess.service" "$R" && ! grep -qxF "Einheit beendet: q6-ohne-prozess.service" "$R" && grep -qE "^Einheiten: (.* )?q6-ohne-prozess.service( |$)" "$R" && [[ $(grep -c "angehalten, nicht beendet: Einheit q6-ohne-prozess.service" "$LOG") == 1 ]]'
 rm -r "$W/run/systemd/system/systemd-timedated.service.d"
+# Mit geänderter Umgebung des Managers (ein Platzhalter) liefe ein neuer Start über D-Bus mit ihr.
+reboot_sim
+: >"$T/systemctl.log"
+cp "$T/menv.json" "$T/menv-q6.json"
+bash "$F" an 30 >"$T/out" 2>&1
+unit systemd-hostnamed.service no /system.slice/systemd-hostnamed.service "$US/systemd-hostnamed.service"
+prop systemd-hostnamed.service Names "systemd-hostnamed.service dbus-org.freedesktop.hostname1.service"
+prop systemd-hostnamed.service Restart no
+jq -c '. + ["LQ6=platzhalter"]' "$T/menv-q6.json" >"$T/menv.json"
+bash "$F" aus >"$T/out" 2>&1
+check "derselbe Dienst bei geänderter Umgebung des Managers: angehalten, gestoppt und Rückstand" 'grep -qx "freeze systemd-hostnamed.service" "$T/systemctl.log" && grep -qx "stop systemd-hostnamed.service" "$T/systemctl.log" && grep -qxF "Einheit beendet: systemd-hostnamed.service" "$R"'
+cp "$T/menv-q6.json" "$T/menv.json"
 
 echo "Suchpfade für Unit-Dateien (Q7):"
 reboot_sim
@@ -1302,6 +1343,7 @@ check "CLAUDE.md: lange Kopien nur über lf-aufgabe, nie direkt mit sudo" 'tr "\
 check "Anleitung: Änderungen an dem, was die Grundregel als root ausführt, und neue Einhängungen sperren lf-lesen und lf-aufgabe bis zum Neustart (Q5)" 'grep -qF "sperrt Leuchtfeuer diese beiden Werkzeuge für Claude bis zum Neustart und beendet Rettungen und Einhängungen, die während der Freigabe gestartet sind. Wähle das Ziel und entsperre LF-DATA darum vor dem Freischalten." docs/anleitung.md'
 check "Anleitung: geänderte EFI-Variablen zuerst im Rückstand, dann Startreihenfolge und MOK prüfen; Firmware, Disks und Hardware erkennt Leuchtfeuer nicht" 'grep -qF "Hat sich eine EFI-Variable für den Start geändert, zeigt der Rückstand das zuerst: Prüfe dann vor dem nächsten Start die Startreihenfolge im Firmware-Setup und lehne eine unerwartete MOK-Abfrage ab." docs/anleitung.md && grep -qF "Was root sonst in der Firmware, auf angeschlossenen Disks oder an der Hardware ändert, erkennt Leuchtfeuer nicht, und ein Neustart setzt es nicht zurück." docs/anleitung.md'
 check "Anleitung und Code nennen denselben Schritt für geänderte EFI-Variablen" 'grep -qF "vor dem nächsten Start die Startreihenfolge im Firmware-Setup prüfen und eine unerwartete MOK-Abfrage ablehnen" rescue/bin/lf-freigabe'
+check "Anleitung: Startet ein beendeter Dienst danach nicht (frozen unit), hilft nur ein Neustart" 'grep -qF "Startet ein solcher Dienst danach nicht („frozen unit“), hilft nur ein Neustart." docs/anleitung.md'
 check "CLAUDE.md: apt, PAM, sudo oder eine eigene Einhängung sperren lf-lesen und lf-aufgabe bis zum Neustart" 'tr "\n" " " <rescue/claude/CLAUDE.md | grep -qF "sperrt Leuchtfeuer am Ende auch lf-lesen und lf-aufgabe bis zum Neustart und beendet Rettungen aus der Freigabe. Sag das dem Techniker vorher."'
 
 rm -rf "$T"

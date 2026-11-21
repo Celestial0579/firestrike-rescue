@@ -780,28 +780,56 @@ new_units() {
 #   fremden Prozess in einem Dienst, der bleibt, beendet es allein. Neue, die eine davon noch
 #   gestartet hat, folgen in der nächsten Runde. Jede beendete Einheit kommt nach STOPPED und bleibt
 #   bis zum Neustart ein Rückstand (stopped_residue): Sie lief während der Freigabe als root.
+#   systemd 259 stoppt und startet keine angehaltene Einheit ("Cannot perform operation on frozen
+#   unit") und taut keine auf, die nicht mehr läuft ("Unit is not active"). Eine, die nach dem KILL
+#   aus ist, bleibt angehalten, solange systemd sie geladen hält (etwa systemd-hostnamed über seinen
+#   Socket), und startet bis zum Neustart nicht wieder, auch nicht über D-Bus. Einen Dienst aus
+#   dbus_stock ohne Restart=, ExecStop= und ExecStopPost= hält es darum nicht an, solange die
+#   Umgebung des Managers unverändert ist (wie quiet in stopped_residue): Nach dem KILL startet in
+#   ihm nichts neu, und ein neuer Start über D-Bus ist der des Systems.
+#   Eine Einheit, die nach dem KILL noch aktiv ist, weil sie keinen Prozess hatte (etwa
+#   user-runtime-dir@0.service: oneshot mit RemainAfterExit, hängt /run/user/0 ein), bleibt aktiv
+#   und angehalten: Ihr ExecStop= läuft nicht, und ohne root taut sie niemand auf. Sie kommt als
+#   "angehalten" nach STOPPED und nach HELD, keine weitere Runde dieses Endes versucht sie noch
+#   einmal; new_units führt sie weiter.
 STOPPED=$SNAP/beendet
+declare -A HELD=()
 stop_new_units() {
-	local i u p
+	local i k n u p plain=0
 	local -a ls
+	[[ ! -s $MENV_RESET && -z $(menv_changed) ]] && plain=1
 	for ((i = 0; i < 5; i++)); do
 		mapfile -t ls < <(new_units)
-		((${#ls[@]})) || return 0
+		n=0
 		for u in "${ls[@]}"; do
 			if [[ $u == *" "* ]]; then
 				p=${u##* } u=${u% *}
 				note "beendet: $p $(tr '\0' ' ' <"/proc/$p/cmdline" 2>/dev/null | cut -c1-120) (fremd in $u)"
 				kill -KILL "$p" 2>/dev/null
+				n=$((n + 1))
 				continue
 			fi
-			note "beendet: Einheit $u"
+			[[ -n ${HELD[$u]:-} ]] && continue
+			n=$((n + 1))
 			unit_info "$u"
-			if dbus_stock; then echo "dbus $u"; else echo "einheit $u"; fi >>"$STOPPED"
-			systemctl freeze "$u" 2>/dev/null
+			k=einheit
+			((plain)) && dbus_stock && [[ ${ui[Restart]:-} == no && -z ${ui[ExecStop]:-}${ui[ExecStopPost]:-} ]] && k=dbus
+			echo "$k $u" >>"$STOPPED"
+			[[ $k == dbus ]] || systemctl freeze "$u" 2>/dev/null
 			systemctl kill -s KILL "$u" 2>/dev/null
 			systemctl stop "$u" 2>/dev/null
 			systemctl reset-failed "$u" 2>/dev/null
+			unit_info "$u"
+			case ${ui[ActiveState]:-} in
+			inactive | failed | "") note "beendet: Einheit $u" ;;
+			*)
+				HELD[$u]=1
+				echo "angehalten $u" >>"$STOPPED"
+				note "angehalten, nicht beendet: Einheit $u (${ui[ActiveState]})"
+				;;
+			esac
 		done
+		((n)) || return 0
 	done
 	return 0
 }
@@ -1393,13 +1421,21 @@ dbus_stock() {
 }
 
 # stopped_residue   "Einheit beendet: EINHEIT" je Einheit, die ein Ende dieser Freigabe beendet hat
-#   (STOPPED, bis zum Neustart), außer Diensten aus dbus_stock, solange die Umgebung des Managers
-#   unverändert ist.
+#   (STOPPED, bis zum Neustart), außer Diensten aus dbus_stock, die stop_new_units ohne Anhalten
+#   beendet hat (dbus), solange die Umgebung des Managers unverändert ist. "Einheit angehalten,
+#   nicht beendet: EINHEIT" für eine, die sich nicht stoppen ließ (stop_new_units).
 stopped_residue() {
 	local k u quiet=0
+	local -A held=()
 	[[ -s $STOPPED ]] || return 0
 	[[ ! -s $MENV_RESET && -z $(menv_changed) ]] && quiet=1
+	while read -r k u; do [[ $k == angehalten ]] && held[$u]=1; done <"$STOPPED"
 	while read -r k u; do
+		if [[ $k == angehalten ]]; then
+			echo "Einheit angehalten, nicht beendet: $u"
+			continue
+		fi
+		[[ -n ${held[$u]:-} ]] && continue
 		[[ $k == dbus ]] && ((quiet)) && continue
 		echo "Einheit beendet: $u"
 	done < <(sort -u "$STOPPED")
