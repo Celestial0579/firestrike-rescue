@@ -1127,6 +1127,30 @@ bash "$F" an 30 >"$T/out" 2>&1
 bash "$F" ablauf >"$T/out" 2>&1
 check "nach dem Neustart, ohne Rückstand: nach dem Ablauf wieder aus, Neustart empfohlen; ein sauberes Ende löscht den Schnappschuss" 'aus_n && [[ ! -e $R && ! -e $SNAP/units ]]'
 
+echo "status ohne Leserecht auf die Grundregel (#92):"
+# Techniker und lf-claude lesen die Grundregel nicht (0440, root), root schon: Sein Schnappschuss hat
+# ihre Prüfsumme. Im Test: Rechte 000, im Schnappschuss dieselben Rechte und die Prüfsumme von vorher.
+cp "$SNAP/sudoers" "$T/schnappschuss-92"
+cp "$T/sudoers.d/lf-claude" "$T/grundregel-92"
+m92=$(stat -c %a "$T/sudoers.d/lf-claude")
+chmod 000 "$T/sudoers.d/lf-claude"
+awk -v b="$T/sudoers.d/lf-claude" -v m="$(stat -c %f "$T/sudoers.d/lf-claude")" '$1 == b && $2 ~ /^inhalt:/ { sub(/^inhalt:[0-9a-f]+:/, "inhalt:" m ":", $2) } { print }' "$T/schnappschuss-92" >"$SNAP/sudoers"
+check "der Schnappschuss hat Rechte 000 und die Prüfsumme der Grundregel" '[[ $(grep -c "^$T/sudoers.d/lf-claude inhalt:8000:[0-9]*:[0-9]*:[0-9]*:[0-9a-f]\{64\}$" "$SNAP/sudoers") == 1 ]]'
+check "ohne Leserecht nach einem sauberen Ende: aus, Neustart empfohlen, nichts auf stderr" 'aus_n && [[ -z $(bash "$F" status 2>&1 >/dev/null) ]]'
+check "ohne Leserecht: die Statuszeile von Claude sagt Neustart empfohlen, kein ACHTUNG" '[[ $(bash "$F" zeile </dev/null 2>&1) =~ ^Leuchtfeuer:\ Claude\ arbeitet\ mit\ lf-lesen\ und\ lf-aufgabe,\ Neustart\ empfohlen\ \(letzte\ Freigabe\ bis\ [0-9]{2}:[0-9]{2}\)$ ]]'
+chmod 004 "$T/sudoers.d/lf-claude"
+check "ohne Leserecht: andere Rechte der Grundregel bleiben Rückstand" '[[ $(bash "$F" status 2>/dev/null) == "an: Rückstand nach der Freigabe (sudo-Datei neu oder geändert: $T/sudoers.d/lf-claude), Neustart empfohlen" ]]'
+chmod 200 "$T/sudoers.d/lf-claude"
+echo "# Platzhalter" >>"$T/sudoers.d/lf-claude"
+chmod 000 "$T/sudoers.d/lf-claude"
+check "ohne Leserecht: eine andere Größe der Grundregel bleibt Rückstand" '[[ $(bash "$F" status 2>/dev/null) == "an: Rückstand nach der Freigabe (sudo-Datei neu oder geändert: $T/sudoers.d/lf-claude), Neustart empfohlen" ]]'
+chmod 600 "$T/sudoers.d/lf-claude"
+cat "$T/grundregel-92" >"$T/sudoers.d/lf-claude"
+chmod "$m92" "$T/sudoers.d/lf-claude"
+cp "$T/schnappschuss-92" "$SNAP/sudoers"
+rm -f "$T/grundregel-92" "$T/schnappschuss-92"
+check "Grundregel und Schnappschuss wie vorher: aus, Neustart empfohlen" 'aus_n'
+
 echo "Manager-Umgebung (F13):"
 : >"$LOG"
 bash "$F" an 30 >"$T/out" 2>&1
@@ -2168,6 +2192,7 @@ check "der Freigabe-Dialog sagt, dass das Ende auch laufende root-Jobs von Claud
 check "Dialog und Anleitung: sicher endet root-Zugriff nur mit einem Neustart" '(($(grep -c "Sicher endet root-Zugriff nur mit einem Neustart" rescue/lib/claude.sh) >= 4)) && grep -q "Sicher endet root-Zugriff aber nur mit einem Neustart" docs/anleitung.md'
 check "Verlängern im Dialog: Rückfrage an der Konsole, eine Ablehnung wird gemeldet" 'grep -q "Rückfrage hier an der Konsole" rescue/lib/claude.sh && grep -q "Nicht verlängert. Details im Protokoll." rescue/lib/claude.sh'
 check "Freischalten und Verlängern im Dialog laufen direkt am Terminal, nicht über run (sudo-rs, GHSA-799j-44qx-x7xj)" '! grep -q "run sudo lf-freigabe an" rescue/lib/claude.sh &&grep -qxF "	sudo lf-freigabe an \"\$1\" || rc=\$?" rescue/lib/claude.sh && grep -qF "claude_freigabe_an \"\$min\" ||" rescue/lib/claude.sh && grep -qF "if claude_freigabe_an 30; then" rescue/lib/claude.sh'
+check "claude.sh liest lf-freigabe status überall ohne stderr: ohne root stört keine Meldung den Dialog (#92)" '(($(grep -c "lf-freigabe status" rescue/lib/claude.sh) == $(grep -c "lf-freigabe status 2>/dev/null)" rescue/lib/claude.sh)))'
 check "CLI und Desktop laufen in der Slice, die lf-freigabe am Ende prüft" '[[ $(sed -n "s/^CLAUDE_SLICE=//p" rescue/lib/claude.sh) == "$(sed -n "s/^SLICE=//p" rescue/bin/lf-freigabe)" ]] && grep -q "claude_scope sh -c" rescue/lib/claude.sh && grep -qF -- "--slice=\"\$CLAUDE_SLICE\"" rescue/lib/claude-desktop-start'
 check "lf-freigabe lässt genau die ntfs-3g-Dienste gelten, die part_mount_ro startet (Name, Optionen, Einhängepunkt)" 'grep -qF "ntfs3g_ro ro,nodev,nosuid,noexec,recover \"\$part\" \"\$mp\"" rescue/lib/recover.sh && grep -qF "unit=\"lf-ntfs3g-\$(systemd-escape --path -- \"\$3\").service\"" rescue/lib/recover.sh && grep -qF "\${argv[2]} == ro,nodev,nosuid,noexec,recover" rescue/bin/lf-freigabe && grep -qF "[[ \$u == \"lf-ntfs3g-\$(systemd-escape --path -- \"\${argv[4]}\").service\" ]]" rescue/bin/lf-freigabe && [[ $(sed -n "s/^IMAGE_MNT=//p" rescue/bin/lf-freigabe) == "$(sed -n "s/^LF_IMAGE_MNT=\"\(.*\)\"$/\1/p" rescue/lib/common.sh)" ]]'
 check "recover.sh startet ntfs-3g so, wie lf-freigabe es verlangt: Type=forking und UnsetEnvironment, sonst nichts (F12, F13)" 'grep -qxF "	if ! run sudo systemd-run --quiet --collect --unit=\"\$unit\" -p Type=forking -p UnsetEnvironment=\"\$LF_ENV_UNSAFE\" \\" rescue/lib/recover.sh && grep -qxF "		--description=\"Leuchtfeuer: ntfs-3g, nur lesend unter \$3\" -- ntfs-3g -o \"\$1\" \"\$2\" \"\$3\"; then" rescue/lib/recover.sh && grep -qx "NTFS3G=/usr/bin/ntfs-3g" rescue/bin/lf-freigabe'

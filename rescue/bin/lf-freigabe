@@ -1450,7 +1450,8 @@ disable_new_cron() {
 #   und Besitzer von /etc/sudoers.d selbst. Es zählt die ctime: touch kann sie nicht zurückstellen.
 #   Die Datei der Grundregel steht nach Art, Besitzer, Gruppe, Größe und Inhalt da ("inhalt:"), auch
 #   gesperrt (base_locked): Sperren und wieder Freigeben ändern ihre ctime, und nach einer Sperre bis
-#   zum Neustart bleibt ein geänderter Inhalt Rückstand.
+#   zum Neustart bleibt ein geänderter Inhalt Rückstand. Die Prüfsumme des Inhalts gibt es nur mit
+#   Leserecht: Ohne root fehlt sie (sudo_neu).
 sudo_files() {
 	local f s
 	{
@@ -1459,8 +1460,8 @@ sudo_files() {
 		f=$BASE_FILE
 		[[ -e $f || -L $f ]] || f=$(base_locked) || f=
 		if [[ -n $f ]] && s=$(scan stat -c '%f:%u:%g:%s' -- "$f" 2>/dev/null); then
-			if [[ -f $f && ! -L $f && ${s##*:} =~ ^[0-9]+$ ]] && ((${s##*:} <= 65536)); then
-				s+=":$(scan sha256sum <"$f" 2>/dev/null | cut -c1-64)"
+			if [[ -f $f && ! -L $f && -r $f && ${s##*:} =~ ^[0-9]+$ ]] && ((${s##*:} <= 65536)); then
+				s+=":$({ scan sha256sum <"$f"; } 2>/dev/null | cut -c1-64)"
 			fi
 			echo "$BASE_FILE inhalt:$s"
 		fi
@@ -1470,6 +1471,18 @@ sudo_files() {
 			if (index($1, d) == 1) { n = substr($1, length(d) + 1); if (n ~ /\./ || n ~ /~$/) next }
 			print
 		}' | sort
+}
+
+# sudo_neu VORHER   Die Zeilen von sudo_files, die in VORHER fehlen, wie comm -13. status läuft auch
+#   als Techniker und als lf-claude, ohne Leserecht auf die Grundregel und damit ohne ihre Prüfsumme:
+#   Dann zählen Art, Besitzer, Gruppe und Größe aus VORHER (#92).
+sudo_neu() {
+	sudo_files | awk -v vorher="$1" -v base="$BASE_FILE" '
+		function ohne_summe(s, a) { return split(s, a, ":") == 6 ? a[1] ":" a[2] ":" a[3] ":" a[4] ":" a[5] : s }
+		FILENAME == vorher { alt[$0] = 1; if ($1 == base && $2 ~ /^inhalt:/) basis = $1 " " ohne_summe($2); next }
+		($0 in alt) { next }
+		$1 == base && $2 ~ /^inhalt:/ && split($2, t, ":") == 5 && $0 == basis { next }
+		{ print }' "$1" -
 }
 
 # menv   Die Umgebung des systemd-Managers, die jeder Dienst erbt: je Variable eine Zeile, der
@@ -2665,7 +2678,7 @@ quick_residue() {
 	if [[ -f $SNAP/sudoers ]]; then
 		while IFS= read -r f; do
 			[[ -n $f ]] && echo "sudo-Datei neu oder geändert: ${f%% *}"
-		done < <(comm -13 "$SNAP/sudoers" <(sudo_files))
+		done < <(sudo_neu "$SNAP/sudoers")
 	fi
 	groups=$(id -Gn "$CLAUDE" 2>&1 | tr ' ' '\n' | sort | tr '\n' ' ')
 	[[ $groups == "lf-claude render " ]] || echo "Gruppen: $groups"
@@ -2966,6 +2979,8 @@ off() {
 		# spätere Änderungen an Dateien, Unit-Dateien, Werkzeugen, Einhängungen, Credentials,
 		# EFI-Variablen, dem Speicher und der Manager-Umgebung (ein weiteres "aus" sperrte sonst die
 		# Grundregel). Bei einem Rückstand bleibt er, das nächste Ende prüft weiter dagegen.
+		# $SNAP/sudoers bleibt auch hier: status und jedes weitere Ende vergleichen die sudo-Dateien
+		# bis zum Neustart dagegen, ohne root ohne die Prüfsumme der Grundregel (sudo_neu).
 		rm -f "$SNAP/units" "$SNAP/units-aktiv" "$SNAP/files" "$SNAP/unitpaths" "$SNAP/reload" "$SNAP/chain" \
 			"$SNAP/knobs" "$SNAP/mounts" "$SNAP/creds" "$SNAP/efivars" "$SNAP/persist" "$SNAP/persist-zustand" \
 			"$SNAP/menv" "$SNAP/zeit" "$SNAP/start" "$SNAP/unitfiles" "$SNAP/userpaths" "$SNAP/kernel" \
