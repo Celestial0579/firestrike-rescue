@@ -1324,9 +1324,10 @@ power_menu() {
 		fi
 		persist_close
 		sync
-		# Ein echter Neustart: Hat root (etwa mit einer Freigabe für Claude) einen Kernel für kexec
-		# geladen oder unter /run/nextroot ein System abgelegt, startete systemctl sonst dorthin
-		# statt neu (GHSA-799j-44qx-x7xj).
+		# Hat root (etwa mit einer Freigabe für Claude) einen Kernel für kexec geladen oder unter
+		# /run/nextroot ein System abgelegt, startete systemctl sonst dorthin statt neu
+		# (GHSA-799j-44qx-x7xj). Eine Umleitung in den Einheiten des Neustarts selbst fängt das
+		# nicht ab, lf-freigabe meldet sie als Rückstand. Sicher ist Ausschalten (docs/anleitung.md).
 		sudo env SYSTEMCTL_SKIP_AUTO_KEXEC=1 SYSTEMCTL_SKIP_AUTO_SOFT_REBOOT=1 systemctl "$c"
 		;;
 	esac

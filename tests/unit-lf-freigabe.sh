@@ -39,7 +39,7 @@
 #     Eine neue ld.so.preload und ein System für soft-reboot werden gesperrt, eine geänderte Kette
 #     der Grundregel (lf-aufgabe, /etc/lf-release) sperrt die Grundregel bis zum Neustart (F14).
 #   - Nach jeder Freigabe sagt status bis zum Neustart "aus, Neustart empfohlen (…)" (F15). Der
-#     Assistent startet dann wirklich neu, ohne kexec und soft-reboot.
+#     Assistent startet ohne kexec und soft-reboot neu, die Anleitung rät zum Ausschalten.
 #
 # Hier läuft nichts als root: Eine Kopie von lf-freigabe arbeitet mit eigenen Ordnern statt
 # /etc/sudoers.d, /run/lf, /proc und /sys/fs/cgroup, und mit einer eigenen Wurzel (WROOT) für die
@@ -993,7 +993,7 @@ check "lf-aufgabe startet Rettungen so, wie lf-freigabe sie gelten lässt: Name,
 check "eine Liste der Variablen für lf-freigabe und common.sh (F13)" '[[ -n $ENV_UNSAFE && $ENV_UNSAFE == "$(sed -n "s/^LF_ENV_UNSAFE=\"\(.*\)\"$/\1/p" rescue/lib/common.sh)" ]]'
 check "lf-freigabe startet genau zwei Dienste, beide oben mit UnsetEnvironment geprüft (F13)" '[[ $(grep -cE "^[[:space:]]*(exec )?systemd-run " rescue/bin/lf-freigabe) == 2 ]]'
 check "Neustart im Assistenten: echt, ohne kexec und soft-reboot; sonst startet nichts unter rescue/ neu" 'grep -qxF "		sudo env SYSTEMCTL_SKIP_AUTO_KEXEC=1 SYSTEMCTL_SKIP_AUTO_SOFT_REBOOT=1 systemctl \"\$c\"" rescue/lf && [[ -z $(grep -rhE "systemctl[^|;]* (\"\\\$c\"|reboot|soft-reboot|kexec)" rescue | grep -v "^[[:space:]]*#" | grep -v "SYSTEMCTL_SKIP_AUTO_KEXEC=1 SYSTEMCTL_SKIP_AUTO_SOFT_REBOOT=1 systemctl") ]]'
-check "Anleitung: auch eigene Änderungen zeigen Rückstand; Neustart über Beenden > Neustart, nicht reboot in der Shell" 'grep -qF "Leuchtfeuer sieht nicht, wer etwas geändert hat." docs/anleitung.md && grep -qF "Starte über **Beenden > Neustart** neu oder schalte das Gerät aus. Ein \`reboot\` in der Shell könnte stattdessen in einen Kernel oder ein System wechseln" docs/anleitung.md'
+check "Anleitung: auch eigene Änderungen zeigen Rückstand; sicher ist Ausschalten, Beenden > Neustart übergeht nur kexec und nextroot" 'grep -qF "Leuchtfeuer sieht nicht, wer etwas geändert hat." docs/anleitung.md && grep -qF "Am sichersten ist Ausschalten: Wähle **Beenden > Ausschalten** und warte, bis das Gerät wirklich aus ist. Bleibt es an, halte den Netzschalter gedrückt." docs/anleitung.md && grep -qF "ein \`reboot\` in der Shell nicht. Eine Umleitung im Neustart selbst übergeht es nicht." docs/anleitung.md && ! grep -qF "Starte über **Beenden > Neustart** neu" docs/anleitung.md'
 check "Hardware-Prüfung: nach der Freigabe bis zum Neustart der Hinweis auf einen Neustart" 'grep -qF "Bis zum Neustart steht im Hauptmenü „Hinweis: Claude hatte volles sudo, Neustart empfohlen (letzte Freigabe bis HH:MM)“" docs/hardware-pruefung.md'
 check "CLAUDE.md: lange Kopien nur über lf-aufgabe, nie direkt mit sudo" 'tr "\n" " " <rescue/claude/CLAUDE.md | grep -q "Lange Kopien (dd, ddrescue, partclone) startest du auch dann nur über lf-aufgabe, nie direkt mit sudo"'
 
