@@ -1531,6 +1531,16 @@ mkdir -p "$W/persist/claude-home" && echo "# Platzhalter" >"$W/persist/claude-ho
 bash "$F" aus >"$T/out" 2>&1
 check "offen geblieben: Änderungen in config und home sind Rückstand, claude-home nicht" 'grep -qxF "Datei auf LF-DATA geändert: $W/persist/config/lf.conf" "$R" && grep -qxF "Ordner auf LF-DATA neu: $W/persist/home/.ssh" "$R" && grep -qxF "Datei auf LF-DATA neu: $W/persist/home/.ssh/authorized_keys" "$R" && ! grep -q claude-home "$R"'
 check "…: zuerst der Hinweis auf LF-DATA mit den Pfaden, dann über Beenden > Ausschalten; status zeigt den Hinweis auf LF-DATA" '[[ $(head -n 1 "$R") == "Speicher LF-DATA geändert ($W/persist/config/lf.conf, $W/persist/home/.ssh/authorized_keys, $W/persist/home/.ssh): bleibt nach dem Ausschalten, vor dem nächsten Entsperren prüfen oder neu anlegen" && $(sed -n 2p "$R") == "${AUS}LF-DATA)" && $(bash "$F" status) == "an: Rückstand nach der Freigabe (Speicher LF-DATA geändert ("* ]] && ! grep -qF Netzschalter "$R"'
+# Dazu eine Datei, die finalrd beim Ausschalten als root ausführte (Platzhalter): Der Hinweis auf
+# LF-DATA hängt an der Zeile zum Netzschalter.
+reboot_sim
+mkdir -p "$W/run/finalrd"
+bash "$F" an 30 >"$T/out" 2>&1
+echo "LF_TECHNIKER=danach" >"$W/persist/config/lf.conf"
+printf '#!/bin/sh\n' >"$W/run/finalrd/q11.finalrd"
+bash "$F" aus >"$T/out" 2>&1
+check "…: mit Hinweis aufs Ausschalten am Netzschalter steht der Hinweis auf LF-DATA in derselben Zeile danach" '[[ $(head -n 1 "$R") == "${NETZ}$W/run/finalrd/q11.finalrd). Danach: Speicher LF-DATA geändert ($W/persist/config/lf.conf): bleibt nach dem Ausschalten, vor dem nächsten Entsperren prüfen oder neu anlegen" ]]'
+rm -rf "$W/run/finalrd"
 reboot_sim
 bash "$F" an 30 >"$T/out" 2>&1
 sed -i "\| $W/persist |d" "$T/proc/1/mountinfo"
