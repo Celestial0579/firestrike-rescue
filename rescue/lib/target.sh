@@ -60,6 +60,14 @@ target_mount_has_opts() { mount_has_opts "$LF_TARGET_MNT" "${TARGET_MOUNT_OPTS[@
 # lieber kein Ziel als eines ohne Schutz (mount_enforce in common.sh).
 target_mount_secure() { mount_enforce "$LF_TARGET_MNT" "${TARGET_MOUNT_OPTS[@]}"; }
 
+# target_release_images   Vor dem Aushängen des bisherigen Ziels: Images darauf, die lf noch
+#   eingebunden hat (etwa nach "Dateien kopieren"), hielten es sonst belegt (#83). Was davon noch
+#   benutzt wird, bleibt und steht im Protokoll (image_release in recover.sh).
+target_release_images() {
+	declare -F image_release >/dev/null || return 0
+	image_release "$LF_TARGET_MNT" || true
+}
+
 target_mount_part() {
 	local part=$1 fs
 	fs=$(lsblk -no FSTYPE "$part")
@@ -72,6 +80,7 @@ target_mount_part() {
 		fi
 		# Zwei Dateisysteme übereinander am selben Punkt gibt es nicht: Dann ließe sich nicht
 		# mehr sagen, für welches die geprüften Optionen gelten.
+		target_release_images
 		if ! run sudo umount "$LF_TARGET_MNT"; then
 			log "Ziel abgelehnt: $LF_TARGET_MNT ist noch in Benutzung und lässt sich nicht aushängen."
 			return 1
@@ -266,6 +275,7 @@ target_find_cases_on() {
 			TARGET_CASE_PART=$cur TARGET_CASE_ACTIVE=1
 			return 0
 		fi
+		target_release_images
 		if ! run sudo umount "$LF_TARGET_MNT"; then
 			log "Suche abgebrochen: $LF_TARGET_MNT ist noch in Benutzung und lässt sich nicht aushängen."
 			return 1

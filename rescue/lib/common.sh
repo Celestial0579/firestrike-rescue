@@ -393,6 +393,21 @@ human() { numfmt --to=iec-i --suffix=B --format='%.1f' "${1:-0}" 2>/dev/null || 
 
 is_online() { timeout 3 bash -c 'exec 3<>/dev/tcp/1.1.1.1/443' 2>/dev/null; }
 
+# tmux_size   Breite und Höhe für ein neues Job-Fenster: das Terminal von lf, ohne die
+#   Statuszeile von tmux. Ist das Fenster beim Anhängen anders groß, bricht tmux die Ausgabe neu
+#   um. Wird dabei eine Zeile zweizeilig, schiebt tmux oben Zeilen in den Verlauf, und die erste
+#   Zeile des Jobs ist nicht mehr zu sehen (#82). Ohne brauchbare Größe (kein Terminal, die
+#   serielle Konsole meldet 0 0) bleibt es bei 200×50.
+tmux_size() {
+	local rows="" cols=""
+	read -r rows cols < <({ stty size </dev/tty; } 2>/dev/null) || true
+	if [[ $rows =~ ^[0-9]{1,4}$ && $cols =~ ^[0-9]{1,4}$ ]] && ((10#$rows >= 10 && 10#$cols >= 40)); then
+		echo "$((10#$cols)) $((10#$rows - 1))"
+	else
+		echo "200 50"
+	fi
+}
+
 # tmux-Sitzung starten (falls nicht vorhanden) und anzeigen.
 # Die Arbeit läuft weiter, auch wenn man die Ansicht mit Strg+B, D verlässt.
 tmux_run() {
@@ -401,11 +416,13 @@ tmux_run() {
 }
 
 # tmux_start NAME BEFEHL …   Startet die Sitzung NAME, falls es sie noch nicht gibt.
+#   Das Fenster ist so groß wie das Terminal, an das sich lf danach anhängt (tmux_size).
 tmux_start() {
-	local name=$1
+	local name=$1 size
 	shift
 	tmux has-session -t "$name" 2>/dev/null && return 0
-	tmux new-session -d -s "$name" -x 200 -y 50 "$@" || return 1
+	size=$(tmux_size)
+	tmux new-session -d -s "$name" -x "${size% *}" -y "${size#* }" "$@" || return 1
 	tmux set-option -t "$name" status-style "bg=colour4,fg=colour7" >/dev/null
 	tmux set-option -t "$name" status-left " Leuchtfeuer · $name " >/dev/null
 	tmux set-option -t "$name" status-left-length 60 >/dev/null

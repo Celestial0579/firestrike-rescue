@@ -63,6 +63,8 @@ jobs:
       # Kopier-Job nur für schreibgeschützte Quellen. Echt (sshd, qemu-nbd) prüft es selftest_p2v.
       # Hängende Disk: weiter nur mit genau derselben Disk, die Lücke wird nachgeholt (echtes ddrescue).
       # SSH: keine Hostschlüssel im ISO, eigene je Start, Fingerabdruck im Dialog.
+      # Images freigeben: nie mit Gewalt, nichts anderes als die eigenen Einhängepunkte, kein
+      # Loop-Gerät, solange ein Job (Klon, P2V) daraus lesen kann.
       - name: Schutz-Tests
         run: |
           sudo apt-get update -qq && sudo apt-get install -y -qq jq whiptail gddrescue
@@ -100,11 +102,14 @@ jobs:
           bash tests/unit-p2v.sh
           bash tests/unit-ssh-hostkeys.sh
           bash tests/unit-hang.sh
+          bash tests/unit-image-release.sh
+      # Job-Fenster mit echtem tmux in einem Pseudo-Terminal.
       - name: Unit-Tests
         run: |
-          sudo apt-get install -y -qq jq whiptail
+          sudo apt-get install -y -qq jq whiptail tmux
           bash tests/unit-clone-plan.sh
           bash tests/unit-safety-confirm.sh
+          bash tests/unit-job-window.sh
       # Zeichnet den Bestätigungsdialog mit echtem whiptail in ein Pseudo-Terminal.
       - name: Dialogtest
         run: bash tests/dialog-safety-confirm.sh
