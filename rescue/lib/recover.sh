@@ -332,9 +332,15 @@ image_copy_files() {
 	case $mode in
 	all)
 		local ropts="-aHAX"
+		# ntfs3 liefert Windows-Attribute wie $LXUID als erweiterte Attribute ohne Namensraum, auch für
+		# Dateien, die Linux angelegt hat. rsync kann sie auf dem Ziel nicht setzen und meldet für jede
+		# Datei einen Fehler (#78). Maßgeblich ist, was eingehängt ist: so zählen ntfs-3g und BitLocker
+		# (fuseblk) mit.
+		case $(findmnt -n -o FSTYPE -M "$mp" 2>/dev/null) in ntfs3 | ntfs | fuseblk) ropts="-aH" ;; esac
 		[[ $(target_fs) == exfat || $(target_fs) == ntfs* || $(target_fs) == fuseblk ]] && ropts="-rt --modify-window=2"
 		# $1 sind die Optionen von rsync (fester Text von oben) und werden mit Absicht in Wörter zerlegt.
-		tmux_run "lf-kopie" bash -c 'sudo rsync $1 --info=progress2 --ignore-errors "$2/" "$3/" 2>&1 | tee -a "$4"; echo; read -r -p "Fertig. Enter … " _' _ "$ropts" "$mp" "$dst" "$case/kopie.log"
+		# Die Startzeile steht da, bevor rsync etwas ausgibt. Bei großen Quellen dauert das (#79).
+		tmux_run "lf-kopie" bash -c 'printf "%s\n" "Kopiere $2" "nach $3" "rsync zählt zuerst die Dateien, die Anzeige kommt danach. Protokoll: $4" ""; sudo rsync $1 --info=progress2 --ignore-errors "$2/" "$3/" 2>&1 | tee -a "$4"; echo; read -r -p "Fertig. Enter … " _' _ "$ropts" "$mp" "$dst" "$case/kopie.log"
 		;;
 	mc) sudo mc "$mp" "$dst" ;;
 	shell) (cd "$mp" && PS1="[lf image] \w \$ " bash --norc -i) ;;

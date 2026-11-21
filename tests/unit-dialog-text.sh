@@ -68,7 +68,9 @@ lsblk() {
 		jq -cn --arg m "$EVIL_MODEL" --arg s "$EVIL_SERIAL" '{blockdevices: [
 			{name: "sda", path: "/dev/sda", size: 1000204886016, model: "  WDC WD10EZEX-08WN4A0 ", serial: " WD-WCC6Y0ABCDEF ", wwn: "0x50014ee2b1c2d3e4", tran: "sata", type: "disk"},
 			{name: "sdb", path: "/dev/sdb", size: 500107862016, model: $m, serial: $s, wwn: "0x5002538f12345678", tran: "usb", type: "disk"},
-			{name: "sdc", path: "/dev/sdc", size: 500107862016, model: "Adapter", serial: ($s + "2"), wwn: ("eui." + $s), tran: "usb", type: "disk"}]}'
+			{name: "sdc", path: "/dev/sdc", size: 500107862016, model: "Adapter", serial: ($s + "2"), wwn: ("eui." + $s), tran: "usb", type: "disk"},
+			{name: "nbd0", path: "/dev/nbd0", size: 0, model: null, serial: null, wwn: null, tran: null, type: "disk"},
+			{name: "nbd15", path: "/dev/nbd15", size: 0, model: null, serial: null, wwn: null, tran: null, type: "disk"}]}'
 		;;
 	"-J -b -o NAME,PATH,SIZE,FSTYPE,LABEL,"*)
 		jq -cn --arg l "$EVIL_LABEL" --arg m "$EVIL_MODEL" '{blockdevices: [{children: [
@@ -100,6 +102,14 @@ label=$(disk_label "$(sed -n 2p <<<"$json")")
 check "Zeile zur Disk: gefiltert, ohne Seriennummer" '! unsafe <<<"$label" && [[ $label == "/dev/sdb · Samsung?[2J SSD?n?nALLES IN ORDNUNG ?? · "*" · SN – · usb" ]]'
 overview=$(disks_overview)
 check "Übersicht im Hauptmenü: gefiltert" '! unsafe <<<"$overview" && [[ $(wc -l <<<"$overview") == 4 ]]'
+check "leere nbd-Geräte (Overlay beim Klonen) stehen nirgends (#75)" '[[ $json != *nbd* && $overview != *nbd* ]]'
+# Spalten: Das Modell beginnt in jeder Zeile an derselben Stelle, auch nach "[UNBEKANNT]" (#77).
+disk_smart() { if [[ $1 == /dev/sdc ]]; then echo "UNBEKANNT|"; else echo "OK|"; fi; }
+overview=$(disks_overview)
+check "Übersicht: Spalten bleiben bei [UNBEKANNT] in der Flucht" '[[ $(sed -n 4p <<<"$overview") == "sdc       [UNBEKANNT] Adapter "* && $(sed -n 2p <<<"$overview") == "sda       [OK]        WDC "* ]]'
+# Breiten in Zeichen: GERÄT, GRÖSSE und das "–" einer fehlenden Seriennummer sind mehrere Bytes.
+check "Kopfzeile und Zeile mit – stehen in derselben Flucht" 'h=$(sed -n 1p <<<"$overview") a=$(sed -n 2p <<<"$overview") b=$(sed -n 3p <<<"$overview"); h1=${h%%ZUSTAND*} a1=${a%%\[OK\]*} h2=${h%%SERIENNUMMER*} a2=${a%%WD-WCC6Y0ABCDEF*} a3=${a%%sata*} b3=${b%%usb*}; ((${#h1} == ${#a1} && ${#h2} == ${#a2} && ${#a3} == ${#b3}))'
+disk_smart() { echo "OK|"; }
 
 echo "Disk-Auswahl:"
 ui_menu() {
@@ -118,8 +128,17 @@ check "Label und Partitionsname gefiltert" '! unsafe <<<"$parts" && [[ $(sed -n 
 check "gewöhnliche Angaben bleiben, fehlende bleiben leer" '[[ $(sed -n 1p <<<"$parts" | jq -r "[.partlabel, (.label // \"-\"), .fstype] | join(\"|\")") == "EFI System Partition|-|vfat" ]]'
 
 # ---------------------------------------------------------------------------
-echo "Bestätigungsdialog mit präpariertem Label auf der Ziel-Disk:"
+echo "Textfenster: Bildlauf nur, wenn der Text nicht passt (#76):"
 _ui_size() { UI_H=40 UI_W=96; }
+_ui_size
+printf 'Zeile %s\n' {1..20} >"$T/kurz"
+printf 'Zeile %s\n' {1..40} >"$T/lang"
+{ for _ in 1 2 3 4 5 6 7 8; do printf 'x%.0s' {1..300}; echo; done; } >"$T/breit"
+check "kurzer Text passt: kein --scrolltext, Enter schließt" '_ui_fits "$T/kurz"'
+check "40 Zeilen passen nicht in 40 Zeilen Bildschirm" '! _ui_fits "$T/lang"'
+check "lange Zeilen zählen umgebrochen (8 x 300 Zeichen = 32 Zeilen)" '_ui_fits "$T/breit" && { cat "$T/breit" "$T/breit"; } >"$T/breit2" && ! _ui_fits "$T/breit2"'
+
+echo "Bestätigungsdialog mit präpariertem Label auf der Ziel-Disk:"
 ui_msg() { printf '%s|%s\n' "$1" "$2" >>"$T/msg"; }
 ui_input() {
 	printf '%s' "$2" >"$T/input"

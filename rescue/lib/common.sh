@@ -321,8 +321,22 @@ ui_textfile() {
 	fi
 	f=$(mktemp)
 	expand "$2" 2>/dev/null | text_clean >"$f"
-	whiptail --backtitle "$UI_BACKTITLE" --title "$1" --scrolltext --textbox "$f" "$UI_H" "$UI_W" >/dev/tty
+	local scroll=(--scrolltext)
+	_ui_fits "$f" && scroll=()
+	whiptail --backtitle "$UI_BACKTITLE" --title "$1" "${scroll[@]}" --textbox "$f" "$UI_H" "$UI_W" >/dev/tty
 	rm -f "$f"
+}
+
+# _ui_fits DATEI   Passt der Text ohne Bildlauf ins Fenster? Mit --scrolltext hält das Textfeld
+# den Fokus, und Enter schließt das Fenster nicht, erst Tab und Enter. Ohne steht der Fokus auf
+# OK (#76). Gerechnet wird knapp: lange Zeilen umbrechen, Rahmen und Knopf brauchen Platz.
+_ui_fits() {
+	local line rows=0 w=$((UI_W - 6))
+	((w > 10)) || return 1
+	while IFS= read -r line; do
+		rows=$((rows + (${#line} + w - 1) / w + (${#line} == 0)))
+	done <"$1"
+	((rows <= UI_H - 6))
 }
 
 # ui_text TITEL TEXT   Zeigt einen längeren Text zum Blättern. "\n" im Text ist ein Zeilenwechsel.
@@ -402,6 +416,11 @@ tmux_start() {
 # offen hat (GHSA-p86q-3456-f288). Der Ordner gehört dem Live-Benutzer, Claude kann dort nichts
 # eintragen oder löschen.
 LF_JOBS="$LF_RUN/jobs"
+
+# Erzeugte Jobs (Klon, P2V) liegen in $LF_RUN. Ubuntu 26.04 hängt /run mit noexec ein: Direkt
+# gestartet, bricht ein Job dort sofort ab, und tmux schließt die Sitzung samt Meldung (#72).
+# Jobs laufen deshalb immer über bash.
+LF_JOB_RUN=(sudo bash)
 
 # tmux_run_writing NAME DISK BEFEHL …   Wie tmux_run, für einen Job, der auf DISK schreibt.
 #   Der Eintrag gilt, solange der Prozess der Sitzung lebt.

@@ -65,7 +65,7 @@ disks_json() {
 			def id_or_empty: if test("^[A-Za-z0-9][A-Za-z0-9 #+.:=@_/%?,-]{0,199}$") then . else "" end;
 			[.blockdevices[]
 			 | select(.type == "disk")
-			 | select(.name | test("^(loop|ram|zram|sr|dm-|md)") | not)
+			 | select(.name | test("^(loop|ram|zram|sr|dm-|md|nbd)") | not)
 			 | select(.path != $bd)
 			 | .model = ((.model // "") | trim | gsub($re; "?") | .[0:40])
 			 | .serial = ((.serial // "") | trim | id_or_empty)
@@ -167,13 +167,16 @@ DISKS_OVERVIEW=""
 disks_overview_scan() {
 	DISKS_ANY_BAD=0
 	local j dev st reason
-	DISKS_OVERVIEW=$(printf '%-9s %-8s %-28s %-10s %-20s %s' "GERÄT" "ZUSTAND" "MODELL" "GRÖSSE" "SERIENNUMMER" "BUS")
+	# ZUSTAND ist 11 Zeichen breit, so lang wie "[UNBEKANNT]". %ls zählt Breiten in Zeichen, nicht
+	# in Bytes: "GERÄT", "GRÖSSE" und "–" verschoben sonst die Spalten, und das Kürzen konnte einen
+	# Umlaut zerteilen (#77).
+	DISKS_OVERVIEW=$(printf '%-9ls %-11ls %-25ls %-10ls %-20ls %ls' "GERÄT" "ZUSTAND" "MODELL" "GRÖSSE" "SERIENNUMMER" "BUS")
 	while IFS= read -r j; do
 		[[ -z $j ]] && continue
 		dev=$(jq -r .path <<<"$j")
 		IFS='|' read -r st reason <<<"$(disk_smart "$dev")"
 		[[ $st == WARN || $st == DEFEKT ]] && DISKS_ANY_BAD=1
-		DISKS_OVERVIEW+=$'\n'"$(printf '%-9s %-8s %-28.28s %-10s %-20.20s %s' "$(basename "$dev")" "[$st]" \
+		DISKS_OVERVIEW+=$'\n'"$(printf '%-9ls %-11ls %-25.25ls %-10ls %-20.20ls %ls' "$(basename "$dev")" "[$st]" \
 			"$(jq -r 'if (.model // "") == "" then "?" else .model end' <<<"$j")" "$(human "$(jq -r .size <<<"$j")")" \
 			"$(jq -r 'if (.serial // "") != "" then .serial elif .dup then "nicht eindeutig" else "–" end' <<<"$j")" \
 			"$(jq -r '.tran // "?"' <<<"$j")")"
@@ -202,7 +205,7 @@ disk_pick() {
 		[[ $(jq -r '.dup // false' <<<"$j") == true ]] && dup=1
 		dev=$(jq -r .path <<<"$j")
 		st=$(disk_smart "$dev" | cut -d'|' -f1)
-		items+=("$id" "$(printf '%-8s %-8s %-26.26s %s' "$(basename "$dev")" "[$st]" "$(jq -r 'if (.model // "") == "" then "?" else .model end' <<<"$j")" "$(human "$(jq -r .size <<<"$j")")")")
+		items+=("$id" "$(printf '%-8ls %-11ls %-23.23ls %ls' "$(basename "$dev")" "[$st]" "$(jq -r 'if (.model // "") == "" then "?" else .model end' <<<"$j")" "$(human "$(jq -r .size <<<"$j")")")")
 	done < <(disks_json)
 	((dup)) && text+="\n\nHinweis: Mehrere Disks melden dieselbe Seriennummer. Sie stehen hier unter ihrem Gerätenamen und werden über Gerätename und Größe bestätigt."
 	if ((${#items[@]} == 0)); then

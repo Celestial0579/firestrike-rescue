@@ -596,7 +596,7 @@ p2v_run_step() {
 		return 1
 	fi
 	start=$(date +%s)
-	tmux_run "lf-p2v" sudo "$job"
+	tmux_run "lf-p2v" "${LF_JOB_RUN[@]}" "$job"
 	while tmux has-session -t lf-p2v 2>/dev/null; do
 		ui_msg "Kopie läuft" "Die Kopie läuft noch im Hintergrund.\n\nOK zeigt die Ansicht wieder an." && tmux attach -t lf-p2v
 	done
