@@ -253,11 +253,26 @@ image_attach_clear_ro() {
 }
 
 # Jobs, die aus einem Image lesen können, auch zwischen zwei Schritten, in denen sie es gerade
-# nicht offen haben: lf-klon und lf-p2v ("Image auf eine neue Disk"). Solange eine solche Sitzung
-# besteht, auch wenn sie nur noch auf Enter wartet, bleibt jedes Image eingebunden. Ein gelöstes
-# Loop-Gerät ließe den Job abbrechen, oder er läse im nächsten Schritt ein anderes Image, das
-# inzwischen dieselbe Nummer bekommen hat.
-IMAGE_LOOP_JOBS="lf-klon lf-p2v"
+# nicht offen haben. Solange einer davon besteht, auch wenn er nur noch auf Enter wartet, bleibt
+# jedes Image eingebunden. Ein gelöstes Loop-Gerät ließe den Job abbrechen, oder er läse im
+# nächsten Schritt ein anderes Image, das inzwischen dieselbe Nummer bekommen hat.
+#   IMAGE_LOOP_JOBS   tmux-Sitzungen: lf-klon ("Image auf eine neue Disk" klont vom Loop-Gerät).
+#                     Nicht lf-p2v und nicht lf-rettung: P2V und die Rettungen des Assistenten
+#                     nehmen als Quelle nur Disks aus disks_json, nie ein Loop-Gerät.
+#   IMAGE_LOOP_UNITS  systemd-Einheiten: Rettungen von Claude (lf-aufgabe retten, fortsetzen).
+#                     Sie nehmen auch ein Loop-Gerät als Quelle, und lf-rescue-run öffnet die
+#                     Quelle in jeder Phase neu.
+IMAGE_LOOP_JOBS="lf-klon"
+IMAGE_LOOP_UNITS="lf-claude-rettung-*"
+
+# dev_open GERÄT …   Hat ein Prozess eines dieser Geräte offen, etwa ddrescue in einer Rettung von
+#   Claude? Wie disk_written in lf-aufgabe, nur für jeden Zugriff. Die offenen Dateien fremder
+#   Prozesse sieht nur root. Rückgabe 1 nur, wenn sicher keines offen ist: Lässt es sich nicht
+#   prüfen, gelten die Geräte als offen.
+dev_open() {
+	sudo bash -c 'for f in /proc/[0-9]*/fd/*; do for n; do [[ $f -ef $n ]] && exit 0; done; done; exit 3' _ "$@"
+	(($? != 3))
+}
 
 # image_loops ORDNER   Loop-Geräte, deren Datei in ORDNER liegt (ein Fallordner oder das Ziel).
 image_loops() {
@@ -270,8 +285,11 @@ image_loops() {
 #   und bei BitLocker die entschlüsselte Partition), und löst die Loop-Geräte. Sonst bleibt das
 #   Ziel belegt, und lf hängt bis zum Neustart kein anderes ein (#83).
 #   Ausgehängt wird nie mit Gewalt: Benutzt etwas einen Einhängepunkt noch, etwa rsync in
-#   lf-kopie (sein Arbeitsverzeichnis liegt in der Quelle), bleibt er samt Loop-Gerät. Was bleibt,
-#   steht danach in IMAGE_BUSY. Rückgabe 0, wenn von diesen Images nichts mehr eingebunden ist.
+#   lf-kopie (sein Arbeitsverzeichnis liegt in der Quelle), bleibt er samt Loop-Gerät. Gelöst
+#   wird ein Loop-Gerät nur, wenn kein Prozess es oder eine seiner Partitionen offen hat. Sonst
+#   löste es der Kernel erst beim Schließen, und wer es danach öffnet, bekäme womöglich ein anderes
+#   Image unter derselben Nummer. Was bleibt, steht danach in IMAGE_BUSY. Rückgabe 0, wenn von
+#   diesen Images nichts mehr eingebunden ist.
 image_release() {
 	local j loop p d mp x i busy
 	local -a loops parts mps
@@ -284,6 +302,11 @@ image_release() {
 		log "Images in $1 bleiben eingebunden: $IMAGE_BUSY"
 		return 1
 	done
+	if systemctl list-units --plain --no-legend --state=active,activating "$IMAGE_LOOP_UNITS" 2>/dev/null | grep -q .; then
+		IMAGE_BUSY="Eine Rettung, die Claude gestartet hat, läuft noch und liest womöglich aus dem Image."
+		log "Images in $1 bleiben eingebunden: $IMAGE_BUSY"
+		return 1
+	fi
 	for loop in "${loops[@]}"; do
 		busy=""
 		mapfile -t parts < <(lsblk -nr -o PATH "$loop" 2>/dev/null)
@@ -313,16 +336,19 @@ image_release() {
 			busy="$(basename "$loop") ist noch außerhalb von $LF_IMAGE_MNT eingehängt. "
 		fi
 		if [[ -z $busy ]]; then
-			if run sudo losetup -d "$loop"; then
-				# Hat noch etwas das Gerät offen, löst es der Kernel erst danach. ntfs-3g etwa
-				# endet erst kurz nach dem Aushängen.
-				for i in 1 2 3; do
-					[[ -n $(losetup -n -O BACK-FILE "$loop" 2>/dev/null) ]] || break
-					sleep 1
-				done
-				[[ -n $(losetup -n -O BACK-FILE "$loop" 2>/dev/null) ]] && busy+="$(basename "$loop") ist noch geöffnet und wird gelöst, sobald es frei ist. "
-			else
-				busy+="$(basename "$loop") ließ sich nicht lösen. "
+			# ntfs-3g und dislocker enden erst kurz nach dem Aushängen.
+			i=0
+			while dev_open "$loop" "${parts[@]}"; do
+				((++i > 3)) && break
+				sleep 1
+			done
+			if ((i > 3)); then
+				busy="$(basename "$loop") ist noch geöffnet, ein Programm liest daraus. "
+			elif ! run sudo losetup -d "$loop"; then
+				busy="$(basename "$loop") ließ sich nicht lösen. "
+			elif [[ -n $(losetup -n -O BACK-FILE "$loop" 2>/dev/null) ]]; then
+				# Hat es jemand genau jetzt geöffnet, löst es der Kernel erst danach.
+				busy="$(basename "$loop") ist noch geöffnet und wird gelöst, sobald es frei ist. "
 			fi
 		fi
 		IMAGE_BUSY+=$busy

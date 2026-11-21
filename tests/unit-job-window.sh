@@ -66,6 +66,8 @@ for i in $(seq 50); do
 	tmux capture-pane -p -t lf-test | grep -q '^nach ' && break
 	sleep 0.1
 done
+# Die Größe vor dem Anhängen. Danach passt tmux das Fenster ohnehin an den Client an.
+tmux display-message -p -t lf-test '#{window_width}x#{window_height}' >"$TMUX_TMPDIR/vorher"
 tmux attach -t lf-test
 EOF
 
@@ -84,7 +86,7 @@ echo "Fenster lf-kopie, angehängt aus einem Terminal mit 120×40 (#82):"
 im_terminal 120 40 "$T/job.sh" >/dev/null 2>&1 &
 check "lf hängt sich an das Fenster an" 'angehaengt'
 check "das Terminal ist 120×40 groß" '[[ $(fenster "#{client_width}x#{client_height}") == 120x40 ]]'
-check "das Fenster ist von Anfang an 120×39 groß, nichts wird neu umbrochen" '[[ $(fenster "#{window_width}x#{window_height}") == 120x39 ]]'
+check "das Fenster ist schon vor dem Anhängen 120×39 groß und bleibt es, nichts wird neu umbrochen" '[[ $(cat "$T/vorher") == 120x39 && $(fenster "#{window_width}x#{window_height}") == 120x39 ]]'
 check "nichts ist in den Verlauf gerutscht" '[[ $(fenster "#{history_size}") == 0 ]]'
 check "die erste Zeile ist zu sehen: Kopiere <Quelle>" '[[ $(tmux capture-pane -p -t lf-test | head -n 1) == "Kopiere /mnt/lf-image/loop4p1" ]]'
 check "die lange Hinweiszeile steht vollständig da (zweizeilig)" '[[ $(tmux capture-pane -p -J -t lf-test | grep -c "/kopie.log$") == 1 ]]'
@@ -94,7 +96,7 @@ wait
 echo "Gegenprobe: Fenster fest mit 200×50 wie bisher:"
 im_terminal 120 40 "$T/job.sh" alt >/dev/null 2>&1 &
 check "lf hängt sich an das Fenster an" 'angehaengt'
-check "beim Anhängen ändert tmux die Größe auf 120×39 und bricht die Ausgabe neu um" '[[ $(fenster "#{window_width}x#{window_height}") == 120x39 ]]'
+check "vor dem Anhängen 200×50, beim Anhängen ändert tmux die Größe auf 120×39 und bricht die Ausgabe neu um" '[[ $(cat "$T/vorher") == 200x50 && $(fenster "#{window_width}x#{window_height}") == 120x39 ]]'
 # Ob dabei oben eine Zeile in den Verlauf rutscht, hängt von der Version von tmux ab (3.6: ja).
 echo "  info $(tmux -V): Verlauf $(fenster "#{history_size}") Zeile(n), erste sichtbare Zeile: $(tmux capture-pane -p -t lf-test | head -n 1)"
 
