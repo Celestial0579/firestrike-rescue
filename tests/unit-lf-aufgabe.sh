@@ -84,6 +84,12 @@ retten $dev --haengt=1
 fortsetzen fall $dev --haengt
 fortsetzen fall $dev --mehr
 fortsetzen ../x $dev --haengt
+pruefen-rettung
+pruefen-rettung /mnt/lf-target/LF/fall
+pruefen-rettung /mnt/lf-target/LF/fall $dev x
+pruefen-rettung /mnt/lf-target/LF/fall /etc/shadow
+pruefen-rettung /mnt/lf-target/LF/../x $dev
+pruefen-rettung /etc $dev
 EOF
 run einhaengen "$dev -o rw"
 check "lf-aufgabe einhaengen '$dev -o rw' (ein Argument)" '[[ $rc == 2 ]] && ! wrote'
@@ -91,6 +97,9 @@ run
 check "ohne Aktion" '[[ $rc == 2 ]] && ! wrote'
 check "ohne bestätigtes Ziel sagt lf-aufgabe, wer es bestätigt" 'run kopieren /etc/hostname; grep -q "bestätigt der Techniker im Assistenten" "$T/fehler"'
 check "jeder Aufruf steht im Protokoll, Argumente maskiert" 'run notiz "a\$(id)b" c; grep -q "Claude: notiz a\\\\\$\\\\(id\\\\)b c" "$T/run/aufgaben.log"'
+check "pruefen-rettung mit einem Argument zu viel: abgelehnt, bevor etwas anderes geprüft wird" 'run pruefen-rettung /mnt/lf-target/LF/fall "$dev" x; [[ $rc == 2 ]] && grep -q "pruefen-rettung erwartet FALLORDNER GERÄT" "$T/fehler"'
+check "pruefen-rettung ohne Argumente: ebenso" 'run pruefen-rettung; [[ $rc == 2 ]] && grep -q "pruefen-rettung erwartet FALLORDNER GERÄT" "$T/fehler"'
+check "pruefen-rettung (ruft lf-freigabe am Ende jeder Freigabe) steht nicht als Aufruf von Claude im Protokoll" 'run pruefen-rettung /mnt/lf-target/LF/fall "$dev"; [[ $rc == 2 ]] && ! grep -q "Claude: pruefen-rettung" "$T/run/aufgaben.log"'
 
 echo "lf-freigabe ohne root:"
 F=rescue/bin/lf-freigabe
@@ -101,7 +110,8 @@ check "aus verlangt root" '[[ $? == 2 ]]'
 check "status ohne Freigabe: aus" '[[ $(bash "$F" status) == aus ]]'
 check "Statuszeile ohne Freigabe" '[[ $(echo "{}" | bash "$F" zeile) == "Leuchtfeuer: Claude arbeitet mit lf-lesen und lf-aufgabe" ]]'
 check "lf-claude darf lf-freigabe nicht per sudo starten" '! grep -E "^lf-claude .*lf-freigabe" build/chroot-setup.sh'
-check "ein Aufruf von lf-claude wird abgelehnt, auch als root" 'grep -q "SUDO_USER:-} == lf-claude" "$F"'
+# Das Verhalten (auch ohne SUDO_USER, an den Vorfahren erkannt) prüft tests/unit-lf-freigabe.sh.
+check "ein Aufruf von lf-claude wird abgelehnt, auch als root" 'grep -q "if caller_from_claude; then" "$F" && grep -qF "SUDO_USER:-} == \"\$CLAUDE\"" "$F"'
 check "höchstens 240 Minuten" 'grep -q "10#\$min <= 240" "$F"'
 check "die Regel wird vor dem Einsetzen mit visudo geprüft und unter einem Namen mit Punkt geschrieben" 'grep -q "visudo -cqf \"\$tmp\"" "$F" && grep -q "mktemp /etc/sudoers.d/.lf-claude-freigabe" "$F"'
 check "die Statuszeile von Claude Code zeigt die Freigabe" 'jq -e ".statusLine.command == \"/usr/local/bin/lf-freigabe zeile\"" rescue/claude/managed-settings.json >/dev/null'
@@ -111,7 +121,7 @@ echo "Einbau:"
 check "sudo erlaubt lf-claude nur lf-lesen und lf-aufgabe" 'grep -q "^lf-claude ALL=(root) NOPASSWD: /usr/local/bin/lf-lesen, /usr/local/bin/lf-aufgabe$" build/chroot-setup.sh && [[ $(grep -c "NOPASSWD" build/chroot-setup.sh) == 1 ]]'
 check "lf-claude ist nur zusätzlich in der Gruppe render" 'grep -q "^useradd --system --home-dir /var/lib/lf-claude --create-home --shell /bin/bash --groups render lf-claude$" build/chroot-setup.sh'
 check "lf-rescue-run lässt je Fall nur einen Lauf zu" 'grep -q "flock -n 8" rescue/bin/lf-rescue-run'
-check "Claude Desktop läuft als lf-claude" 'grep -q "exec sudo -u \"\$CLAUDE_USER\" -H env WAYLAND_DISPLAY" rescue/lib/claude-desktop-start && [[ -x rescue/lib/claude-desktop-start ]]'
+check "Claude Desktop läuft als lf-claude, in eigener cgroup" 'grep -qF "exec sudo systemd-run --scope --quiet --slice=\"\$CLAUDE_SLICE\" --" rescue/lib/claude-desktop-start && grep -q "^	sudo -u \"\$CLAUDE_USER\" -H env WAYLAND_DISPLAY" rescue/lib/claude-desktop-start && [[ -x rescue/lib/claude-desktop-start ]]'
 check "cage legt seinen Socket in ein eigenes Verzeichnis, nicht ins Laufzeitverzeichnis des Live-Benutzers" 'grep -q "XDG_RUNTIME_DIR=\$CLAUDE_WAYLAND_DIR cage" rescue/lib/claude.sh'
 check "der Selbsttest prüft Aufgaben, Freigabe und Socket" 'grep -q "selftest_claude_aufgabe \"\$dir\" || good=0" rescue/lf && grep -q "selftest_claude_freigabe || good=0" rescue/lf && grep -q "selftest_claude_wayland \"\$dir\" || good=0" rescue/lf'
 

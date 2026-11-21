@@ -15,6 +15,10 @@ CLAUDE_HOME=/var/lib/lf-claude
 # (Gruppe $CLAUDE_USER, nicht das Laufzeitverzeichnis des Live-Benutzers) und eigenes XDG_RUNTIME_DIR.
 CLAUDE_WAYLAND_DIR=${LF_RUN:-/run/lf}/wayland
 CLAUDE_XDG=${LF_RUN:-/run/lf}/claude-xdg
+# CLI und Desktop laufen in einer eigenen cgroup unter dieser Slice (claude_scope). Ein Prozess
+# behält sie, auch wenn er sich abkoppelt. Am Ende einer Freigabe beendet lf-freigabe darin jeden
+# root-Prozess.
+CLAUDE_SLICE=lf-claude.slice
 
 # claude_wayland_dir   Verzeichnis für den Socket von cage: gehört dem Live-Benutzer, Gruppe
 #   $CLAUDE_USER, setgid. Der Socket darin bekommt die Gruppe von selbst.
@@ -30,12 +34,28 @@ claude_wayland_share() {
 	chmod 0660 "$1"
 }
 
-# claude_freigabe_hinweis   Leer, oder eine Zeile, solange Claude volles sudo hat (lf-freigabe).
+# claude_freigabe_hinweis   Leer, oder eine Zeile, solange Claude volles sudo hat (lf-freigabe), und
+#   nach einer Freigabe bis zum Neustart ("aus, Neustart empfohlen …").
 claude_freigabe_hinweis() {
 	local s
 	s=$(lf-freigabe status 2>/dev/null)
-	[[ $s == an* ]] && echo "ACHTUNG: Claude hat volles sudo ($s). Beenden: Werkzeuge > Claude-Freigabe"
+	if [[ $s == an* ]]; then
+		echo "ACHTUNG: Claude hat volles sudo ($s). Beenden: Werkzeuge > Claude-Freigabe"
+	elif [[ $s == "aus, "* ]]; then
+		echo "Hinweis: Claude hatte volles sudo, ${s#aus, }"
+	fi
 	return 0
+}
+
+# claude_freigabe_an MINUTEN   sudo lf-freigabe an, direkt am Terminal und nicht über run: Solange
+#   Claude root hat, fragt lf-freigabe dort nach. Mit umgeleiteter Ausgabe startet sudo-rs den
+#   Befehl im Hintergrund seines Pseudo-Terminals, ein getipptes "j" käme dort nie an.
+claude_freigabe_an() {
+	local rc=0
+	log "\$ sudo lf-freigabe an $1"
+	sudo lf-freigabe an "$1" || rc=$?
+	log "  -> rc=$rc"
+	return "$rc"
 }
 
 # claude_freigabe_menu   Volles sudo für Claude freischalten, verlängern oder beenden. Nur hier
@@ -43,26 +63,50 @@ claude_freigabe_hinweis() {
 claude_freigabe_menu() {
 	local s c min
 	s=$(lf-freigabe status)
-	if [[ $s == aus ]]; then
-		ui_yesno "Claude-Freigabe" "Claude arbeitet mit den lf-Werkzeugen: Diagnose, Quelle nur lesend einhängen, Retten und Kopieren auf das bestätigte Ziel.\n\nMit der Freigabe bekommt Claude volles sudo, für diese Sitzung und eine begrenzte Zeit. Dann kann Claude alles, auch Quell-Disks beschreiben, formatieren und partitionieren. Die Sperre in Claude Code fragt weiter nach, ist aber keine Grenze mehr.\n\nNur freischalten, wenn eine Aufgabe es wirklich braucht. Freischalten?" --defaultno || return 0
+	if [[ $s == aus || $s == "aus, "* ]]; then
+		[[ $s == aus ]] || ui_msg "Claude-Freigabe" "Nach der letzten Freigabe: ${s#aus, }. Was sich Claude damit als root eingerichtet haben kann, entfernt nur ein Neustart."
+		ui_yesno "Claude-Freigabe" "Claude arbeitet mit den lf-Werkzeugen: Diagnose, Quelle nur lesend einhängen, Retten und Kopieren auf das bestätigte Ziel.\n\nMit der Freigabe bekommt Claude volles sudo, für diese Sitzung und eine begrenzte Zeit. Dann kann Claude alles, auch Quell-Disks beschreiben, formatieren und partitionieren. Die Sperre in Claude Code fragt weiter nach, ist aber keine Grenze mehr. Am Ende der Freigabe beendet Leuchtfeuer, was Claude damit als root gestartet hat, auch mitten im Schreiben. Was sich Claude als root selbst einrichtet, findet Leuchtfeuer aber nicht sicher: Sicher endet root-Zugriff nur mit einem Neustart.\n\nNur freischalten, wenn eine Aufgabe es wirklich braucht. Freischalten?" --defaultno || return 0
 		min=$(ui_input "Claude-Freigabe" "Für wie viele Minuten? (1 bis 240)" 30) || return 0
-		run sudo lf-freigabe an "$min" || { ui_msg "Claude-Freigabe" "Nicht freigeschaltet. Details im Protokoll."; return 0; }
+		claude_freigabe_an "$min" || { ui_msg "Claude-Freigabe" "Nicht freigeschaltet. Details im Protokoll."; return 0; }
 		log "Claude-Freigabe: an, $min Minuten"
-		ui_msg "Claude-Freigabe" "Claude hat volles sudo ($(lf-freigabe status)).\n\nDanach gilt wieder nur lf-lesen und lf-aufgabe. Ein Neustart beendet die Freigabe ebenfalls."
+		ui_msg "Claude-Freigabe" "Claude hat volles sudo ($(lf-freigabe status)).\n\nDanach gilt wieder nur lf-lesen und lf-aufgabe. Sicher endet root-Zugriff nur mit einem Neustart, am besten vor dem nächsten Kunden."
 		return 0
 	fi
-	c=$(ui_menu "Claude-Freigabe" "Claude hat volles sudo ($s)." -- \
+	c=$(ui_menu "Claude-Freigabe" "Claude hat volles sudo ($s).\n\nSicher endet root-Zugriff nur mit einem Neustart." -- \
 		aus "Sofort beenden" \
-		mehr "Um 30 Minuten ab jetzt verlängern") || return 0
+		mehr "Um 30 Minuten ab jetzt verlängern (Rückfrage hier an der Konsole)") || return 0
 	case $c in
-	aus) run sudo lf-freigabe aus && log "Claude-Freigabe: aus" ;;
-	mehr) run sudo lf-freigabe an 30 && log "Claude-Freigabe: verlängert" ;;
+	aus)
+		run sudo lf-freigabe aus && log "Claude-Freigabe: aus"
+		s=$(lf-freigabe status)
+		case $s in
+		aus) ;;
+		"aus, "*) ui_msg "Claude-Freigabe" "Die Freigabe ist beendet, kein Rückstand gefunden. ${s#aus, }: Sicher endet root-Zugriff nur mit einem Neustart, am besten vor dem nächsten Kunden." ;;
+		*) ui_msg "Claude-Freigabe" "Die Regel ist zurückgenommen, aber: $s.\n\nSicher endet root-Zugriff nur mit einem Neustart." ;;
+		esac
+		;;
+	mehr)
+		# lf-freigabe fragt selbst am Terminal nach: Verlängern gilt nur mit einem "j" hier.
+		clear
+		echo "Claude-Freigabe verlängern"
+		if claude_freigabe_an 30; then
+			log "Claude-Freigabe: verlängert"
+		else
+			ui_msg "Claude-Freigabe" "Nicht verlängert. Details im Protokoll."
+		fi
+		;;
 	esac
 }
 
 # claude_as BEFEHL …   Startet BEFEHL als $CLAUDE_USER mit dessen Home.
 claude_as() {
 	sudo -u "$CLAUDE_USER" -H "$@"
+}
+
+# claude_scope BEFEHL …   Wie claude_as, aber in einer eigenen cgroup unter $CLAUDE_SLICE
+#   (systemd-run --scope: im Vordergrund, am selben Terminal).
+claude_scope() {
+	sudo systemd-run --scope --quiet --slice="$CLAUDE_SLICE" -- sudo -u "$CLAUDE_USER" -H "$@"
 }
 
 # Hält die CLI auf der Persistenz aktuell (im Hintergrund, Fehler sind egal). Eine neue Version
@@ -176,7 +220,7 @@ claude_start() {
 		Rechner öffnen und den Code hier einfügen. Beenden mit /exit oder Strg+D.
 
 	EOF
-	claude_as sh -c 'cd "$1" && exec "$2"' lf "$dir" "$CLAUDE_CMD"
+	claude_scope sh -c 'cd "$1" && exec "$2"' lf "$dir" "$CLAUDE_CMD"
 }
 
 claude_desktop() {

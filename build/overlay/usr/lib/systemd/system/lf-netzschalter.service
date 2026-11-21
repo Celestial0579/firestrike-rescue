@@ -1,0 +1,12 @@
+# Leuchtfeuer: Sperrt bei logind den Netzschalter, die Tasten für Neustart, Bereitschaft und
+# Ruhezustand, den Deckelschalter und den Ruhezustand selbst, solange der Rückstand einer
+# Claude-Freigabe sagt, am Netzschalter auszuschalten. Ein kurzer Druck tut dann nichts, nur
+# Gedrückthalten schaltet aus. lf-freigabe startet und beendet den Dienst und lässt ihn nur mit
+# genau dieser Datei stehen (NETZ_SHA in rescue/bin/lf-freigabe).
+[Unit]
+Description=Leuchtfeuer: Netzschalter gesperrt nach einer Claude-Freigabe
+
+[Service]
+Type=exec
+UnsetEnvironment=LD_PRELOAD LD_LIBRARY_PATH LD_AUDIT GLIBC_TUNABLES GCONV_PATH LOCPATH BASH_ENV ENV SHELLOPTS BASHOPTS PS4
+ExecStart=/usr/bin/systemd-inhibit --what=handle-power-key:handle-reboot-key:handle-suspend-key:handle-hibernate-key:handle-lid-switch:sleep --who=Leuchtfeuer --why=lf-freigabe --mode=block /usr/bin/sleep infinity

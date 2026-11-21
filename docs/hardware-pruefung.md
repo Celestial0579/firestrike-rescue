@@ -134,7 +134,7 @@ Nur mit Internet und eigenem Konto.
 6. **Aufgaben selbständig:** Im Assistenten ein Ziel wählen und bestätigen, dann Claude bitten, eine kleine Testdisk zu retten und ein paar Dateien daraus aufs Ziel zu kopieren.
    Erwartet: Claude benutzt `sudo lf-aufgabe retten`, `image`, `einhaengen` und `kopieren`. Die Quelle ist danach schreibgeschützt, die Dateien liegen unter `LF/claude/`. Ein Versuch, auf eine andere Disk als das Ziel zu schreiben, scheitert.
 7. **Claude-Freigabe:** Werkzeuge > Claude-Freigabe, 1 Minute.
-   Erwartet: Das Hauptmenü und die Statuszeile zeigen „volles sudo“, `sudo -l` für Claude zeigt `ALL`. Nach einer Minute ist die Freigabe von selbst weg, das Protokoll nennt An und Ablauf. Claude kann `lf-freigabe an` nicht selbst auslösen.
+   Erwartet: Das Hauptmenü und die Statuszeile zeigen „volles sudo“, `sudo -l` für Claude zeigt `ALL`. Nach einer Minute ist die Freigabe von selbst weg, das Protokoll nennt An und Ablauf. Bis zum Neustart steht im Hauptmenü „Hinweis: Claude hatte volles sudo, Neustart empfohlen (letzte Freigabe bis HH:MM)“, die Statuszeile endet mit „Neustart empfohlen (letzte Freigabe bis HH:MM)“. Nach Beenden > Neustart ist beides weg. Claude kann `lf-freigabe an` nicht selbst auslösen. Verlängern im Menü fragt an der Konsole nach und gilt nur mit „j“.
 8. **Claude Desktop als lf-claude** (in QEMU nicht prüfbar):
    - Die App startet im Vollbild, das Fenster ist sichtbar und bedienbar, Login klappt, nach Strg+Q geht es im Assistenten weiter.
    - Nach einem Neustart mit persistentem Speicher ist der Login noch da.

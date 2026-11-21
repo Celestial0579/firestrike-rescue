@@ -26,6 +26,9 @@
 #   lf-aufgabe fortsetzen FALL GERÄT [--haengt]
 #                                       unterbrochene Rettung im Hintergrund fortsetzen
 #   lf-aufgabe stand                   laufende Rettungen und letzte Aufgaben
+#   lf-aufgabe pruefen-rettung FALLORDNER GERÄT
+#                                       nur prüfen: Dürfte eine Rettung von GERÄT in FALLORDNER so
+#                                       starten wie mit retten oder fortsetzen? (für lf-freigabe)
 #   lf-aufgabe notiz TEXT              Eintrag ins Protokoll des Assistenten
 #
 # GERÄT ist /dev/NAME, FALL der Name eines Ordners unter <Ziel>/LF/.
@@ -189,12 +192,14 @@ make_domain() {
 	echo "Domain angelegt: zuerst die MFT, dann die belegten Cluster von $part."
 }
 
-# start_rescue FALLORDNER QUELLE   lf-rescue-run im Hintergrund, als eigene systemd-Einheit.
+# start_rescue FALLORDNER QUELLE   lf-rescue-run im Hintergrund, als eigene systemd-Einheit. Sie
+#   erbt keine Variable aus LF_ENV_UNSAFE vom Manager. lf-freigabe lässt sie am Ende einer
+#   Freigabe nur stehen, wenn sie genau so aussieht und pruefen-rettung ihre Argumente annimmt.
 start_rescue() {
 	local unit
 	unit="lf-claude-rettung-$(printf '%s' "$1" | sha256sum | cut -c1-12)"
 	systemctl is-active -q "$unit" && fail "Für diesen Fall läuft schon eine Rettung ($unit)."
-	systemd-run --quiet --collect --unit="$unit" --description="Leuchtfeuer: Rettung $(basename "$1")" \
+	systemd-run --quiet --collect --unit="$unit" -p UnsetEnvironment="$LF_ENV_UNSAFE" --description="Leuchtfeuer: Rettung $(basename "$1")" \
 		/usr/local/bin/lf-rescue-run "$1" "$2" --no-pause ${LF_TECHNIKER:+"--techniker=$LF_TECHNIKER"} ||
 		fail "Die Rettung ließ sich nicht starten."
 	log "Rettung gestartet: $1 von $2 ($unit)"
@@ -204,7 +209,8 @@ start_rescue() {
 [[ $# -ge 1 ]] || fail "Aktion fehlt (einhaengen, aushaengen, image, kopieren, pruefen, retten, domain, fortsetzen, timeout, ablegen, stand, notiz)"
 action=$1
 shift
-log "Claude: $action $(printf '%q ' "$@")"
+# pruefen-rettung ändert nichts; lf-freigabe ruft es am Ende jeder Freigabe auf.
+[[ $action == pruefen-rettung ]] || log "Claude: $action $(printf '%q ' "$@")"
 case $action in
 einhaengen)
 	(($# == 1)) || fail "einhaengen erwartet ein Gerät"
@@ -399,6 +405,17 @@ fortsetzen)
 	fi
 	# Ob die Disk zum Fall gehört, prüft lf-rescue-run selbst gegen die Falldatei.
 	start_rescue "$c" "$sdev"
+	;;
+pruefen-rettung)
+	# Dieselben Prüfungen wie retten und fortsetzen vor start_rescue: ein bestätigtes Ziel, ein
+	# Fallordner darauf, ein Blockgerät als Quelle, nicht der Stick und nicht das Ziel.
+	(($# == 2)) || fail "pruefen-rettung erwartet FALLORDNER GERÄT"
+	target_ok
+	[[ $1 == "$LF_TARGET_MNT/LF/"?* ]] || fail "kein Fallordner auf dem Ziel: $1"
+	c=$(case_dir "${1#"$LF_TARGET_MNT/LF/"}") || exit 2
+	[[ $c == "$1" ]] || fail "kein Fallordner auf dem Ziel: $1"
+	sdev=$(dev "$2") || exit 2
+	source_ok "$sdev"
 	;;
 stand)
 	(($# == 0)) || fail "stand erwartet keine Argumente"

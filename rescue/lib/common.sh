@@ -6,6 +6,11 @@ LF_RUN="/run/lf"
 LF_PERSIST="/persist"
 LF_TARGET_MNT="/mnt/lf-target"
 LF_IMAGE_MNT="/mnt/lf-image"
+# Variablen, die fremden Code in ein Programm laden (Lader, glibc, bash). Dienste, die als root
+# laufen und mit systemd-run entstehen, erben sie nicht aus der Umgebung des Managers
+# (UnsetEnvironment=): Mit einer Freigabe könnte root sie dort setzen (systemctl set-environment,
+# GHSA-799j-44qx-x7xj). Dieselbe Liste steht als ENV_UNSAFE in lf-freigabe.
+LF_ENV_UNSAFE="LD_PRELOAD LD_LIBRARY_PATH LD_AUDIT GLIBC_TUNABLES GCONV_PATH LOCPATH BASH_ENV ENV SHELLOPTS BASHOPTS PS4"
 
 # shellcheck disable=SC1091
 [[ -r /etc/lf-release ]] && . /etc/lf-release

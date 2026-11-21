@@ -101,7 +101,7 @@ check "ohne Aktion" '[[ $rc == 2 && ! -s $T/aufrufe ]]'
 
 echo "Einbau:"
 check "die Regel wird mit visudo geprüft" 'grep -q "^visudo -cf /etc/sudoers.d/lf-claude$" build/chroot-setup.sh'
-check "der Assistent startet Claude als lf-claude" 'grep -q "^CLAUDE_USER=lf-claude$" rescue/lib/claude.sh && grep -q "claude_as sh -c .cd" rescue/lib/claude.sh'
+check "der Assistent startet Claude als lf-claude, in eigener cgroup" 'grep -q "^CLAUDE_USER=lf-claude$" rescue/lib/claude.sh && grep -q "claude_scope sh -c .cd" rescue/lib/claude.sh && grep -qF -- "--slice=\"\$CLAUDE_SLICE\" -- sudo -u \"\$CLAUDE_USER\" -H \"\$@\"" rescue/lib/claude.sh'
 check "das Home von Claude kommt vom Speicher, Verknüpfungen werden nicht verfolgt" 'grep -q "chown -R -h" rescue/lib/persist.sh'
 check "der Selbsttest prüft lf-claude" 'grep -q "selftest_claude_user \"\$dir\" || ok=0" rescue/lf'
 

@@ -1207,7 +1207,7 @@ selftest_claude_freigabe() {
 	local good=1
 	lf-freigabe aus >/dev/null 2>&1
 	if selftest_as sudo -n lf-freigabe an 30 >/dev/null 2>&1 || SUDO_USER=lf-claude lf-freigabe an 30 >/dev/null 2>&1 ||
-		[[ $(lf-freigabe status) != aus ]]; then
+		[[ $(lf-freigabe status) != aus* ]]; then
 		echo "LF-SELFTEST: Freigabe: lf-claude konnte sich selbst freischalten"
 		good=0
 	fi
@@ -1219,10 +1219,11 @@ selftest_claude_freigabe() {
 		echo "LF-SELFTEST: Freigabe: Freischalten wirkt nicht ($(lf-freigabe status))"
 		good=0
 	fi
-	# Ablauf wie nach der gesetzten Zeit: Der Timer startet diesen Dienst.
+	# Ablauf wie nach der gesetzten Zeit: Der Timer startet diesen Dienst. Danach empfiehlt status
+	# bis zum Neustart einen (GHSA-799j-44qx-x7xj).
 	systemctl start lf-claude-freigabe-ende.service
-	if [[ $(lf-freigabe status) == aus ]] && ! selftest_as sudo -n true 2>/dev/null && [[ ! -e /etc/sudoers.d/lf-claude-freigabe ]]; then
-		echo "LF-SELFTEST: Freigabe: nach Ablauf gilt wieder nur lf-lesen und lf-aufgabe"
+	if [[ $(lf-freigabe status) == "aus, Neustart empfohlen (letzte Freigabe bis "* ]] && ! selftest_as sudo -n true 2>/dev/null && [[ ! -e /etc/sudoers.d/lf-claude-freigabe ]]; then
+		echo "LF-SELFTEST: Freigabe: nach Ablauf gilt wieder nur lf-lesen und lf-aufgabe, status empfiehlt einen Neustart"
 	else
 		echo "LF-SELFTEST: Freigabe: nach Ablauf hat lf-claude weiter volles sudo"
 		lf-freigabe aus >/dev/null 2>&1
@@ -1323,7 +1324,11 @@ power_menu() {
 		fi
 		persist_close
 		sync
-		sudo systemctl "$c"
+		# Hat root (etwa mit einer Freigabe für Claude) einen Kernel für kexec geladen oder unter
+		# /run/nextroot ein System abgelegt, startete systemctl sonst dorthin statt neu
+		# (GHSA-799j-44qx-x7xj). Eine Umleitung in den Einheiten des Neustarts selbst fängt das
+		# nicht ab, lf-freigabe meldet sie als Rückstand. Sicher ist Ausschalten (docs/anleitung.md).
+		sudo env SYSTEMCTL_SKIP_AUTO_KEXEC=1 SYSTEMCTL_SKIP_AUTO_SOFT_REBOOT=1 systemctl "$c"
 		;;
 	esac
 }

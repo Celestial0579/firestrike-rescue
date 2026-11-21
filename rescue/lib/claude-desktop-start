@@ -16,7 +16,9 @@ sock=${WAYLAND_DISPLAY:-}
 [[ $sock == /* ]] || sock=$XDG_RUNTIME_DIR/$sock
 claude_wayland_share "$sock" || { echo "claude-desktop-start: Socket $sock lässt sich nicht freigeben" >&2; exit 1; }
 
-exec sudo -u "$CLAUDE_USER" -H env WAYLAND_DISPLAY="$sock" XDG_RUNTIME_DIR="$CLAUDE_XDG" XDG_CURRENT_DESKTOP=lf \
+# Eigene cgroup unter $CLAUDE_SLICE wie die CLI (claude_scope in claude.sh).
+exec sudo systemd-run --scope --quiet --slice="$CLAUDE_SLICE" -- \
+	sudo -u "$CLAUDE_USER" -H env WAYLAND_DISPLAY="$sock" XDG_RUNTIME_DIR="$CLAUDE_XDG" XDG_CURRENT_DESKTOP=lf \
 	dbus-run-session -- bash -c '
 		eval "$(printf "" | gnome-keyring-daemon --unlock --components=secrets 2>/dev/null)"
 		eval "$(gnome-keyring-daemon --start --components=secrets 2>/dev/null)"

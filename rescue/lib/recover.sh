@@ -258,6 +258,27 @@ image_attach_clear_ro() {
 #                Kopiert werden Verknüpfungen weiterhin, als Verknüpfungen.
 IMAGE_MOUNT_OPTS=(ro nodev nosuid noexec nosymfollow)
 
+# ntfs3g_ro OPTIONEN QUELLE EINHÄNGEPUNKT   ntfs-3g (FUSE) für eine nur lesend eingehängte Quelle.
+#   ntfs-3g läuft weiter, solange die Quelle eingehängt ist. Es startet deshalb als eigener Dienst
+#   (lf-ntfs3g-<Einhängepunkt>.service), nicht als Kind des Aufrufers: Hängt Claude eine Quelle mit
+#   lf-aufgabe ein, läge ntfs-3g sonst in Claudes cgroup, und das Ende einer Claude-Freigabe hielte
+#   es an und beendete es mit allen root-Prozessen dort (lf-freigabe, GHSA-799j-44qx-x7xj).
+#   Type=forking: systemd-run kehrt zurück, wenn ntfs-3g eingehängt und sich gelöst hat.
+#   UnsetEnvironment: ntfs-3g erbt keine Variable aus LF_ENV_UNSAFE vom Manager. Nach dem
+#   Aushängen endet ntfs-3g und mit ihm der Dienst. Was ntfs-3g meldet, steht im Journal des
+#   Dienstes, bei einem Fehler auch im Protokoll.
+ntfs3g_ro() {
+	local unit
+	unit="lf-ntfs3g-$(systemd-escape --path -- "$3").service"
+	# Ein Dienst vom letzten Einhängen an derselben Stelle wäre schon ausgehängt (part_mount_ro).
+	sudo systemctl stop "$unit" >/dev/null 2>&1
+	if ! run sudo systemd-run --quiet --collect --unit="$unit" -p Type=forking -p UnsetEnvironment="$LF_ENV_UNSAFE" \
+		--description="Leuchtfeuer: ntfs-3g, nur lesend unter $3" -- ntfs-3g -o "$1" "$2" "$3"; then
+		sudo journalctl -q -o cat -n 20 -u "$unit" >>"${LF_LOG:-/dev/null}" 2>&1
+		return 1
+	fi
+}
+
 # Partition nur lesend einhängen; behandelt NTFS, ext*, XFS, Btrfs und BitLocker.
 # Danach wird am Einhängepunkt geprüft, ob alle Schutzoptionen gelten (mount_enforce).
 part_mount_ro() {
@@ -298,7 +319,7 @@ part_mount_ro() {
 		run sudo mount -o "$opts,loop" "$LF_RUN/dislocker-$(basename "$part")/dislocker-file" "$mp" ||
 			run sudo ntfs-3g -o ro,nodev,nosuid,noexec "$LF_RUN/dislocker-$(basename "$part")/dislocker-file" "$mp"
 		;;
-	ntfs) run sudo mount -t ntfs3 -o "$opts" "$part" "$mp" || run sudo ntfs-3g -o ro,nodev,nosuid,noexec,recover "$part" "$mp" ;;
+	ntfs) run sudo mount -t ntfs3 -o "$opts" "$part" "$mp" || ntfs3g_ro ro,nodev,nosuid,noexec,recover "$part" "$mp" ;;
 	ext2 | ext3 | ext4) run sudo mount -o "$opts,noload" "$part" "$mp" ;;
 	xfs) run sudo mount -o "$opts,norecovery" "$part" "$mp" ;;
 	btrfs) run sudo mount -o "$opts,rescue=usebackuproot" "$part" "$mp" || run sudo mount -o "$opts,rescue=all" "$part" "$mp" ;;
