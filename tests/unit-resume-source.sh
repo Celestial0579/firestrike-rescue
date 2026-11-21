@@ -166,6 +166,9 @@ zielfall pfad /dev/sdb 500107862016
 zielfall fertig DEFEKT-0001 1000204886016 "done"
 
 log() { :; }
+# Bereinigt die Protokollkopien im Fallordner (common.sh, geprüft in unit-bitlocker-key.sh).
+# Hier zählt nur, für welchen Ordner.
+log_scrub_case() { echo "$1" >>"$T/scrub"; }
 tmux() { return 1; }              # keine Rettung im Hintergrund
 target_find_cases() { return 0; } # das Ziel gilt als eingehängt
 target_search_end() { echo ende >>"$T/suche"; }
@@ -206,9 +209,9 @@ recover_run() { printf '%s|%s\n' "$1" "${2:-}" >>"$T/run"; }
 recover_after() { echo "$1" >>"$T/after"; }
 
 # resume FALL QUELLE   Ruft recover_resume auf: Der Techniker wählt FALL und als Quelle QUELLE
-# (leer = Auswahl abgebrochen). Ergebnis: RUN, RO, MSG, YESNO, AFTER, PICKS.
+# (leer = Auswahl abgebrochen). Ergebnis: RUN, RO, MSG, YESNO, AFTER, SCRUB, PICKS.
 resume() {
-	rm -f "$T/pick" "$T/msg" "$T/yesno" "$T/ro" "$T/run" "$T/after"
+	rm -f "$T/pick" "$T/msg" "$T/yesno" "$T/ro" "$T/run" "$T/after" "$T/scrub"
 	PICK_CASE=$1 PICK_SOURCE=$2
 	recover_resume
 	RUN=$(cat "$T/run" 2>/dev/null)
@@ -216,6 +219,7 @@ resume() {
 	MSG=$(cat "$T/msg" 2>/dev/null)
 	YESNO=$(cat "$T/yesno" 2>/dev/null)
 	AFTER=$(cat "$T/after" 2>/dev/null)
+	SCRUB=$(cat "$T/scrub" 2>/dev/null)
 	PICKS=$(wc -l <"$T/pick")
 }
 YESNO_RC=1
@@ -233,6 +237,7 @@ echo "Assistent, der Techniker wählt die Quelle des Falls:"
 resume echt DEFEKT-0001
 check "Quelle schreibgeschützt" '[[ $RO == /dev/sdx ]]'
 check "Rettung mit der gewählten Disk gestartet" '[[ $RUN == "$LF_TARGET_MNT/LF/echt|/dev/sdx" ]]'
+check "Protokollkopien im gewählten Fallordner bereinigt" '[[ $SCRUB == "$LF_TARGET_MNT/LF/echt" ]]'
 check "keine Rückfrage, keine Meldung" '[[ -z $YESNO && -z $MSG ]]'
 resume echt ""
 check "Auswahl der Quelle abgebrochen: nichts gestartet, nichts angefasst" '[[ -z $RUN && -z $RO ]]'
@@ -253,6 +258,7 @@ check "andere Größe: keine Rückfrage, nichts gestartet" '[[ -z $YESNO && -z $
 echo "Assistent, abgeschlossener Fall:"
 resume fertig ""
 check "weiter mit dem Image, ohne Frage nach einer Quelle" '[[ $AFTER == "$LF_TARGET_MNT/LF/fertig" && $PICKS == 1 && -z $RUN ]]'
+check "auch ein abgeschlossener Fall wird beim Öffnen bereinigt" '[[ $SCRUB == "$LF_TARGET_MNT/LF/fertig" ]]'
 
 rm -rf "$T"
 ((fails == 0)) && echo "Alle Tests bestanden." || { echo "$fails Test(s) fehlgeschlagen."; exit 1; }

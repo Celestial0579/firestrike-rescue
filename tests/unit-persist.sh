@@ -110,6 +110,14 @@ mountpoint() { return 1; }
 log() { printf '%s\n' "$*" >>"$T/log"; }
 run() { "$@"; }
 log_init() { :; }
+# Maskiert Wiederherstellungsschlüssel in den Verläufen von Claude (common.sh, geprüft in
+# unit-bitlocker-key.sh). Hier zählt nur, womit es aufgerufen wird und ob das Home von Claude
+# dann schon vom Speicher kommt.
+log_scrub_tree() {
+	local home=live
+	grep -qF "mount --bind $LF_PERSIST/claude-home $CLAUDE_HOME" "$T/sudo" 2>/dev/null && home=Speicher
+	printf '%s|%s\n' "$home" "$*" >>"$T/scrub"
+}
 human() { echo "1GiB"; }
 ui_msg() { printf '%s|%s\n' "$1" "$2" >>"$T/msg"; }
 ui_yesno() {
@@ -124,15 +132,16 @@ ui_password() {
 
 # fresh   Vergisst, was frühere Aufrufe hinterlassen haben.
 fresh() {
-	rm -f "$T/sudo" "$T/log" "$T/msg" "$T/yesno" "$T/password" "$T/bind" "$PERSIST_MAPPER_DEV"
+	rm -f "$T/sudo" "$T/log" "$T/msg" "$T/yesno" "$T/password" "$T/bind" "$T/scrub" "$PERSIST_MAPPER_DEV"
 	rm -f "$LF_RUN"/persist-*
 }
-# Ergebnis des letzten Aufrufs: SUDO (Aufrufe hinter sudo), MSG, YESNO, BIND.
+# Ergebnis des letzten Aufrufs: SUDO (Aufrufe hinter sudo), MSG, YESNO, BIND, SCRUB (log_scrub_tree).
 result() {
 	SUDO=$(cat "$T/sudo" 2>/dev/null)
 	MSG=$(cat "$T/msg" 2>/dev/null)
 	YESNO=$(cat "$T/yesno" 2>/dev/null)
 	BIND=$(cat "$T/bind" 2>/dev/null)
+	SCRUB=$(cat "$T/scrub" 2>/dev/null)
 }
 YESNO_RC=1 PASSPHRASE=""
 
@@ -320,6 +329,8 @@ check "persist_bind: nichts ausgeführt" '! markers && [[ $PATH == "$old_path" ]
 check "persist_bind: der Techniker erfährt, welche Zeilen nicht übernommen wurden" '[[ $MSG == "lf.conf|"*"nicht übernommen: 5 6 7 8 9 10 11 12 13 14"* ]]'
 check "persist_bind: das Home von Claude kommt vom Speicher" '[[ $SUDO == *"mount --bind $LF_PERSIST/claude-home $CLAUDE_HOME"* ]]'
 check "persist_bind: die eigene CLAUDE.md legt Claude selbst an, nicht der Live-Benutzer" '[[ $SUDO == *"-u lf-claude -H test -f $CLAUDE_HOME/.claude/CLAUDE.md"* ]]'
+check "persist_bind: die Verläufe in seinem Home vom Speicher bereinigt Claude selbst" '[[ $(sed -n 1p <<<"$SCRUB") == "Speicher|claude_as -- $CLAUDE_HOME" ]]'
+check "persist_bind: die alten Ordner auf dem Speicher bereinigt der Live-Benutzer, sonst nichts" '[[ $(sed -n 2p <<<"$SCRUB") == "Speicher|-- $LF_PERSIST/home/.claude $LF_PERSIST/home/.config/Claude" && $(grep -c . <<<"$SCRUB") == 2 ]]'
 rm -f "$PERSIST_CONFIG"
 fresh
 persist_bind
